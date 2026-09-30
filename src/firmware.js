@@ -8,8 +8,7 @@
  * @typedef {object} FirmwareEntry
  * @property {string} file        the file name, next to the json
  * @property {'merged' | 'app' | 'uf2' | string} kind
- * @property {string} model       the describe model (esp32p4, esp32, rp2040, rp2350)
- * @property {string} [chip]
+ * @property {string} model       the describe model (esp32p4, esp32, rp2040, rp2350): the chip built for
  * @property {string} [example]   the sketch (Firmware/OepProbe)
  * @property {string} [profile]
  * @property {string} [fqbn]

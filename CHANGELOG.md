@@ -1,6 +1,8 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) A bind's streams carry a length each, `n × (len, kind, id)` (oep-spec probe.config §1.2); a longer one's tail is skipped. `FirmwareEntry` drops `chip` (the release json no longer has it).
+- (JA) bind のストリームの並びは各要素の前に長さを置く `n × (len、kind、id)`（oep-spec probe.config §1.2）。長い要素の後ろは飛ばす。`FirmwareEntry` から `chip` を外した（release の json に無くなった）。
 
 - (EN) The scaffold: the layout (the core in `src/`, the browser and Node transports in `src/browser/` and `src/node/`, the web page in `web/`), the build, site, test and release scripts (as wireskein-web's), CI, Pages and the release workflow, the design and release documents. Nothing is implemented yet.
 - (EN) A first full port of oep-client-python's client (ahead of the v1 freeze, to be redone as the spec settles): the core, the debug wires and riscv-dm, ARM ADI, the target console, the fixtures, the captures, probe.config and dump; the WebSerial / WebUSB / WebHID and Node TCP / serial / USB transports; the USB DFU updater and the firmware manifest; the page (connect, describe, settings, GPIO and UART, DFU). The registry comes from oep-spec's generator (new JS output). Talks to OpenEmbeddedProbe 0.0.19; tested with oep-client-python 0.0.19's fake probe.
