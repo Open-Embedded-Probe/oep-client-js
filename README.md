@@ -10,13 +10,20 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 
 ## Status
 
-**Scaffold only: nothing is implemented yet.** The layout, the release tooling and the design are in place; the code
-comes in this order ([design](docs/design.md) §4):
+**A first full port, ahead of the v1 freeze: expect it to be redone as the spec settles.** What is there:
 
-1. the numbers generated from oep-spec's registry;
-2. updating a probe's firmware from the page (the ESP32-P4's DFU over WebUSB, esptool-js for the ESP32, the RP2's UF2 steps);
-3. the core (frames, the session and the lock, describe) and the probe's settings (`oep.probe.config`);
-4. the standard interfaces, once the v1 spec is frozen.
+- the core: the registry (generated from oep-spec), frames (COBS + CRC, length), messages, the link (corr matching, one
+  resend, pipelining, pushes and events), the host (confirm, session, lock, subscribe), list / describe / plan;
+- the interfaces: the debug wires (rvswd, swio, swd) and riscv-dm, ARM ADI / MEM-AP / Cortex-M, the target console, the
+  fixtures (gpio, uart, i2c-target, spi-target), the captures (logic, analog, capture-group, sigrok .sr), probe.config and
+  the `oep dump` view;
+- the transports: WebSerial, WebUSB (vendor bulk), WebHID in the browser; TCP, serial ports (`serialport`) and USB (`usb`)
+  in Node (the native packages optional);
+- the firmware update: USB DFU (the ESP32-P4) and the Release's firmware-<version>.json;
+- the page: connect, read what the probe declares, edit and save its settings, GPIO and UART, a DFU update.
+
+Tested against oep-client-python's fake probe (99 tests) and scripted devices; the browser transports, DFU and the page
+are not yet checked on hardware.
 
 Until the v1 freeze the spec may break and this package follows it at once, with the probe firmware
 ([OpenEmbeddedProbe](https://github.com/Open-Embedded-Probe/oep-probe-arduino)) and

@@ -10,13 +10,20 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 
 ## 状態
 
-**骨組みだけで、まだ何も実装していません。** 構成、リリースの道具、設計を置いたところです。コードは次の順に足します
-（[設計](docs/design.ja.md) §4）:
+**v1 の凍結の前に、ひととおり移した版です。仕様が固まるにつれて作り直す前提です。** 入っているもの:
 
-1. oep-spec の registry から生成した番号
-2. ページからの probe の firmware の更新（ESP32-P4 は WebUSB で DFU、ESP32 は esptool-js、RP2 は UF2 の手順）
-3. 核（フレーム、セッションとロック、describe）と probe の設定（`oep.probe.config`）
-4. 標準インターフェース（v1 の仕様が凍結されてから）
+- 核: registry（oep-spec から生成）、フレーム（COBS + CRC、length）、メッセージ、リンク（corr の照合、1 回の送り直し、
+  パイプライン、push と出来事）、host（confirm、セッション、ロック、購読）、list / describe / plan
+- インターフェース: debug の線（rvswd、swio、swd）と riscv-dm、ARM の ADI / MEM-AP / Cortex-M、target のコンソール、
+  fixture（gpio、uart、i2c-target、spi-target）、キャプチャ（ロジック、アナログ、capture-group、sigrok の .sr）、probe.config、
+  `oep dump` の表示
+- 経路: ブラウザは WebSerial、WebUSB（vendor bulk）、WebHID。Node は TCP、シリアルの口（`serialport`）、USB（`usb`）
+  （ネイティブの package は任意）
+- firmware の更新: USB の DFU（ESP32-P4）と、Release の firmware-<version>.json
+- ページ: つなぐ、probe の宣言を読む、設定の編集と保存、GPIO と UART、DFU での更新
+
+oep-client-python の fake の probe（99 件の試験）と台本のデバイスで試しています。ブラウザの経路、DFU、ページは、まだ実機で
+確かめていません。
 
 v1 の凍結までは仕様が壊れることがあり、この package は probe の firmware
 （[OpenEmbeddedProbe](https://github.com/Open-Embedded-Probe/oep-probe-arduino)）と
