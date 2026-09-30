@@ -82,8 +82,7 @@ docs/           この文書、リリースの手順
 ## 7. 番号（registry）
 
 番号の唯一の定義は oep-spec の `registry/oep-v1.toml` です。Python と C++ と同じく、oep-spec の生成器が JS の定数
-（`generated/oep-v1/oep_v1_registry.js`）を作り、それを `src/registry.js` に写します（手で書かない）。生成器の JS の出力は
-これから oep-spec に足します。
+（`generated/oep-v1/oep_v1_registry.js`）を作り、それを `src/registry.js` に写します（手で書かない）。
 
 ## 8. 版と仕様
 
