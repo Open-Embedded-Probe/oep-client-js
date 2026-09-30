@@ -1,0 +1,77 @@
+{
+  "name": "oep-client-js",
+  "version": "0.0.1",
+  "description": "The JavaScript host side of Open Embedded Probe (OEP): talk to OEP probes from a browser or Node, set them up and update their firmware.",
+  "type": "module",
+  "license": "MIT",
+  "author": "TANAKA Masayuki",
+  "sideEffects": false,
+  "main": "dist/oep-client.js",
+  "module": "dist/oep-client.js",
+  "browser": "dist/oep-client.min.js",
+  "unpkg": "dist/oep-client.min.js",
+  "jsdelivr": "dist/oep-client.min.js",
+  "types": "types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./dist/oep-client.js"
+    },
+    "./browser": {
+      "types": "./types/browser/index.d.ts",
+      "default": "./src/browser/index.js"
+    },
+    "./node": {
+      "types": "./types/node/index.d.ts",
+      "default": "./src/node/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "types",
+    "CHANGELOG.md",
+    "README.md",
+    "README.ja.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "oep",
+    "open-embedded-probe",
+    "debug-probe",
+    "embedded",
+    "webusb",
+    "webserial"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Open-Embedded-Probe/oep-client-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Open-Embedded-Probe/oep-client-js/issues"
+  },
+  "homepage": "https://open-embedded-probe.github.io/oep-client-js/",
+  "scripts": {
+    "test": "node scripts/run-tests.js",
+    "test:watch": "node scripts/run-tests.js --watch",
+    "build": "node scripts/build.js",
+    "build:site": "node scripts/build-site.js",
+    "serve": "node scripts/serve.js",
+    "types": "tsc -p tsconfig.types.json",
+    "typecheck": "tsc --noEmit",
+    "smoke:dist": "node scripts/smoke-dist.js",
+    "check": "npm run test && npm run typecheck",
+    "prepack": "npm run build && npm run types",
+    "preversion": "npm run check && node scripts/check-releasable.js",
+    "version": "node scripts/sync-version.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  }
+}
