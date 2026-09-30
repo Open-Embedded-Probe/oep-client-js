@@ -44,8 +44,11 @@ test('slot and bind values as probe.config §1.1 / §1.2 say, and back', () => {
   assert.equal(/** @type {Slot} */ (config.decode(config.ITEM.slot, plain.value())).lock, null);
   assert.throws(() => new Slot({ slot: 0, wireFn: 1, pins: [2, 3], name: 'x', lock: { scheme: 1, mask: u32(1), value: new Uint8Array(2) } }).value(), RangeError);
   const b = new Bind({ port: 3, mode: 'manual', streams: [['slot', 0], ['uart', 5]], selected: 1 });
-  assert.deepEqual([...b.value()], [3, 1, 1, 2, 1, 0, 0, 2, 5, 0]);
+  assert.deepEqual([...b.value()], [3, 1, 1, 2, 3, 1, 0, 0, 3, 2, 5, 0]);
   assert.deepEqual(config.decode(config.ITEM.bind, b.value()), b);
+  // a longer stream's tail is skipped (core §2.3); under 3 is not a bind
+  assert.deepEqual(/** @type {Bind} */ (config.decode(config.ITEM.bind, Uint8Array.of(0, 2, 0, 1, 5, 1, 0, 0, 0xef, 0xbe))).streams, [['slot', 0]]);
+  assert.ok(!(config.decode(config.ITEM.bind, Uint8Array.of(0, 2, 0, 1, 2, 1, 0)) instanceof Bind));
   assert.deepEqual([...config.remove('bind', 3)], [config.ITEM.bind, 1, 3]);
   assert.deepEqual([...config.remove('plan', 0x105)], [config.ITEM.plan, 2, 5, 1]);
   assert.deepEqual(config.decode(0x33, Uint8Array.of(1)), { tag: 0x33, value: Uint8Array.of(1) });

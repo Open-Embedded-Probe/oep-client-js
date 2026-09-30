@@ -122,7 +122,7 @@ export class Bind {
   value() {
     const w = new Writer().u8(this.port).u8(valueOf(MODE, this.mode, 'bind mode')).u8(this.mode === 'manual' ? this.selected : 0)
       .u8(this.streams.length);
-    for (const [kind, id] of this.streams) w.u8(valueOf(STREAM, kind, 'stream kind')).u16(id);
+    for (const [kind, id] of this.streams) w.u8(3).u8(valueOf(STREAM, kind, 'stream kind')).u16(id);   // len, kind, id
     return w.done();
   }
 }
@@ -164,9 +164,12 @@ export function decode(tag, v) {
       mechanism: nameOf(MECHANISM, v[15]), lock });
   }
   if (tag === ITEM.bind && v.length >= 4) {
-    const n = Math.min(v[3], Math.floor((v.length - 4) / 3));
     /** @type {[string, number][]} */
-    const streams = Array.from({ length: n }, (_, k) => [nameOf(STREAM, v[4 + 3 * k]), getU16(v, 5 + 3 * k)]);
+    const streams = [];
+    for (let k = 0, at = 4; k < v[3]; k++, at += 1 + v[at]) {   // n × (len, kind, id): a longer one's tail skipped
+      if (at >= v.length || v[at] < 3 || at + 1 + v[at] > v.length) return { tag, value: v };
+      streams.push([nameOf(STREAM, v[at + 1]), getU16(v, at + 2)]);
+    }
     return new Bind({ port: v[0], mode: nameOf(MODE, v[1]), streams, selected: v[2] });
   }
   return { tag, value: v };

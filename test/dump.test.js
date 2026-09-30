@@ -116,14 +116,14 @@ test('p4 follows the agreed names; text and JSON', { skip: !haveFake }, () => wi
   assert.equal(caps.offers.length, 13);
   assert.equal(caps.requests.list, 1);
   assert.equal(caps.requests.describe, 13);
-  assert.deepEqual(new Set(['oep.wire.rvswd', 'oep.target.riscv-dm', 'oep.target.console'].map((n) => byName.get(n)?.entry.instance)), new Set([1]));
+  assert.deepEqual(new Set(['oep.wire.rvswd', 'oep.target.riscv-dm', 'oep.target.console'].map((n) => byName.get(n)?.entry.instance)), new Set([0]));
   assert.deepEqual(byName.get('oep.wire.rvswd')?.description.groups.get(1), [[1, 2], [2, 54]]);
   const i2c = /** @type {dump.Offer} */ (byName.get('oep.fixture.i2c-target'));
   assert.deepEqual(i2c.description.roles.get(1), i2c.description.roles.get(2));
   assert.ok(!i2c.description.roles.get(1)?.includes(2));           // reserved for RVSWD
   const text = dump.toText(caps);
   assert.match(text, /^OEP revision 1, max frame 1024 bytes; 13 interfaces in 1 list and 13 describe requests\n/);
-  assert.ok(text.includes('instance 6') && text.includes('oep.fixture.i2c-target'));
+  assert.ok(text.includes('instance 0') && text.includes('oep.fixture.i2c-target'));
   assert.ok(text.includes('features: preloaded tx, clock stretching'));
   assert.ok(text.includes('max 5 MHz'));
   assert.ok(text.includes('unit id: 30eda0e31108') && text.includes('chip: esp32p4 v1.0'));
