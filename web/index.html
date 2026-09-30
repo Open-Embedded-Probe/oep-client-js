@@ -8,12 +8,158 @@
   <link rel="stylesheet" href="styles/app.css">
 </head>
 <body>
-  <main>
+  <header>
     <h1>OEP Probe Tool</h1>
-    <p>Set up an Open Embedded Probe and update its firmware from the browser.</p>
-    <p class="status">Not implemented yet. <span id="version"></span></p>
-    <p><a href="https://github.com/Open-Embedded-Probe/oep-client-js">oep-client-js</a></p>
+    <span id="version" class="muted"></span>
+    <span class="spacer"></span>
+    <button id="lang" type="button">日本語</button>
+  </header>
+
+  <p id="unsupported" class="warn" hidden data-i18n="unsupported"></p>
+
+  <section id="connection" class="card">
+    <div class="row">
+      <button id="connect-usb" type="button" data-i18n="connectUsb"></button>
+      <button id="connect-serial" type="button" data-i18n="connectSerial"></button>
+      <button id="connect-hid" type="button" data-i18n="connectHid"></button>
+      <button id="disconnect" type="button" data-i18n="disconnect" disabled></button>
+      <label class="check"><input id="lock" type="checkbox" disabled> <span data-i18n="takeLock"></span></label>
+    </div>
+    <div id="probe" class="muted" data-i18n="notConnected"></div>
+  </section>
+
+  <nav class="tabs">
+    <button type="button" data-tab="describe" class="active" data-i18n="tabDescribe"></button>
+    <button type="button" data-tab="settings" data-i18n="tabSettings"></button>
+    <button type="button" data-tab="tools" data-i18n="tabTools"></button>
+    <button type="button" data-tab="firmware" data-i18n="tabFirmware"></button>
+  </nav>
+
+  <main>
+    <section id="tab-describe" class="tab">
+      <div class="row">
+        <button id="describe-run" type="button" data-i18n="describeRun" data-needs="host"></button>
+        <button id="describe-save" type="button" data-i18n="saveJson" data-needs="dump"></button>
+      </div>
+      <pre id="describe-out" class="out"></pre>
+    </section>
+
+    <section id="tab-settings" class="tab" hidden>
+      <div class="row">
+        <button id="settings-read" type="button" data-i18n="read" data-needs="host"></button>
+        <button id="settings-save" type="button" data-i18n="saveToProbe" data-needs="lock"></button>
+        <button id="settings-erase" type="button" data-i18n="erase" data-needs="lock"></button>
+      </div>
+      <div id="settings-state" class="muted"></div>
+      <table id="settings-items" class="items"><tbody></tbody></table>
+
+      <h3 data-i18n="addItem"></h3>
+      <div class="forms">
+        <form id="form-slot" class="card">
+          <h4 data-i18n="slot"></h4>
+          <label>slot <input name="slot" type="number" min="0" value="0" required></label>
+          <label data-i18n-label="wireFn">wire fn <input name="wireFn" type="number" min="1" required></label>
+          <label>SWDIO <input name="swdio" type="number" min="0" required></label>
+          <label>SWCLK <input name="swclk" type="number" min="0" placeholder="65535 = none"></label>
+          <label data-i18n-label="name">name <input name="name" pattern="[a-z0-9_-]{1,32}" required></label>
+          <label>attach <select name="attach"><option>host</option><option>at-boot</option></select></label>
+          <label>retry s <input name="retryS" type="number" min="0" value="0"></label>
+          <label>max speed Hz <input name="maxSpeed" type="number" min="0" value="0"></label>
+          <label>idle clock <select name="idleClock"><option>high</option><option>low</option></select></label>
+          <label>mechanism <select name="mechanism"><option>dmseq</option><option>dmdata</option><option>sdi</option></select></label>
+          <button type="submit" data-i18n="set" data-needs="lock"></button>
+        </form>
+        <form id="form-bind" class="card">
+          <h4 data-i18n="bind"></h4>
+          <label data-i18n-label="port">port <input name="port" type="number" min="0" required></label>
+          <label>mode <select name="mode"><option>last-reset</option><option>manual</option><option>mixed</option></select></label>
+          <label data-i18n-label="streams">streams <input name="streams" placeholder="slot:0,uart:5" required></label>
+          <button type="submit" data-i18n="set" data-needs="lock"></button>
+        </form>
+        <form id="form-label" class="card">
+          <h4 data-i18n="label"></h4>
+          <label>channel <input name="channel" type="number" min="0" required></label>
+          <label data-i18n-label="text">text <input name="text" maxlength="24" required></label>
+          <button type="submit" data-i18n="set" data-needs="lock"></button>
+        </form>
+        <form id="form-idle" class="card">
+          <h4 data-i18n="idle"></h4>
+          <label>channel <input name="channel" type="number" min="0" required></label>
+          <label>mode <select name="mode"><option>pull-up</option><option>pull-down</option><option>hi-z</option></select></label>
+          <button type="submit" data-i18n="set" data-needs="lock"></button>
+        </form>
+        <form id="form-plan" class="card">
+          <h4 data-i18n="plan"></h4>
+          <label>fn <input name="fn" type="number" min="1" required></label>
+          <label data-i18n-label="roles">roles <input name="roles" placeholder="1=20,2=21" required></label>
+          <button type="submit" data-i18n="set" data-needs="lock"></button>
+        </form>
+      </div>
+    </section>
+
+    <section id="tab-tools" class="tab" hidden>
+      <div class="card">
+        <h3>GPIO</h3>
+        <p class="muted" data-i18n="gpioHint"></p>
+        <div class="row">
+          <label>channel <input id="gpio-channel" type="number" min="0" value="0"></label>
+          <button id="gpio-plan" type="button" data-i18n="gpioPlan" data-needs="lock"></button>
+          <select id="gpio-mode">
+            <option value="0">input</option><option value="1">input pull-up</option><option value="2">input pull-down</option>
+            <option value="3">output low</option><option value="4">output high</option>
+            <option value="5">open-drain low</option><option value="6">open-drain release</option>
+          </select>
+          <button id="gpio-set" type="button" data-i18n="set" data-needs="lock"></button>
+          <button id="gpio-read" type="button" data-i18n="read" data-needs="host"></button>
+          <span id="gpio-level" class="value"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>UART</h3>
+        <p class="muted" data-i18n="uartHint"></p>
+        <div class="row">
+          <label>fn <select id="uart-fn"></select></label>
+          <label>baud <input id="uart-baud" type="number" value="115200"></label>
+          <button id="uart-configure" type="button" data-i18n="configure" data-needs="lock"></button>
+          <button id="uart-read" type="button" data-i18n="read" data-needs="host"></button>
+        </div>
+        <pre id="uart-out" class="out small"></pre>
+        <div class="row">
+          <input id="uart-text" placeholder="text">
+          <label class="check"><input id="uart-crlf" type="checkbox" checked> CR LF</label>
+          <button id="uart-send" type="button" data-i18n="send" data-needs="lock"></button>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-firmware" class="tab" hidden>
+      <div class="card">
+        <h3 data-i18n="fwP4"></h3>
+        <p class="muted" data-i18n="fwP4Hint"></p>
+        <div class="row">
+          <label data-i18n-label="fwImage">image (.bin) <input id="fw-image" type="file" accept=".bin"></label>
+          <label data-i18n-label="fwManifest">firmware-*.json <input id="fw-manifest" type="file" accept=".json"></label>
+          <button id="fw-dfu" type="button" data-i18n="fwWrite"></button>
+        </div>
+        <progress id="fw-progress" max="1" value="0" hidden></progress>
+        <div id="fw-status" class="muted"></div>
+      </div>
+      <div class="card">
+        <h3 data-i18n="fwEsp32"></h3>
+        <p data-i18n="fwEsp32Hint"></p>
+      </div>
+      <div class="card">
+        <h3 data-i18n="fwRp2"></h3>
+        <p data-i18n="fwRp2Hint"></p>
+      </div>
+    </section>
   </main>
+
+  <footer class="muted">
+    <span id="log"></span>
+    <a href="https://github.com/Open-Embedded-Probe/oep-client-js">oep-client-js</a>
+  </footer>
+
   <script type="module" src="app.js"></script>
 </body>
 </html>
