@@ -1,5 +1,5 @@
 {
-  "name": "oep-client-js",
+  "name": "@open-embedded-probe/oep-client",
   "version": "0.0.1",
   "description": "The JavaScript host side of Open Embedded Probe (OEP): talk to OEP probes from a browser or Node, set them up and update their firmware.",
   "type": "module",

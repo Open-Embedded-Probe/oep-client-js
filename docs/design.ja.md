@@ -16,7 +16,7 @@ oep-client-js の構成と、何をどこに置くか、何を作らないか。
 ## 2. 構成
 
 ```text
-src/            ライブラリ（環境に依らない核）         -> npm の "."（dist/oep-client.js にバンドル）
+src/            ライブラリ（環境に依らない核）         -> npm の "@open-embedded-probe/oep-client"（dist/oep-client.js にバンドル）
   index.js        入口。VERSION と、核の公開 API
   (これから)      frame、message、session、core、describe、config、各インターフェース、registry（生成物）
 src/browser/    ブラウザの経路                         -> npm の "./browser"

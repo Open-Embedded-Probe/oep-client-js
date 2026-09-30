@@ -17,7 +17,7 @@ the map for the scaffold.
 ## 2. Layout
 
 ```text
-src/            the library (the core, no environment)   -> npm "."  (bundled to dist/oep-client.js)
+src/            the library (the core, no environment)   -> npm "@open-embedded-probe/oep-client" (bundled to dist/oep-client.js)
   index.js        the entry: VERSION and the core's public API
   (to come)       frame, message, session, core, describe, config, the interfaces, registry (generated)
 src/browser/    the browser's transports                 -> npm "./browser"
