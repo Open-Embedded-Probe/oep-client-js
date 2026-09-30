@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-npm: `oep-client`（リポジトリの名前は oep-client-js）。
+npm: `oep-client-js`（リポジトリと同じ。PyPI の oep-client-python と対）。
 
 [Open Embedded Probe（OEP）](https://github.com/Open-Embedded-Probe/oep-spec) の、JavaScript の host の実装です。ブラウザと Node から
 OEP の probe と話し、設定し、firmware を更新します。これを使った Web ページ **OEP Probe Tool** を GitHub Pages に置きます:
@@ -26,9 +26,9 @@ v1 の凍結までは仕様が壊れることがあり、この package は prob
 
 | 場所 | npm の入口 | 中身 |
 |---|---|---|
-| `src/` | `oep-client` | 環境に依らない核（`dist/oep-client.js` にバンドル） |
-| `src/browser/` | `oep-client/browser` | WebSerial、WebUSB、WebHID |
-| `src/node/` | `oep-client/node` | シリアルの口、USB、TCP |
+| `src/` | `oep-client-js` | 環境に依らない核（`dist/oep-client.js` にバンドル） |
+| `src/browser/` | `oep-client-js/browser` | WebSerial、WebUSB、WebHID |
+| `src/node/` | `oep-client-js/node` | シリアルの口、USB、TCP |
 | `web/` | - | Web ページ（`site/` にビルドして GitHub Pages へ。npm の配布物には入れない） |
 | `test/` | - | `node:test`。oep-client-python の fake に TCP でつなぐ |
 

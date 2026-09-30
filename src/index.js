@@ -3,8 +3,8 @@
 //
 // This entry is the core, the part that depends on no environment: the frame and message shapes, the session and
 // the lock, describe, probe.config and the standard interfaces (oep-spec docs/oep-core.ja.md, docs/oep-if-*.ja.md).
-// The ways to reach a probe are separate entries: "oep-client/browser" (WebSerial, WebUSB,
-// WebHID) and "oep-client/node" (serial ports, USB, TCP). See docs/design.md.
+// The ways to reach a probe are separate entries: "oep-client-js/browser" (WebSerial, WebUSB,
+// WebHID) and "oep-client-js/node" (serial ports, USB, TCP). See docs/design.md.
 //
 // Not implemented yet: see README.md "Status".
 

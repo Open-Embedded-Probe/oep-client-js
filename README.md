@@ -2,7 +2,7 @@
 
 [日本語](README.ja.md)
 
-npm: `oep-client` (the repository is oep-client-js).
+npm: `oep-client-js`, as the repository (and as oep-client-python on PyPI).
 
 The JavaScript host side of [Open Embedded Probe (OEP)](https://github.com/Open-Embedded-Probe/oep-spec): talk to OEP
 probes from a browser or Node, set them up and update their firmware. A web page built on it, **OEP Probe Tool**, runs on
@@ -26,9 +26,9 @@ Until the v1 freeze the spec may break and this package follows it at once, with
 
 | Path | npm entry | Contents |
 |---|---|---|
-| `src/` | `oep-client` | the core, no environment (bundled to `dist/oep-client.js`) |
-| `src/browser/` | `oep-client/browser` | WebSerial, WebUSB, WebHID |
-| `src/node/` | `oep-client/node` | serial ports, USB, TCP |
+| `src/` | `oep-client-js` | the core, no environment (bundled to `dist/oep-client.js`) |
+| `src/browser/` | `oep-client-js/browser` | WebSerial, WebUSB, WebHID |
+| `src/node/` | `oep-client-js/node` | serial ports, USB, TCP |
 | `web/` | - | the web page (built to `site/` for GitHub Pages; not in the npm package) |
 | `test/` | - | `node:test`, against oep-client-python's fake probe over TCP |
 
