@@ -59,8 +59,8 @@ npm にログインし、アカウントを確かめます（マシンごとに 
 
 ```sh
 npm login                      # ブラウザが開く（または、ユーザー名、パスワード、ワンタイムコードを聞かれる）
-npm whoami                     # 公開に使うアカウント（npm の org open-embedded-probe の一員）
-npm owner ls @open-embedded-probe/oep-client   # 最初のリリースの後: 公開できるアカウントの一覧
+npm whoami                     # 公開に使うアカウント
+npm owner ls oep-client   # 最初のリリースの後: 公開できるアカウントの一覧
 ```
 
 そのあと、公開して push します。
@@ -82,8 +82,8 @@ git push --follow-tags
 ## リリースの後に見ること
 
 - npm の package のページに、意図した版が出ていること。
-- 空のディレクトリで `npm install @open-embedded-probe/oep-client@<版>` をし、
-  `node -e "import('@open-embedded-probe/oep-client').then(m => console.log(m.VERSION))"` がその版を出すこと。
+- 空のディレクトリで `npm install oep-client@<版>` をし、
+  `node -e "import('oep-client').then(m => console.log(m.VERSION))"` がその版を出すこと。
 - Git のタグが、意図したコミットを指していること。
 - [Web ページ](https://open-embedded-probe.github.io/oep-client-js/) に、新しい版が出ていること。
 

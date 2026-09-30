@@ -62,8 +62,8 @@ Log in to npm and check the account (once per machine; the login stays in `~/.np
 
 ```sh
 npm login                      # opens a browser (or asks for user name, password and one-time code)
-npm whoami                     # the account that will publish (a member of the npm org open-embedded-probe)
-npm owner ls @open-embedded-probe/oep-client   # after the first release: the accounts that may publish
+npm whoami                     # the account that will publish
+npm owner ls oep-client   # after the first release: the accounts that may publish
 ```
 
 Then publish and push:
@@ -85,8 +85,8 @@ git push --follow-tags
 ## Post-release checks
 
 - The npm package page shows the intended version.
-- In an empty directory, `npm install @open-embedded-probe/oep-client@<version>` and
-  `node -e "import('@open-embedded-probe/oep-client').then(m => console.log(m.VERSION))"` print that version.
+- In an empty directory, `npm install oep-client@<version>` and
+  `node -e "import('oep-client').then(m => console.log(m.VERSION))"` print that version.
 - The Git tag points at the intended commit.
 - The [web page](https://open-embedded-probe.github.io/oep-client-js/) shows the new version.
 
