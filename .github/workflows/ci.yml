@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      # the fake probe the tests talk to over TCP (oep-client-python's fake_serve), from PyPI
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install oep-client-python
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: npm run types
+      - run: npm run smoke:dist
+      - run: npm run build:site
+      - run: npm pack --dry-run
