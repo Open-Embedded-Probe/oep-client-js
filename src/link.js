@@ -15,7 +15,10 @@
 // (`setBaudRate`), the link knows the boot speed (`baseBaud`) and the rate now (`baud`). A completed end or port_speed
 // revert puts the link back at the boot speed at once; a request unanswered (its resend too) while the rate is raised
 // takes the link back to the boot speed - the probe went back by itself -, confirms there and goes once more: the
-// link never wedges at a rate the probe left. After a rate change the link waits SWITCH_SETTLE_MS before its first byte
+// link never wedges at a rate the probe left; while raised each wait is at most a quarter of the lease, so this ends
+// inside it. In use, STRIKE_MAX (3) broken frames or resends within STRIKE_WINDOW_MS (5 s) step down: port_speed
+// revert at the raised rate, the boot speed, a confirm. Either way the rate is not used again in that session
+// (`speed.steppedDown`, `speed.downWhy`). After a rate change the link waits SWITCH_SETTLE_MS before its first byte
 // (the probe switches once its answer is out; an FTDI lost the first frame sent at once). A raised rate that verified
 // only one request at a time keeps that cap (`inflightCap`) on the pipelined exchange until the link is back at the
 // boot speed. A committed rate also goes back after port_speed_idle_max_ms (3 s) with no good frame: while raised, the
@@ -44,6 +47,13 @@ export const KEEPALIVE_MS = 1000;
 export const OPEN_RETRY_MS = IDLE_MAX_MS + 1000;
 /** Each of those confirms waits this long (at most the link's timeout). */
 export const OPEN_TRY_MS = 500;
+/** Raised, in use: this many broken frames / resends within STRIKE_WINDOW_MS step the link down (core §3.5 item 7). */
+export const STRIKE_MAX = 3;
+export const STRIKE_WINDOW_MS = 5000;
+/** The step down's revert (step 2) at the raised rate waits this long, never sent again. */
+export const STEP_DOWN_WAIT_MS = 200;
+/** Raised, in use: each wait for an answer is a quarter of the lease, at least this. */
+export const RAISED_WAIT_MIN_MS = 300;
 
 /**
  * The bytes a transport moves. `start` begins delivering what arrives (onData for every chunk; onClose when the
@@ -88,7 +98,15 @@ export class Link {
     /** @type {number | null} the rate the host side runs at now */ this.baud = this.baseBaud;
     /** @type {import('./speed.js').SpeedReport | null} the last raiseSpeed's report */ this.speed = null;
     this.speedLost = 0;                      // times a raised rate was found gone (back to the boot speed)
-    this.fallback = true;                    // a raised rate that stops answering: back to the boot speed
+    this.fallback = true;                    // a raised rate in use (not raiseSpeed's own trial): fall back / step down
+    /** @type {number[]} raised, in use: when frames broke / requests went again (STRIKE_WINDOW_MS) */ this.strikes = [];
+    this.stepDue = '';                       // raised, in use: why the link steps down at the next safe point
+    /** @type {number | null} the transport index the raised rate is on (the revert names it) */ this.speedPort = null;
+    /** @type {Map<number, string>} rates stepped down from in this session -> why (raiseSpeed skips them) */ this.unusable = new Map();
+    /** @type {number | null} the session `unusable` belongs to */ this.unusableSession = null;
+    /** @type {((op: number, payload: Uint8Array) => Uint8Array) | null} a core request in the session (bound by Host) */ this.sessionFrame = null;
+    /** @type {() => number | null} the session's lease (bound by Host; raised: bounds each wait) */ this.lease = () => null;
+    /** @type {() => number | null} the session id (bound by Host) */ this.sessionId = () => null;
     this.inflightCap = 0;                    // port_speed: the in-flight requests the raised rate verified with (0: no cap)
     /** @type {() => boolean} a session holds the port (its raw transfer stopped): a broken frame = resend */
     this.held = () => false;
@@ -205,6 +223,7 @@ export class Link {
     if (first.done) return;
     const [corr, p] = first.value;
     this.stats.corrupt++;
+    this.strike('a broken frame');
     if (p.attempt !== 0) {
       clearTimeout(p.timer);
       this.pending.delete(corr);
@@ -245,18 +264,21 @@ export class Link {
    * @returns {Promise<Uint8Array>}
    */
   async send(message) {
+    if (this.falling) await this.falling.catch(() => {});   // a step down or fall back under way: after it, at its rate
     await this.keepRaised();
+    const at = this.baud;
     let reply;
     try {
       reply = await this.sendOnce(message);
     } catch (e) {
-      if (!(e instanceof Timeout) || !(await this.speedFallback())) throw e;
+      if (!(e instanceof Timeout || e instanceof cobs.CorruptFrame) || !(await this.speedFallback(e, at))) throw e;
       reply = await this.sendOnce(message);   // once more at the boot speed (the probe answers a repeat from what it kept)
     }
     if (this.baseBaud !== null && this.baud !== this.baseBaud && reverts(message, reply)) {
       await this.setBaud(this.baseBaud);    // the probe went back right after this answer (core §3.5)
       if (this.speed) { this.speed.rate = this.baseBaud; this.speed.chosen = null; }
     }
+    await this.stepDownIfDue();
     return reply;
   }
 
@@ -265,7 +287,7 @@ export class Link {
    * @param {Uint8Array} message @param {{ timeoutMs?: number, resend?: boolean }} [opts]
    * @returns {Promise<Uint8Array>}
    */
-  sendOnce(message, { timeoutMs = this.timeoutMs, resend = this.resend } = {}) {
+  sendOnce(message, { timeoutMs = this.waitMs(), resend = this.resend } = {}) {
     if (this.closed) return Promise.reject(this.closeError instanceof Error ? this.closeError : new Error('the link is closed'));
     const corr = message[1] | (message[2] << 8);
     return new Promise((resolve, reject) => {
@@ -273,6 +295,7 @@ export class Link {
       const p = { resolve, reject, timer: null, message, attempt: resend ? 0 : 1, arm: () => {} };
       const arm = () => {
         p.timer = setTimeout(() => {
+          this.strike('no answer');
           if (p.attempt === 0) {
             p.attempt = 1;
             this.stats.retries++;
@@ -370,23 +393,92 @@ export class Link {
     }
   }
 
-  /** A request went unanswered while the link ran above the boot speed: back there, confirmed. true = send again. */
-  speedFallback() {
-    if (!this.fallback || this.baseBaud === null) return Promise.resolve(false);
+  /** A raised rate in force outside raiseSpeed's own trial (where every failure is handled there). */
+  inUse() { return this.fallback && this.raised(); }
+
+  /** How long one answer is waited for: the link's timeout; raised and in use, at most a quarter of the session's
+   * lease (at least RAISED_WAIT_MIN_MS) - a probe that went back by itself (broken candidates, core §3.5 item 5) hears
+   * nothing at the raised rate, and the fall back (both waits, the confirm at the boot speed, the request again there)
+   * must end well inside the lease. */
+  waitMs() {
+    const lease = this.inUse() ? this.lease() : null;
+    return lease ? Math.min(this.timeoutMs, Math.max(RAISED_WAIT_MIN_MS, lease / 4)) : this.timeoutMs;
+  }
+
+  /** Raised and in use: a frame broke or a request goes again. STRIKE_MAX within STRIKE_WINDOW_MS: the link steps
+   * down at the next safe point (core §3.5 item 7). @param {string} what */
+  strike(what) {
+    if (!this.inUse()) return;
+    const now = Date.now();
+    this.strikes = [...this.strikes.filter((t) => now - t < STRIKE_WINDOW_MS), now];
+    if (this.strikes.length >= STRIKE_MAX && !this.stepDue) {
+      this.stepDue = `${this.strikes.length} broken frames / resends within ${STRIKE_WINDOW_MS / 1000} s at ${this.baud} (the last: ${what})`;
+    }
+  }
+
+  async stepDownIfDue() {
+    if (this.stepDue && this.inUse()) await this.leave(this.stepDue, true);
+  }
+
+  /**
+   * Leave the raised rate for the rest of the session (one at a time; a second caller waits for the first).
+   * revert: port_speed step 2 at it first (STEP_DOWN_WAIT_MS, never sent again: a probe that already went back cannot
+   * hear it, and a committed one reverts at the broken candidates the confirms make). Then the boot speed and a
+   * confirm there; the rate is unusable for the session and the report says why. Rejects when no confirm is answered.
+   * @param {string} why @param {boolean} revert @returns {Promise<boolean>}
+   */
+  leave(why, revert) {
     if (this.falling) return this.falling;
-    if (this.baud === this.baseBaud) return Promise.resolve(false);
-    const from = this.baud;
+    const from = /** @type {number} */ (this.baud);
+    this.stepDue = '';
+    this.strikes = [];
     this.falling = (async () => {
       try {
+        if (revert && this.sessionFrame && this.speedPort !== null) {
+          const payload = new Uint8Array(12);
+          payload[0] = this.speedPort;
+          payload[5] = reg.CORE.enum.port_speed_step.revert;
+          const saved = this.fallback;
+          this.fallback = false;
+          try {
+            await this.sendOnce(this.sessionFrame(OP.port_speed, payload), { timeoutMs: STEP_DOWN_WAIT_MS, resend: false });
+          } catch { /* lost: the probe goes back by itself */ } finally {
+            this.fallback = saved;
+          }
+        }
         if (!(await this.backToBase())) throw new Error(`the probe answers neither at ${from} nor at the boot speed ${this.baseBaud}`);
-        this.speedLost++;
-        if (this.speed) { this.speed.rate = /** @type {number} */ (this.baseBaud); this.speed.chosen = null; this.speed.lost = true; }
+        if (!revert) this.speedLost++;
+        this.unusable.set(from, why);
+        if (this.speed) {
+          this.speed.rate = /** @type {number} */ (this.baseBaud);
+          this.speed.chosen = null;
+          if (!revert) this.speed.lost = true;
+          this.speed.steppedDown = true;
+          this.speed.downWhy = why;
+        }
         return true;
       } finally {
         this.falling = null;
       }
     })();
     return this.falling;
+  }
+
+  /**
+   * A request sent at rate `at` failed (its resend too) while a raised rate was in use. Broken frames (the probe still
+   * answers there) or a step down already due: step down (`leave` with the revert). No answer at all: the probe went
+   * back by itself (idle_ms, broken candidates, a lapse) - back to the boot speed, confirmed. Either way the rate is not
+   * used again in this session. Already back (another request did it): just send again. true = send again.
+   * @param {unknown} [e] @param {number | null} [at]
+   */
+  async speedFallback(e, at = this.baud) {
+    if (this.falling) return this.falling;
+    if (this.baseBaud === null) return false;
+    if (at !== this.baseBaud && this.baud === this.baseBaud && this.unusable.has(/** @type {number} */ (at))) return true;
+    if (!this.inUse()) return false;
+    const from = this.baud;
+    if (this.stepDue || !(e instanceof Timeout)) return this.leave(this.stepDue || `frames kept breaking at ${from}`, true);
+    return this.leave(`no answer at ${from} (the probe went back by itself)`, false);
   }
 
   /**

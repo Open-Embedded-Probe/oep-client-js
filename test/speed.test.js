@@ -16,7 +16,7 @@ import { take } from '../src/core.js';
 import { openTcp, tcpTransport } from '../src/node/index.js';
 import { haveFake, startFake } from './fake.js';
 
-const FAST = { verifyBytes: 2048, verifySeconds: 0.3, verifyMs: 600 };
+const FAST = { verifyBytes: 2048, verifySeconds: 0.3, verifyMs: 900, duplexSeconds: 0.2, duplexFrames: 16 };
 
 /** @param {string[]} args @param {(hst: import('../src/host.js').Host) => Promise<void>} body @param {object} [opts] */
 async function withSpeedFake(args, body, opts = {}) {
@@ -183,13 +183,16 @@ test('WebSerial: a new rate closes and opens the same port, releases DTR / RTS, 
  * false); `garble(line)` breaks the next frame from the probe. line: the host's rate, the requests outstanding (written
  * less frames received), when the rate last changed, and the most outstanding at once since `line.peak` was reset.
  * @param {string[]} args
+ * `line.ops`: the ops of the requests outstanding, oldest first (garble sees the one its frame answers at ops[0]).
  * @param {{ onWrite?: (msg: Uint8Array, line: any) => boolean, garble?: (line: any) => boolean }} model
  * @param {(hst: import('../src/host.js').Host, line: any) => Promise<void>} body
+ * @param {number} [leaseMs]
  */
-async function withLine(args, model, body) {
+async function withLine(args, model, body, leaseMs = 10000) {
   const fake = await startFake(['--profile', 'esp32-v003', ...args], 'cobs');
   const inner = await tcpTransport({ port: fake.port, framing: 'cobs', baudRate: 115200 });
-  const line = { outstanding: 0, peak: 0, switchedAt: 0, garbled: 0, dropped: /** @type {Uint8Array[]} */ ([]), gaps: /** @type {number[]} */ ([]) };
+  const line = { outstanding: 0, peak: 0, switchedAt: 0, garbled: 0, dropped: /** @type {Uint8Array[]} */ ([]), gaps: /** @type {number[]} */ ([]),
+    ops: /** @type {number[]} */ ([]) };
   let rx = new Uint8Array(0);
   /** @type {import('../src/link.js').Transport} */
   const transport = {
@@ -199,12 +202,14 @@ async function withLine(args, model, body) {
       await /** @type {(r: number) => Promise<void>} */ (inner.setBaudRate)(rate);
       line.switchedAt = performance.now();
       line.outstanding = 0;   // what was on the line is gone
+      line.ops = [];
     },
     async write(data) {
       const msg = cobs.unframe(data.subarray(1, data.length - 1));
       if (line.switchedAt) { line.gaps.push(performance.now() - line.switchedAt); line.switchedAt = 0; }
       if (model.onWrite && !model.onWrite(msg, line)) { line.dropped.push(msg); return; }
       line.outstanding++;
+      line.ops.push(m.Request.unpack(msg).op);
       line.peak = Math.max(line.peak, line.outstanding);
       await inner.write(data);
     },
@@ -220,6 +225,7 @@ async function withLine(args, model, body) {
           if (!cand.length) continue;
           if (model.garble?.(line)) { cand[1] = cand[1] === 1 ? 2 : 1; line.garbled++; }   // a byte changed: the CRC fails
           line.outstanding = Math.max(0, line.outstanding - 1);
+          line.ops.shift();
           onData(Uint8Array.of(0, ...cand, 0));
         }
       }, onClose);
@@ -228,7 +234,7 @@ async function withLine(args, model, body) {
   };
   const hst = await connect(transport, { timeoutMs: 1000 });
   try {
-    await take(hst, 10000);
+    await take(hst, leaseMs);
     await body(hst, line);
   } finally {
     await hst.link.close();
@@ -437,4 +443,99 @@ test('connect on a serial port gives up after about 4 s; other transports keep t
   } finally {
     other.fake.stop();
   }
+});
+
+test('a rate that breaks only both ways at once fails the duplex phase', { skip: !haveFake }, async () => {
+  /** @type {() => number | null} */ let rateNow = () => 115200;
+  await withLine([], {
+    // a link_source answer (probe -> host) arriving while a link_sink (host -> probe) is still out: both ways busy
+    garble: (line) => rateNow() === 921600 && line.ops[0] === m.OP.link_source && line.ops.slice(1).includes(m.OP.link_sink),
+  }, async (hst) => {
+    rateNow = () => hst.link.baud;
+    const report = await raiseSpeed(hst, [921600, 500000], FAST);
+    const [a, b] = report.trials;
+    assert.equal(a.committed, false);
+    assert.equal(a.why, 'broke both ways at once');
+    assert.ok(a.brokenDuplex > 0);
+    assert.equal(a.brokenIn + a.brokenOut, 0);           // each way alone passed
+    assert.ok((a.inKBs ?? 0) > 0 && (a.outKBs ?? 0) > 0);
+    assert.equal(b.committed, true);
+    assert.ok((b.duplexKBs ?? 0) > 0 && b.duplexBytes > 0);
+    assert.equal(report.duplexKBs, b.duplexKBs);
+    assert.equal(report.chosen, 500000);
+    assert.match(speedText(report), /duplex KB\/s/);
+    assert.match(speedText(report), /broke both ways at once/);
+    await hst.keepalive();
+  });
+});
+
+/** A link raised to 921600, then every `every`th frame from the probe broken while `line.breaking`.
+ * @param {number} every @param {(hst: import('../src/host.js').Host, line: any) => Promise<void>} body */
+async function raisedInUse(every, body) {
+  /** @type {() => number | null} */ let rateNow = () => 115200;
+  let n = 0;
+  await withLine([], {
+    garble: (line) => rateNow() === 921600 && line.breaking && ++n % every === 0,
+  }, async (hst, line) => {
+    rateNow = () => hst.link.baud;
+    const report = await raiseSpeed(hst, [921600], FAST);
+    assert.equal(report.chosen, 921600);
+    line.breaking = true;
+    await body(hst, line);
+  });
+}
+
+test('in use: 3 broken frames within 5 s step down for the session, which goes on at base', { skip: !haveFake }, () => raisedInUse(4, async (hst) => {
+  const session = hst.session;
+  for (let i = 0; i < 16; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
+  const report = /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
+  assert.equal(hst.link.baud, 115200);
+  assert.equal(report.steppedDown, true);
+  assert.match(report.downWhy, /3 broken frames/);
+  assert.equal(report.chosen, null);
+  assert.equal(report.rate, 115200);
+  assert.match(speedText(report), /stepped down/);
+  assert.equal(hst.session, session);
+  await hst.keepalive();                                  // the lease held: the session goes on
+  const again = await raiseSpeed(hst, [921600], FAST);
+  assert.match(again.trials[0].why, /^stepped down/);
+  assert.equal(again.chosen, null);
+  assert.equal(hst.link.baud, 115200);
+}));
+
+test('in use: a single broken frame does not step down', { skip: !haveFake }, () => raisedInUse(4, async (hst, line) => {
+  for (let i = 0; i < 4; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
+  line.breaking = false;
+  for (let i = 0; i < 10; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
+  const report = /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
+  assert.equal(hst.link.baud, 921600);
+  assert.equal(report.steppedDown, false);
+  assert.equal(line.garbled, 1);
+  assert.equal(hst.link.strikes.length, 1);
+}));
+
+test('in use: no answer at a raised rate falls back well inside the lease and the request goes on', { skip: !haveFake }, async () => {
+  let deaf = false;
+  /** @type {() => number | null} */ let rateNow = () => 115200;
+  await withLine([], {
+    onWrite: () => !(deaf && rateNow() === 921600),      // the probe went back by itself: nothing it hears at 921600
+  }, async (hst) => {
+    rateNow = () => hst.link.baud;
+    const report = await raiseSpeed(hst, [921600], FAST);
+    assert.equal(report.chosen, 921600);
+    hst.link.timeoutMs = 3000;                            // the default: two waits of it would pass a 3 s lease
+    deaf = true;
+    const t0 = performance.now();
+    const r = await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
+    const took = performance.now() - t0;
+    assert.ok(r.succeeded);
+    assert.ok(took < 2200, `took ${took}`);
+    assert.equal(hst.link.baud, 115200);
+    assert.equal(report.lost, true);
+    assert.equal(report.steppedDown, true);
+    assert.match(report.downWhy, /no answer/);
+    await hst.keepalive();
+    const again = await raiseSpeed(hst, [921600], FAST);
+    assert.match(again.trials[0].why, /^stepped down/);
+  }, 3000);
 });
