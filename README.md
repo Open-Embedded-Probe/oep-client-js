@@ -22,8 +22,10 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 - the firmware update: USB DFU (the ESP32-P4) and the Release's firmware-<version>.json;
 - the page: connect, read what the probe declares, edit and save its settings, GPIO and UART, a DFU update.
 
-Tested against oep-client-python's fake probe (99 tests) and scripted devices; the browser transports, DFU and the page
-are not yet checked on hardware.
+The wire is oep-spec's zero-base rewrite of 2026-10-01 (every answer carries its lengths, TLVs have a long form, confirm
+answers the boot_id, `expired`, probe.config's `state` / `unset` / `uart`, the attach reset TLV, capture generations; see
+the changelog). Tested against oep-client-python's fake probe (108 tests) and scripted devices; the browser transports,
+DFU and the page are not yet checked on hardware.
 
 Until the v1 freeze the spec may break and this package follows it at once, with the probe firmware
 ([OpenEmbeddedProbe](https://github.com/Open-Embedded-Probe/oep-probe-arduino)) and
