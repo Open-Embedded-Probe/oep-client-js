@@ -6,11 +6,16 @@
 // uncertainty, the probe's known corrections applied. Stream positions are u64 too (BigInt). Analog values are always
 // raw; the probe's 1st-order scale, its calibration data and its reference are for the host to choose from.
 //
+// Every start begins a new generation (u32, from 1): segment serials and positions count from 0 inside it, and read and
+// release name it, so a read sent for the last capture never returns the next one's bytes (oep-if-capture §3.2). The
+// client keeps it (`LogicCapture.generation`, from start / status / the group's start) and passes it on; `readSegment`
+// takes the segment's own.
+//
 // configure: a TLV the probe cannot honour is refused (rejected unsupported, 0x0B, payload = the tag) when the host
 // marked it critical, and otherwise ignored and listed in the answer's ignored TLV (0x7F, oep-core §2.3).
 
 import * as reg from './registry.js';
-import { Writer, getU16, getU64, text } from './bytes.js';
+import { Writer, getU16, getU32, getU64, text } from './bytes.js';
 import * as m from './message.js';
 import { Failed, ProtocolError, Timeout } from './errors.js';
 import { Interface } from './core.js';
@@ -22,23 +27,35 @@ const GRP = reg.FIXTURE_CAPTURE_GROUP;
 // configure TLVs; bit 7 of a tag = critical (the probe must reject what it cannot do)
 const C = CAP.tlv.configure;
 export const MODE = C.mode, RATE = C.rate, SAMPLES = C.samples, SEGMENTS = C.segments, TRIGGER = C.trigger;
-export const PRETRIGGER = C.pretrigger, FRONTEND = C.frontend;
+export const PRETRIGGER = C.pretrigger;
+/** analog only: the input range per channel */
+export const FRONTEND = ANA.tlv.configure.frontend;
 const A = ANA.tlv.configure_answer;
 export const ACTUAL_RATE = A.actual_rate, LAYOUT = A.layout, ACTUAL_SAMPLES = A.actual_samples;
 export const ACTUAL_SEGMENTS = A.actual_segments, TIMING = A.timing, SCALE = A.scale, BLOCKING = A.blocking_ms;
 export const SKEW = A.skew, FRONTEND_USED = A.frontend_used, REFERENCE = A.reference, RATE_ACCURACY = A.rate_accuracy;
 export const FACTORY = ANA.tlv.calibration_answer.factory, VREFINT = ANA.tlv.calibration_answer.vrefint;
+/** status's TLV: why the state is 6 */
+export const STATUS_ERROR = CAP.tlv.status_answer.error;
+/** a data frame's TLV: its generation (always there in streaming) */
+export const DATA_GENERATION = CAP.tlv.data.generation;
+/** the group's start answer TLV: n × (fn, generation) */
+export const GROUP_GENERATIONS = GRP.tlv.start_answer.generations;
 /** @type {Record<number, string>} */
 export const REFERENCE_SOURCE = Object.fromEntries(Object.entries(ANA.enum.reference_source).map(([k, v]) => [v, k]));
 export const IGNORED = m.TAG_IGNORED;
 export const CRITICAL = m.TAG_CRITICAL;
 export const ONE_SHOT = CAP.enum.mode.one_shot, REPEAT = CAP.enum.mode.repeat, STREAMING = CAP.enum.mode.streaming;
-const T = CAP.enum.trigger;
+const T = ANA.enum.trigger;   // logic has immediate / level / edge; analog adds cross_up / cross_down
 export const IMMEDIATE = T.immediate, LEVEL = T.level, EDGE = T.edge, CROSS_UP = T.cross_up, CROSS_DOWN = T.cross_down;
 /** @type {Record<string, number>} */
 export const STATE = CAP.enum.state;
 /** @type {Record<string, number>} */
 export const STOPPED_REASON = CAP.enum.stopped_reason;
+/** status's flags: dropped, slipped (reset at start) @type {Record<string, number>} */
+export const STATUS_FLAG = CAP.enum.status_flag;
+/** state 6's reason -> its name @type {Record<number, string>} */
+export const ERRORS = Object.fromEntries(Object.entries(CAP.enum.error).map(([k, v]) => [v, k]));
 /** @type {Record<string, number>} */
 export const SEGMENT_FLAG = CAP.enum.segment_flag;
 export const SEGMENT_GAP = SEGMENT_FLAG.gap, SEGMENT_SHORT = SEGMENT_FLAG.short, SEGMENT_SLIPPED = SEGMENT_FLAG.slipped;
@@ -51,8 +68,9 @@ const NO_INDEX = 0xffffffff;
 /** @param {Uint8Array} payload */
 export function tlvs(payload) { return m.splitTlvs(payload); }
 
-/** serial u32, position u64, samples u32, start_ns u64, start_uncertainty_ns u32, trigger_index u32, flags u8 */
-export const SEGMENT_BYTES = 33;
+/** serial u32, position u64, samples u32, start_ns u64, start_uncertainty_ns u32, trigger_index u32, flags u8,
+ * generation u32 (oep-if-capture §2) */
+export const SEGMENT_BYTES = 37;
 
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -64,10 +82,12 @@ export class Segment {
    * @param {bigint} startNs            the first sample's time on the probe's clock (an estimate)
    * @param {number} startUncertaintyNs +- of startNs (a guide, not a promise)
    * @param {number | null} triggerIndex @param {number} flags
+   * @param {number} generation         the start this segment belongs to (read / release name it)
    */
-  constructor(serial, position, samples, startNs, startUncertaintyNs, triggerIndex, flags) {
+  constructor(serial, position, samples, startNs, startUncertaintyNs, triggerIndex, flags, generation = 0) {
     this.serial = serial; this.position = position; this.samples = samples; this.startNs = startNs;
     this.startUncertaintyNs = startUncertaintyNs; this.triggerIndex = triggerIndex; this.flags = flags;
+    this.generation = generation;
   }
 
   /** flags bit0: a gap before this segment (no free segment, or pushed out). */
@@ -81,8 +101,8 @@ export class Segment {
    * @param {m.Reader} rd */
   static read(rd) {
     const serial = rd.u32(), position = rd.u64(), samples = rd.u32(), startNs = rd.u64(), unc = rd.u32();
-    const trig = rd.u32(), flags = rd.u8();
-    return new Segment(serial, position, samples, startNs, unc, trig === NO_INDEX ? null : trig, flags);
+    const trig = rd.u32(), flags = rd.u8(), generation = rd.u32();
+    return new Segment(serial, position, samples, startNs, unc, trig === NO_INDEX ? null : trig, flags, generation);
   }
 
   /** @param {Uint8Array} b */
@@ -187,6 +207,7 @@ export class Received {
     /** @type {[number, number][]} (index in data where it skipped, bytes skipped) */ this.gaps = [];
     /** push frames missing by seq */ this.seqLost = 0;
     this.frames = 0;
+    /** pushes of an earlier generation, dropped */ this.stale = 0;
     this.skipped = 0n;
     /** @type {number | null} */ this.expectSeq = null;
     /** @type {Set<number>} events share the fn's seq (they stay on the link for the caller) */ this.eventSeqs = new Set();
@@ -212,15 +233,18 @@ export class Received {
 /** @param {Uint8Array} frame */
 const frameFn = (frame) => getU16(frame, 1);
 
-/** @typedef {{ seq: number, position: bigint, data: Uint8Array }} Push */
+/** A data frame decoded (core §11.2): generation from its TLV 0x01, null when the frame carries none.
+ * @typedef {{ fn: number, seq: number, position: bigint, data: Uint8Array, generation: number | null }} Push */
 
-/** @param {Uint8Array} f @returns {Push} */
-function unpackPush(f) {
-  // the core header is role fn seq; the capture's payload is position(u64) then data (standard position stream)
-  return { seq: getU16(f, 3), position: getU64(f, 5), data: f.slice(13) };
+/** A data frame (core §11.2: role fn seq position(u64) len(u16) data [TLV]). @param {Uint8Array} f @returns {Push} */
+export function unpackPush(f) {
+  const rd = new m.Reader(f.slice(13));
+  const data = rd.counted(2);
+  const g = rd.tail().get(DATA_GENERATION);
+  return { fn: getU16(f, 1), seq: getU16(f, 3), position: getU64(f, 5), data, generation: g && g.length >= 4 ? getU32(g) : null };
 }
 
-/** Remove this fn's data pushes (role 0x06) from the link: [{seq, position, data}], oldest first.
+/** Remove this fn's data pushes (role 0x06) from the link: [{seq, position, data, generation}], oldest first.
  * @param {{ pushes: Uint8Array[] }} link @param {number} fn */
 export function takePushes(link, fn) {
   /** @type {Uint8Array[]} */ const mine = [];
@@ -231,9 +255,10 @@ export function takePushes(link, fn) {
 }
 
 /**
- * A capture track's event (oep-if-capture §3.4) decoded. Bytes after the known fields (a later revision's) are
- * skipped; a kind this client does not know comes back with only its payload.
- * @typedef {{ fn: number, seq: number, kind: number, payload: Uint8Array, segment?: Segment, reason?: number,
+ * A capture track's event (oep-if-capture §3.4) decoded: `kind fixed-part [TLV]`. Bytes after the known fields (a
+ * later revision's) are skipped; a kind this client does not know comes back with only its payload. error: a stopped
+ * event's reason 3 says why (the same values as status's error).
+ * @typedef {{ fn: number, seq: number, kind: number, payload: Uint8Array, segment?: Segment, reason?: number, error?: number,
  *   serial?: number, triggerIndex?: number | null, triggerNs?: bigint | null, triggerFn?: number }} CaptureEvent
  */
 
@@ -250,7 +275,7 @@ export function parseCaptureEvent(frame) {
   const e = parseEvent(frame);
   const rd = new m.Reader(e.payload);
   if (e.kind === EVENT_SEGMENT) e.segment = Segment.read(rd);
-  else if (e.kind === EVENT_STOPPED) e.reason = rd.u8();
+  else if (e.kind === EVENT_STOPPED) { e.reason = rd.u8(); if (rd.left) e.error = rd.u8(); }
   else if (e.kind === EVENT_TRIGGERED) {
     e.serial = rd.u32();
     const i = rd.u32();
@@ -270,11 +295,17 @@ export function parseGroupEvent(frame) {
     e.triggerFn = rd.u16();
     const ns = rd.u64();
     e.triggerNs = ns === NO_TIME ? null : ns;
-  } else if (e.kind === GROUP_EVENT_STOPPED) e.reason = rd.u8();
+  } else if (e.kind === GROUP_EVENT_STOPPED) { e.reason = rd.u8(); if (rd.left) e.error = rd.u8(); }
   return e;
 }
 
-/** @typedef {{ state: number, segmentsDone: number, writePos: bigint, flags: number }} CaptureStatus */
+/**
+ * status's answer (oep-if-capture §3.2). segmentsDone: segments finished; writePos: bytes taken so far (dropped ones
+ * counted: the next byte's position); flags: bit0 dropped, bit1 slipped - since start; generation: the current
+ * capture's; error: state 6's reason (ERRORS names it), else null.
+ * @typedef {{ state: number, segmentsDone: number, writePos: bigint, flags: number, generation: number, error: number | null,
+ *   dropped: boolean, errorName: string | null }} CaptureStatus
+ */
 
 /**
  * @typedef {object} ConfigureOptions
@@ -304,6 +335,7 @@ export class LogicCapture extends Interface {
     super(hst, fn, name, prefix);
     /** @type {Config | null} */ this.config = null;
     /** @type {number | null} performance.now() at the last start() */ this.armedMs = null;
+    /** @type {number | null} the current capture's generation (start / status / the group's start) */ this.generation = null;
   }
 
   /** @returns {boolean} */
@@ -326,7 +358,7 @@ export class LogicCapture extends Interface {
     put(RATE, new Writer().u32(rate).done());
     if (samples !== undefined) put(SAMPLES, new Writer().u32(samples).done());
     if (segments !== undefined) put(SEGMENTS, new Writer().u32(segments).done());
-    if (trigger !== undefined) put(TRIGGER, new Writer().u8(trigger[0]).u8(trigger[1]).u16(trigger[2]).done());
+    if (trigger !== undefined) put(TRIGGER, new Writer().u8(trigger[0]).u8(trigger[1]).u32(trigger[2]).done());   // type, role, value (u32)
     if (pretrigger !== undefined) put(PRETRIGGER, new Writer().u32(pretrigger).done());
     const fe = frontends instanceof Map ? [...frontends] : Object.entries(frontends ?? {}).map(([k, v]) => [Number(k), v]);
     for (const [role, f] of fe.sort((a, b) => a[0] - b[0])) put(FRONTEND, Uint8Array.of(role, f));   // analog: the input range
@@ -356,8 +388,10 @@ export class LogicCapture extends Interface {
 
   /**
    * Streaming: collect data pushes until `nbytes` have arrived or `ms` have passed (at least one is needed). A
-   * position that does not follow the previous push is a probe-side drop (a gap); a seq that skips is a lost frame.
-   * The subscription ends with the lock, so the lock is kept alive every `keepaliveMs` while collecting.
+   * position that does not follow the previous push is a probe-side drop (a gap); a seq that skips is a lost frame. A
+   * push of another generation than this capture's (a leftover of the start before, oep-if-capture §3.4) is dropped
+   * (Received.stale). The subscription ends with the lock, so the lock is kept alive every `keepaliveMs` while
+   * collecting.
    * @param {{ ms?: number, nbytes?: number, into?: Received, keepaliveMs?: number }} opts
    */
   async stream({ ms, nbytes, into, keepaliveMs = 1000 } = {}) {
@@ -370,13 +404,17 @@ export class LogicCapture extends Interface {
     let first = [];
     for (;;) {
       for (const e of link.events) if (frameFn(e) === this.fn) got.eventSeqs.add(getU16(e, 3));
-      for (const { seq, position, data } of [...first, ...takePushes(link, this.fn)]) {
+      for (const { seq, position, data, generation } of [...first, ...takePushes(link, this.fn)]) {
         while (got.expectSeq !== null && got.expectSeq !== seq) {
           if (got.eventSeqs.has(got.expectSeq)) got.eventSeqs.delete(got.expectSeq);
           else got.seqLost++;
           got.expectSeq = (got.expectSeq + 1) & 0xffff;
         }
         got.expectSeq = (seq + 1) & 0xffff;
+        if (generation !== null && this.generation !== null && generation !== this.generation) {
+          got.stale++;                                                  // the generation before: not this capture's bytes
+          continue;
+        }
         if (got.start === null) got.start = position;
         else {
           const skipped = position - /** @type {bigint} */ (got.reached);   // u64 positions: no wrap
@@ -411,9 +449,12 @@ export class LogicCapture extends Interface {
     return got;
   }
 
-  /** -> blockingMs (0: the probe keeps answering while it captures). */
+  /** -> blockingMs (0: the probe keeps answering while it captures). this.generation: the new capture's. */
   async start() {
-    const blocking = new m.Reader((await this.call(LogicCapture.START)).payload).u32();
+    const rd = new m.Reader((await this.call(LogicCapture.START)).payload);
+    const blocking = rd.u32();
+    this.generation = rd.u32();
+    rd.tail();
     this.armedMs = now();
     return blocking;
   }
@@ -423,23 +464,54 @@ export class LogicCapture extends Interface {
   /** Waiting for the trigger: start now (the segment's triggerIndex marks where). */
   async force() { await this.call(LogicCapture.FORCE); }
 
-  /** @returns {Promise<CaptureStatus>} */
+  /** Lock-free; it also brings the generation a host that did not start the capture needs for read.
+   * @returns {Promise<CaptureStatus>} */
   async status() {
     const rd = new m.Reader((await this.call(LogicCapture.STATUS, new Uint8Array(), { locked: false })).payload);
-    return { state: rd.u8(), segmentsDone: rd.u32(), writePos: rd.u64(), flags: rd.u8() };
+    const state = rd.u8(), segmentsDone = rd.u32(), writePos = rd.u64(), flags = rd.u8(), generation = rd.u32();
+    const err = rd.tail().get(STATUS_ERROR);
+    const error = err && err.length ? err[0] : null;
+    this.generation = generation;
+    return { state, segmentsDone, writePos, flags, generation, error, dropped: !!(flags & STATUS_FLAG.dropped),
+      errorName: error === null ? null : (ERRORS[error] ?? `error 0x${error.toString(16)}`) };
   }
 
-  /** Repeat: segments up to `serial` may be reused. @param {number} serial */
-  async release(serial) { await this.call(LogicCapture.RELEASE, new Writer().u32(serial).done()); }
+  /** The generation to name in a request: the one given, else this capture's (a host that did not start it asks status).
+   * @param {number | null | undefined} generation */
+  async generationOf(generation) {
+    if (generation != null) return generation;
+    if (this.generation === null) await this.status();
+    return /** @type {number} */ (this.generation);
+  }
 
-  /** @param {number} fromSerial */
-  async segments(fromSerial = 0) {
+  /** Repeat: segments up to and including `serial` may be reused (of this generation; another one is rejected
+   * Unavailable cause 6). In state 5 (no free segment) the probe goes on by itself once there is room.
+   * @param {number} serial @param {number | null} [generation] */
+  async release(serial, generation = null) {
+    await this.call(LogicCapture.RELEASE, new Writer().u32(await this.generationOf(generation)).u32(serial).done());
+  }
+
+  /** One answer's segment records from `fromSerial` on. @param {number} fromSerial
+   * @returns {Promise<{ segments: Segment[], more: boolean }>} */
+  async segmentsPage(fromSerial = 0) {
     const rd = new m.Reader((await this.call(LogicCapture.SEGMENTS, new Writer().u32(fromSerial).done(), { locked: false })).payload);
-    const n = rd.u8();
-    const out = [];
-    for (let i = 0; i < n; i++) out.push(Segment.read(rd.element()));
+    const more = rd.u8(), n = rd.u8();
+    const segments = [];
+    for (let i = 0; i < n; i++) segments.push(Segment.read(rd.element()));
     rd.tail();
-    return out;
+    return { segments, more: !!more };
+  }
+
+  /** Every segment record from `fromSerial` on, following `more`. @param {number} fromSerial */
+  async segments(fromSerial = 0) {
+    /** @type {Segment[]} */
+    const out = [];
+    for (;;) {
+      const { segments, more } = await this.segmentsPage(fromSerial);
+      out.push(...segments);
+      if (!more || !segments.length) return out;
+      fromSerial = (segments[segments.length - 1].serial + 1) >>> 0;
+    }
   }
 
   /** Poll status until the one-shot is done (or failed). -> its segments. Waiting for a trigger may take longer than
@@ -454,30 +526,44 @@ export class LogicCapture extends Interface {
         await this.host.keepalive();
         kept = now();
       }
-      const { state } = await this.status();
+      const st = await this.status();
+      const { state } = st;
       if (state === STATE.done) return this.segments();
-      if (state === STATE.error) throw new Failed(null, 'the capture stopped with an error');
+      if (state === STATE.error) throw new Failed(null, `the capture stopped with an error (${st.errorName ?? 'unknown'})`);
       if (!known.has(state)) throw new ProtocolError(`capture state ${state} is not one this client knows`);
       await sleep(2);
     }
     throw new Timeout('capture did not finish');
   }
 
+  /** the answer's position(u64) flags(u8) len(u32) in front of the data */
+  static READ_HEAD = 13;
+
+  /** The data of a read answer: position flags len(u32) data [TLV]. @param {Uint8Array} payload */
+  static readData(payload) {
+    const rd = new m.Reader(payload);
+    rd.u64(); rd.u8();
+    return rd.counted(4);
+  }
+
   /**
-   * Bytes [position, position+length) of the stream, pipelined in frame-sized reads. The reads need no lock and go
-   * without the session id, so a batch whose answers did not come is simply sent again (reads are not deduplicated,
-   * oep-core §5.2). They do not extend the lease: a long read sends a keepalive between batches.
-   * @param {bigint | number} position @param {number} length
+   * Bytes [position, position+length) of the stream, pipelined in frame-sized reads. `generation`: the capture they
+   * belong to (default: the one this client saw at start / status); the probe refuses another one as Unavailable
+   * (cause 6), so an old read never gets the next capture's bytes. The reads need no lock and go without the session
+   * id, so a batch whose answers did not come is simply sent again (reads are not deduplicated, oep-core §5.2). They
+   * do not extend the lease: a long read sends a keepalive between batches.
+   * @param {bigint | number} position @param {number} length @param {number | null} [generation]
    */
-  async read(position, length) {
+  async read(position, length, generation = null) {
     const pos = BigInt(position);
-    const chunk = Math.max(1, (await this.host.confirmed()).maxFrame - 16);
+    const g = await this.generationOf(generation);
+    const chunk = Math.max(1, (await this.host.confirmed()).maxFrame - m.RESULT_HEADER - LogicCapture.READ_HEAD);
     const offsets = [];
     for (let off = 0; off < length; off += chunk) offsets.push(off);
     const out = new Uint8Array(length);
     const B = LogicCapture.BATCH;
     /** @param {bigint} at @param {number} n */
-    const body = (at, n) => new Writer().u64(at).u32(n).done();
+    const body = (at, n) => new Writer().u32(g).u64(at).u32(n).done();
     for (let at = 0; at < offsets.length; at += B) {
       if (at && this.host.session !== null) await this.host.keepalive();
       const batch = offsets.slice(at, at + B);
@@ -496,12 +582,12 @@ export class LogicCapture extends Interface {
       for (let i = 0; i < batch.length; i++) {
         const off = batch[i];
         const want = Math.min(chunk, length - off);
-        let data = replies[i].payload.subarray(9);            // after position(u64) flags(u8)
+        let data = LogicCapture.readData(replies[i].payload);
         let have = Math.min(data.length, want);
         out.set(data.subarray(0, have), off);
         while (have < want) {                                  // a short answer: read on from where it stopped
           const from = pos + BigInt(off + have);
-          data = (await this.call(LogicCapture.READ, body(from, want - have), { locked: false })).payload.subarray(9);
+          data = LogicCapture.readData((await this.call(LogicCapture.READ, body(from, want - have), { locked: false })).payload);
           if (!data.length) throw new ProtocolError(`read at ${from} returned nothing`);
           const n = Math.min(data.length, want - have);
           out.set(data.subarray(0, n), off + have);
@@ -512,11 +598,11 @@ export class LogicCapture extends Interface {
     return out;
   }
 
-  /** The segment's bytes; every onCapture(host) callback gets them as a CaptureRecord.
+  /** The segment's bytes (of its generation); every onCapture(host) callback gets them as a CaptureRecord.
    * @param {Segment} segment */
   async readSegment(segment) {
     const c = this.cfg;
-    const data = await this.read(segment.position, segmentBytes(c, segment.samples));
+    const data = await this.read(segment.position, segmentBytes(c, segment.samples), segment.generation || null);
     const list = recorders.get(this.host);
     if (list && list.length) {
       /** @type {CaptureRecord} */
@@ -609,8 +695,9 @@ function storedZip(files) {
 /**
  * What the probe knows for turning an analog value into a voltage (oep-if-capture §3.8), raw: the probe applies none
  * of it. factory: {frontend (null: any), scheme (how to read raw), raw}; vrefint: the internal reference measured
- * after the last start.
- * @typedef {{ factory: { frontend: number | null, scheme: string, raw: Uint8Array }[], vrefint: { raw: number, ns: bigint } | null }} Calibration
+ * after the last start, with nominalMv its nominal voltage (what the supply is worked back from).
+ * @typedef {{ factory: { frontend: number | null, scheme: string, raw: Uint8Array }[],
+ *   vrefint: { raw: number, ns: bigint, nominalMv: number } | null }} Calibration
  */
 
 /** Basic analog capture (oep.fixture.analog): the same operations as the logic one; values are raw (§1.2). */
@@ -654,10 +741,11 @@ export class AnalogCapture extends LogicCapture {
     const out = { factory: [], vrefint: null };
     for (const [tag, v] of tlvs((await this.call(AnalogCapture.CALIBRATION, new Uint8Array(), { locked: false })).payload)) {
       const rd = new m.Reader(v);
-      if (tag === FACTORY) {
-        const fe = rd.u8(), n = rd.u8();
-        out.factory.push({ frontend: fe === 0xff ? null : fe, scheme: text(rd.bytes(n)), raw: rd.rest() });
-      } else if (tag === VREFINT) out.vrefint = { raw: rd.u32(), ns: rd.u64() };
+      if (tag === FACTORY) {                                   // frontend scheme_len scheme raw_len(u16) raw
+        const fe = rd.u8();
+        const scheme = text(rd.counted(1));
+        out.factory.push({ frontend: fe === 0xff ? null : fe, scheme, raw: rd.counted(2) });
+      } else if (tag === VREFINT) out.vrefint = { raw: rd.u32(), ns: rd.u64(), nominalMv: rd.u32() };   // raw ns nominal_mv
     }
     return out;
   }
@@ -679,7 +767,11 @@ export class CaptureGroup extends Interface {
   static EVENT_TRIGGERED = GROUP_EVENT_TRIGGERED; static EVENT_STOPPED = GROUP_EVENT_STOPPED;
   static NO_TIME = NO_TIME;
 
-  /** Bind these (configured) tracks; [] unbinds. `trigger`: the track whose configure trigger starts them all.
+  /** @type {Map<number, number>} fn -> the generation the last start gave each track */
+  generations = new Map();
+
+  /** Bind these (configured) tracks; [] unbinds. `trigger`: the track whose configure trigger starts them all (a
+   * critical TLV). An fn not in the group's `tracks` is rejected Unsupported (tag null, `.fn` names it).
    * @param {LogicCapture[]} tracks @param {LogicCapture | null} trigger */
   async bind(tracks, trigger = null) {
     const w = new Writer().u8(tracks.length);
@@ -688,13 +780,21 @@ export class CaptureGroup extends Interface {
     await this.call(CaptureGroup.BIND, w.done());
   }
 
-  /** -> {blockingMs, startNs: the group's start}. `tracks`: whose armedMs to set (for records).
+  /** -> {blockingMs, startNs: the group's start}. `tracks`: whose armedMs and generation to set (the answer's TLV
+   * generations names each track's new generation; this.generations keeps them by fn).
    * @param {LogicCapture[]} tracks */
   async start(tracks = []) {
     const rd = new m.Reader((await this.call(CaptureGroup.START)).payload);
     const blockingMs = rd.u32(), startNs = rd.u64();
+    const gens = rd.tail().get(GROUP_GENERATIONS) ?? new Uint8Array();
+    this.generations = new Map();
+    for (let at = 0; at + 6 <= gens.length; at += 6) this.generations.set(getU16(gens, at), getU32(gens, at + 2));
     const t = now();
-    for (const tr of tracks) tr.armedMs = t;
+    for (const tr of tracks) {
+      tr.armedMs = t;
+      const g = this.generations.get(tr.fn);
+      if (g !== undefined) tr.generation = g;
+    }
     return { blockingMs, startNs };
   }
 
@@ -706,6 +806,7 @@ export class CaptureGroup extends Interface {
   async status() {
     const rd = new m.Reader((await this.call(CaptureGroup.STATUS, new Uint8Array(), { locked: false })).payload);
     const state = rd.u8(), start = rd.u64(), trig = rd.u64(), fn = rd.u16();
+    rd.tail();
     return { state, startNs: start === NO_TIME ? null : start, triggerNs: trig === NO_TIME ? null : trig, triggerFn: fn || null };
   }
 
