@@ -181,7 +181,7 @@ test('uart configure with a format, reads that do not consume, write, marks', { 
     await assert.rejects(io.uart.configure(9600, 0x01), (e) => e instanceof Unsupported && e.tag === 0x81);   // 7N1: defined, not declared
     await assert.rejects(io.uart.configure(9600, 0x80), (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);   // an undefined bit
     await assert.rejects(io.uart.configure(50_000_000), (e) => e instanceof Unsupported && e.tag === null);   // more than 5 % off
-    assert.deepEqual(await io.uart.status(), { configured: true, baud: io.baud, format: 0b010100 });
+    assert.deepEqual(await io.uart.status(), { configured: 'session', baud: io.baud, format: 0b010100, isDefault: false });
     assert.ok((await io.uart.write(utf8('abc'))) > 0);
     await io.uart.mark(7);
     assert.equal((await io.uart.marks()).at(-1)?.detail, 7);
@@ -227,9 +227,9 @@ test('the uart stream is the plan\'s and its position never goes back (fixture Â
     const uart = await FixtureUart.open(hst);
     await assert.rejects(uart.configure(115200), (e) => e instanceof Unavailable && e.cause === 'wrong_state');   // no plan: no stream
     await assert.rejects(uart.read(), Unavailable);
-    assert.equal((await uart.status()).configured, false);
+    assert.equal((await uart.status()).configured, 'default');
     await planApply(hst, [[uart.fn, 1, 20]]);                              // RX only: the stream is there, 115200 8N1 by default
-    assert.deepEqual(await uart.status(), { configured: false, baud: 115200, format: 0 });
+    assert.deepEqual(await uart.status(), { configured: 'default', baud: 115200, format: 0, isDefault: true });
     await uart.mark(1);
     const before = (await uart.read(PositionStream.FROM_NOW, 0, 0)).start;
     await planRelease(hst, [uart.fn]);

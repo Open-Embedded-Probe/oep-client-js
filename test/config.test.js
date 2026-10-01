@@ -222,13 +222,19 @@ test('the uart item sets the UART when its plan comes; a session configure wins 
   assert.equal(h, (await cfg.get()).hash);
   assert.deepEqual((await cfg.items()).filter((i) => i instanceof Uart), [new Uart({ fn: uart.fn, baud: 9600, format: fmt })]);
   const { planApply, planRelease } = await import('../src/core.js');
+  assert.equal((await uart.status()).configured, 'default');              // no plan yet: nothing in force
   await planApply(hst, [[uart.fn, 1, 20], [uart.fn, 2, 21]]);
-  assert.deepEqual(await uart.status(), { configured: true, baud: 9600, format: fmt });
+  assert.deepEqual(await uart.status(), { configured: 'item', baud: 9600, format: fmt, isDefault: false });
   await uart.configure(115200);
-  assert.equal((await uart.status()).baud, Math.floor(80_000_000 / Math.floor(80_000_000 / 115200)));
+  const st = await uart.status();
+  assert.deepEqual([st.configured, st.baud], ['session', Math.floor(80_000_000 / Math.floor(80_000_000 / 115200))]);
   await planRelease(hst, [uart.fn]);
   await planApply(hst, [[uart.fn, 1, 20]]);
   assert.equal((await uart.status()).baud, 9600);                          // the item again
+  assert.equal((await uart.status()).configured, 'item');
+  await cfg.unset([['uart', uart.fn]]);
+  assert.deepEqual(await uart.status(), { configured: 'default', baud: 115200, format: 0, isDefault: true });   // the item went
+  await cfg.set([new Uart({ fn: uart.fn, baud: 9600, format: fmt })]);
   await assert.rejects(cfg.set([new Uart({ fn: uart.fn, baud: 50_000_000 })]), Unsupported);   // more than 5 % off
   await cfg.unset([['uart', uart.fn]]);
   assert.ok(!(await cfg.items()).some((i) => i instanceof Uart));
