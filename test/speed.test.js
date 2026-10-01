@@ -5,8 +5,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as m from '../src/message.js';
-import { Rejected } from '../src/errors.js';
-import { Link, SWITCH_SETTLE_MS } from '../src/link.js';
+import { Rejected, Timeout } from '../src/errors.js';
+import { Link, SWITCH_SETTLE_MS, IDLE_MAX_MS, KEEPALIVE_MS, OPEN_RETRY_MS } from '../src/link.js';
+import { getU32 } from '../src/bytes.js';
 import { Host } from '../src/host.js';
 import { connect } from '../src/open.js';
 import * as cobs from '../src/cobs.js';
@@ -337,4 +338,103 @@ test('a broken frame with no session is noise: skipped, the request resent only 
   assert.deepEqual(writes.map((w) => w.corr), [5, 5]);
   assert.equal(link.stats.corrupt, 0);
   assert.ok(link.stats.noise > 0);
+});
+
+/** @param {number} ms */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('raiseSpeed commits the idle maximum by default, and for 0', { skip: !haveFake }, async () => {
+  /** @type {number[]} */ const idles = [];
+  await withLine([], {
+    onWrite(msg) {
+      const req = m.Request.unpack(msg);
+      if (req.op === m.OP.port_speed && req.payload[5] === 1) idles.push(getU32(req.payload, 8));   // step commit
+      return true;
+    },
+  }, async (hst) => {
+    await raiseSpeed(hst, [750000], FAST);
+    await raiseSpeed(hst, [500000], { ...FAST, idleMs: 0 });
+    await raiseSpeed(hst, [500000], { ...FAST, idleMs: 600000 });
+    await raiseSpeed(hst, [500000], { ...FAST, idleMs: 1500 });
+  });
+  assert.equal(IDLE_MAX_MS, 3000);
+  assert.deepEqual(idles, [3000, 3000, 3000, 1500]);
+});
+
+test('a raised link keeps the line alive when quiet', { skip: !haveFake }, async () => {
+  let keepalives = 0;
+  await withLine([], {
+    onWrite(msg) { if (m.Request.unpack(msg).op === m.OP.keepalive) keepalives++; return true; },
+  }, async (hst) => {
+    await raiseSpeed(hst, [750000], FAST);
+    assert.equal(await hst.link.keepAlive(), false);              // just spoke: nothing to do
+    for (let i = 0; i < 3; i++) {                                  // 3.6 s in all, past the probe's idle limit
+      await sleep(KEEPALIVE_MS + 200);
+      assert.equal(await hst.link.keepAlive(), true);
+    }
+    assert.equal(keepalives, 3);
+    await sleep(KEEPALIVE_MS + 200);
+    await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array(), { locked: false });   // a keepalive first
+    assert.equal(keepalives, 4);
+    assert.equal(hst.link.baud, 750000);
+    assert.equal(hst.link.speedLost, 0);
+    await hst.end();
+    await sleep(KEEPALIVE_MS + 200);
+    assert.equal(await hst.link.keepAlive(), false);              // back at the boot speed: none
+  });
+});
+
+/**
+ * The fake probe over TCP seen as a serial port this host opened, deaf (writes dropped) until `deafMs` has passed:
+ * the rate a host that died left, going back by itself.
+ * @param {number} deafMs
+ */
+async function deafSerial(deafMs) {
+  const fake = await startFake(['--profile', 'esp32-v003'], 'cobs');
+  const inner = await tcpTransport({ port: fake.port, framing: 'cobs', baudRate: 115200 });
+  const t0 = performance.now();
+  let dropped = 0;
+  /** @type {import('../src/link.js').Transport} */
+  const transport = {
+    ...inner,
+    kind: 'serial',
+    async write(data) {
+      if (performance.now() - t0 < deafMs) { dropped++; return; }
+      await inner.write(data);
+    },
+  };
+  return { fake, transport, t0, dropped: () => dropped };
+}
+
+test('connect on a serial port waits out a raised rate left over', { skip: !haveFake }, async () => {
+  const { fake, transport, t0, dropped } = await deafSerial(2500);
+  try {
+    const hst = await connect(transport, { timeoutMs: 1000 });
+    const took = performance.now() - t0;
+    assert.ok(took >= 2400 && took < OPEN_RETRY_MS + 2000, `took ${took}`);
+    assert.ok(dropped() >= 4);                                     // confirms every 0.5 s
+    assert.ok(hst.limits);
+    await hst.link.close();
+  } finally {
+    fake.stop();
+  }
+});
+
+test('connect on a serial port gives up after about 4 s; other transports keep their timeout', { skip: !haveFake }, async () => {
+  const { fake, transport, t0 } = await deafSerial(60000);
+  try {
+    await assert.rejects(connect(transport, { timeoutMs: 1000 }), (e) => e instanceof Timeout);
+    const took = performance.now() - t0;
+    assert.ok(took >= OPEN_RETRY_MS - 100 && took < OPEN_RETRY_MS + 3000, `took ${took}`);
+  } finally {
+    fake.stop();
+  }
+  const other = await deafSerial(60000);
+  try {
+    const t1 = performance.now();
+    await assert.rejects(connect({ ...other.transport, kind: 'tcp' }, { timeoutMs: 300 }), (e) => e instanceof Timeout);
+    assert.ok(performance.now() - t1 < 3000);                      // the confirm, its resend: no 4 s retry
+  } finally {
+    other.fake.stop();
+  }
 });

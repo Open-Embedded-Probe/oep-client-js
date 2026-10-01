@@ -51,6 +51,9 @@ export class Host {
     /** @type {number | null} the lease the last open gave (named by Expired) */ this.leaseMs = null;
     if (link && 'corrSource' in link) link.corrSource = () => this.nextCorr();   // the link's own confirms (port_speed)
     if (link && 'held' in link) link.held = () => this.session !== null;   // a held serial port: a broken frame is resent at once
+    if (link && 'keepaliveFrame' in link) {   // raised (port_speed): the link keeps the line alive in this session
+      link.keepaliveFrame = () => new m.Request(this.nextCorr(), m.CORE_FN, m.OP.keepalive, new Uint8Array(), this.session).pack();
+    }
   }
 
   nextCorr() { this.corr = (this.corr % 0xffff) + 1; return this.corr; }

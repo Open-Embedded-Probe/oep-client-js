@@ -15,6 +15,7 @@ import * as m from './message.js';
 import * as core from './core.js';
 import { getU32 } from './bytes.js';
 import { Rejected, Timeout } from './errors.js';
+import { IDLE_MAX_MS } from './link.js';
 
 const OP_PORT_SPEED = reg.CORE.op.port_speed;
 const STEP = reg.CORE.enum.port_speed_step;
@@ -114,14 +115,16 @@ async function verify(hst, rate, trial, verifyBytes, verifySeconds, inflightAske
  * port_speed (oep-core §3.5), opt-in: try `rates` in order on the UART bridge this host opened, and commit the first
  * that passes; a rate the probe's UART cannot make is skipped. The session must be open (the rate lasts as long as it
  * does). verifyMs: how long the probe waits for the commit (default verifySeconds + 1.5 s, at most 65535). idleMs: once
- * committed, the probe reverts after this long with no good frame (0: never; the session's end reverts anyway). port:
+ * committed, the probe reverts after this long with no good frame (default and at most port_speed_idle_max_ms, 3000;
+ * 0 and anything longer mean that maximum; the link keeps the line alive meanwhile, Link.keepAlive). port:
  * the transport index (default: the probe's first UART bridge). A link that cannot change its rate (USB, a broker's
  * TCP) and a probe without the feature are reported not supported and stay at their speed.
  * @param {import('./host.js').Host} hst @param {number[]} rates
  * @param {{ verifyBytes?: number, verifySeconds?: number, verifyMs?: number, idleMs?: number, port?: number }} [opts]
  * @returns {Promise<SpeedReport>}
  */
-export async function raiseSpeed(hst, rates, { verifyBytes = 32768, verifySeconds = 1, verifyMs, idleMs = 0, port } = {}) {
+export async function raiseSpeed(hst, rates, { verifyBytes = 32768, verifySeconds = 1, verifyMs, idleMs = IDLE_MAX_MS, port } = {}) {
+  idleMs = idleMs > 0 && idleMs <= IDLE_MAX_MS ? idleMs : IDLE_MAX_MS;
   const link = hst.link;
   const base = link.baseBaud;
   /** @type {SpeedReport} */
