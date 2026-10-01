@@ -4,7 +4,10 @@
 //   list request : flags(u8: bit0 exact) first(u16) prefix_len(u8) prefix
 //   list result  : total(u16) count(u8) count x (len(u8) entry) [TLV]     oep.core (fn 0) is the first entry
 //   list entry   : fn(u16) instance(u16) revision(u8) flags(u8) name_len(u8) name
-//   describe     : request fn(u16) first(u16); result more(u8) then TLVs
+//   describe     : request fn(u16) first(u16); result more(u8) then TLVs (tag u8, len u8 or 0xFF + u16, value;
+//                  tag bit 7 = critical). A describe is declarations only (core §7.3): the host caches it while the
+//                  probe's boot_id stays the same.
+//   channel_group: group(u8) n(u8) then n x (role(u8), channel(u16)): a fixed pin set (core §7.4)
 
 import * as reg from './registry.js';
 import { Writer, getU16, getU32, utf8 } from './bytes.js';
@@ -41,6 +44,16 @@ export function unpackListResult(payload) {
 
 /** @param {number} fn @param {number} first */
 export function packDescribeRequest(fn, first) { return new Writer().u16(fn).u16(first).done(); }
+
+/** A channel_group value (core §7.4: group(u8) n(u8) n x (role(u8) channel(u16))) -> { group, pins }.
+ * @param {Uint8Array} v @returns {{ group: number, pins: [number, number][] }} */
+export function unpackChannelGroup(v) {
+  /** @type {[number, number][]} */
+  const pins = [];
+  const n = v.length >= 2 ? v[1] : 0;
+  for (let i = 0; i < n && 2 + 3 * i + 3 <= v.length; i++) pins.push([v[2 + 3 * i], getU16(v, 3 + 3 * i)]);
+  return { group: v[0], pins };
+}
 
 /** @param {number} base @param {Uint8Array} bitmap */
 export function bitmapToChannels(base, bitmap) {
@@ -85,10 +98,8 @@ export function decodeDescription(tlvs) {
       const role = v[0], base = getU16(v, 1);
       d.roles.set(role, [...(d.roles.get(role) ?? []), ...bitmapToChannels(base, v.slice(3))]);
     } else if (t === COMMON.channel_group) {
-      /** @type {[number, number][]} */
-      const pins = [];
-      for (let i = 1; i + 3 <= v.length; i += 3) pins.push([v[i], getU16(v, i + 1)]);
-      d.groups.set(v[0], pins);
+      const { group, pins } = unpackChannelGroup(v);
+      d.groups.set(group, pins);
     } else if (t === COMMON.max_clock_hz) d.maxClockHz = getU32(v);
     else if (t === COMMON.min_clock_hz) d.minClockHz = getU32(v);
     else if (t === COMMON.max_length) d.maxLength = getU16(v);

@@ -5,9 +5,10 @@
 //             role(0x81) corr(u16) fn(u16) op(u8) session_id(u32) payload     role bit 7 = session_id present
 //   result  : role(0x02) corr(u16) resolution(u8) detail(u8) payload
 //
-// After a result's fixed part come TLVs (tag u8, len u8, value); a host skips tags it does not know. A request may end
-// with TLVs; tag bit 7 = critical. Fixed forms grow at their end and readers skip what they do not know (core §2.3);
-// an answer list puts each element's length first.
+// After a result's fixed part (and any counted list or length-prefixed data) come TLVs (tag u8, len u8, value; a len
+// byte of 0xFF means a u16 len follows, for values of 255 bytes and more - core §2.2); a host skips tags it does not
+// know. A request may end with TLVs; tag bit 7 = critical. Fixed forms grow at their end and readers skip what they do
+// not know (core §2.3); an answer list puts each element's length first; every container knows its length.
 
 import * as reg from './registry.js';
 import { getI32, getU16, getU32, getU64, text, utf8 } from './bytes.js';
@@ -25,6 +26,10 @@ export const REJECT = reg.REJECT_REASONS;
 export const REJECT_NAMES = Object.fromEntries(Object.entries(REJECT).map(([k, v]) => [v, k.replace(/_/g, ' ')]));
 
 export const TAG_CRITICAL = reg.TAG_CRITICAL, TAG_IGNORED = reg.TAG_IGNORED, TAG_INVALID = reg.TAG_INVALID;
+/** The rejected unsupported payload's first byte for a fixed-part value (core §4.3); never a TLV tag. */
+export const TAG_FIXED = reg.TAG_RESERVED_ZERO;
+/** The len byte that says a u16 len follows (core §2.2), and the longest value the short form carries. */
+export const TLV_LEN_LONG = reg.TLV_LEN_LONG, TLV_SHORT_MAX = reg.TLV_LEN_LONG - 1;
 
 export const CORE_FN = 0;
 export const OP = reg.CORE.op;
@@ -36,6 +41,8 @@ export class OepError extends Error {}
 export class ProtocolError extends OepError {}
 /** A payload shorter than its fixed part, or a truncated TLV (a broken result). */
 export class ShortPayload extends ProtocolError {}
+/** A TLV that is not encoded the one way core §2.2 allows (a value under 255 bytes in the long form). */
+export class BadTlv extends ProtocolError {}
 
 export class Request {
   /** @param {number} corr @param {number} fn @param {number} op @param {Uint8Array} payload @param {number | null} session */
@@ -105,19 +112,22 @@ export class Result {
 
 // ---- TLVs ---------------------------------------------------------------------------------------------------
 
-/** One TLV; `critical` sets tag bit 7.
+/** One TLV in the one encoding core §2.2 allows: `tag len(u8) value` up to 254 bytes, `tag 0xFF len(u16) value` from
+ * 255 on. `critical` sets tag bit 7 (a request argument the probe must honour or refuse).
  * @param {number} tag @param {Uint8Array | number[]} value @param {boolean} critical */
 export function tlv(tag, value, critical = false) {
-  if (value.length > 255) throw new RangeError(`TLV 0x${tag.toString(16)}: value of ${value.length} bytes does not fit`);
-  if ((tag & 0x7f) === TAG_IGNORED) throw new RangeError('tag 0x7F is reserved for the ignored list');
-  const out = new Uint8Array(2 + value.length);
+  if (value.length > 0xffff) throw new RangeError(`TLV 0x${tag.toString(16)}: value of ${value.length} bytes does not fit a u16 length`);
+  if ((tag & 0x7f) === TAG_IGNORED || tag === TAG_FIXED) throw new RangeError('tags 0x00 and 0x7F are reserved (the unsupported marker, the ignored list)');
+  const long = value.length > TLV_SHORT_MAX;
+  const out = new Uint8Array((long ? 4 : 2) + value.length);
   out[0] = tag | (critical ? TAG_CRITICAL : 0);
-  out[1] = value.length;
-  out.set(value, 2);
+  if (long) { out[1] = TLV_LEN_LONG; out[2] = value.length & 0xff; out[3] = value.length >> 8; } else out[1] = value.length;
+  out.set(value, long ? 4 : 2);
   return out;
 }
 
-/** TLVs in order. A truncated TLV raises ShortPayload.
+/** TLVs in order, both forms (core §2.2). A truncated TLV throws ShortPayload (the result is broken); the long form
+ * carrying a value the short form would hold throws BadTlv (not the one encoding).
  * @param {Uint8Array} data @returns {[number, Uint8Array][]} */
 export function splitTlvs(data) {
   /** @type {[number, Uint8Array][]} */
@@ -125,10 +135,18 @@ export function splitTlvs(data) {
   let pos = 0;
   while (pos < data.length) {
     if (pos + 2 > data.length) throw new ShortPayload('TLV: truncated header');
-    const tag = data[pos], n = data[pos + 1];
-    if (pos + 2 + n > data.length) throw new ShortPayload(`TLV 0x${tag.toString(16)}: truncated value`);
-    out.push([tag, data.slice(pos + 2, pos + 2 + n)]);
-    pos += 2 + n;
+    const tag = data[pos];
+    let n = data[pos + 1];
+    pos += 2;
+    if (n === TLV_LEN_LONG) {
+      if (pos + 2 > data.length) throw new ShortPayload(`TLV 0x${tag.toString(16)}: truncated long length`);
+      n = getU16(data, pos);
+      pos += 2;
+      if (n <= TLV_SHORT_MAX) throw new BadTlv(`TLV 0x${tag.toString(16)}: a ${n}-byte value in the long form`);
+    }
+    if (pos + n > data.length) throw new ShortPayload(`TLV 0x${tag.toString(16)}: truncated value`);
+    out.push([tag, data.slice(pos, pos + n)]);
+    pos += n;
   }
   return out;
 }
@@ -178,14 +196,19 @@ export class Reader {
   /** @param {number} n */ bytes(n) { this.need(n); const v = this.data.slice(this.at, this.at + n); this.at += n; return v; }
   /** @param {number} n */ text(n) { return text(this.bytes(n)); }
   /** @param {number} n */ words(n) { return Array.from({ length: n }, () => this.u32()); }
+  /** A byte string with its length in front (`width` = the length's bytes: 1, 2 or 4): what every answer carrying
+   * data has since core §2.3 put a length on every container. @param {1 | 2 | 4} width */
+  counted(width = 2) { return this.bytes(width === 1 ? this.u8() : width === 4 ? this.u32() : this.u16()); }
   get left() { return this.data.length - this.at; }
+  /** The rest as bytes: fn 0's link_source only, the one answer that ends with a list of unknown length (core §12). */
   rest() { const v = this.data.slice(this.at); this.at = this.data.length; return v; }
+  /** The TLVs after the known part (core §2.3). */
   tail() { return Tail.parse(this.rest()); }
   /** One element of an answer's list: len(u8) then the element; read what you know of it (core §2.3). */
   element() { return new Reader(this.bytes(this.u8())); }
 }
 
-/** a - b for values that wrap, as a signed number of `bits` (core §2.6).
+/** a - b for values that wrap (seq u16, serials u32, resource numbers u16), as a signed number of `bits` (core §2.6).
  * @param {number} a @param {number} b @param {number} bits */
 export function serialDiff(a, b, bits = 32) {
   const m = 2 ** bits;
