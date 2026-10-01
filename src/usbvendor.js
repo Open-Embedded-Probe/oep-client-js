@@ -1,24 +1,30 @@
 // @ts-check
-// The vendor bulk transport on a WebUSB-shaped device (oep-core §3.1, §3.3): the bInterfaceClass 0xFF interface's
-// bulk IN / OUT pair (chosen by class, not the first bulk pair: a CDC has one too), length(u16) frames. Shared by the
-// browser (WebUSB) and Node (the `usb` package's WebUSB class); nothing here touches either environment.
+// The vendor bulk transport on a WebUSB-shaped device (oep-core §3.1, §3.3): the OEP vendor interface's bulk IN / OUT
+// pair (class 0xFF, subclass 0x4F 'O', protocol 0x45 'E' - chosen by those, not the first bulk pair: a CDC has one
+// too, and another vendor interface may), length(u16) frames. Shared by the browser (WebUSB) and Node (the `usb`
+// package's WebUSB class); nothing here touches either environment.
+
+import * as reg from './registry.js';
 
 /** @typedef {import('./usbtypes.js').UsbDevice} UsbDevice */
 
-/** The OEP VID:PID (pid.codes, applied for); until it is granted a probe's iProduct starts "OEP" (core §3.3). */
-export const OEP_VENDOR_ID = 0x1209;
-export const OEP_PRODUCT_ID = 0x4f45;
-/** The reference ESP32-P4 probe's VID:PID until the OEP PID is granted. */
-export const P4_VENDOR_ID = 0x303a;
-export const P4_PRODUCT_ID = 0x0002;
-export const VENDOR_CLASS = 0xff;
+/** The reference firmware's VID:PID (registry usb): never the way to tell a probe - its iProduct is (core §3.3). */
+export const REFERENCE_VENDOR_ID = reg.USB.reference_vid;
+export const REFERENCE_PRODUCT_ID = reg.USB.reference_pid;
+/** The OEP vendor interface: bInterfaceClass 0xFF, bInterfaceSubClass 0x4F, bInterfaceProtocol 0x45 (core §3.3). */
+export const VENDOR_CLASS = reg.USB.vendor_bulk_class;
+export const VENDOR_SUBCLASS = reg.USB.vendor_bulk_subclass;
+export const VENDOR_PROTOCOL = reg.USB.vendor_bulk_protocol;
+/** What a probe's iProduct starts with. */
+export const IPRODUCT_PREFIX = reg.USB.iproduct_prefix;
 
 /**
- * core §3.3: the OEP VID:PID, or an iProduct starting "OEP".
+ * core §3.3: an OEP probe is a USB device whose iProduct starts with "OEP"; the VID:PID tells nothing (vendorId and
+ * productId are taken for the callers that have them).
  * @param {number} vendorId @param {number} productId @param {string | null | undefined} productName
  */
 export function isOepDevice(vendorId, productId, productName) {
-  return (vendorId === OEP_VENDOR_ID && productId === OEP_PRODUCT_ID) || (productName ?? '').startsWith('OEP');
+  return (productName ?? '').startsWith(IPRODUCT_PREFIX);
 }
 
 /** The probe's unit id: its USB serial number (core §3.3, §7.5). @param {{ serialNumber?: string | null }} device */
@@ -36,14 +42,15 @@ export function usbUnitId(device) {
  */
 
 /**
- * The vendor interface of a configuration: class 0xFF with one bulk IN and one bulk OUT endpoint.
+ * The OEP vendor interface of a configuration: class 0xFF, subclass 0x4F, protocol 0x45 with one bulk IN and one bulk
+ * OUT endpoint.
  * @param {import('./usbtypes.js').UsbConfiguration | null | undefined} configuration
  * @returns {VendorInterface | null}
  */
 export function findVendorInterface(configuration) {
   for (const intf of configuration?.interfaces ?? []) {
     for (const alt of intf.alternates ?? (intf.alternate ? [intf.alternate] : [])) {
-      if (alt.interfaceClass !== VENDOR_CLASS) continue;
+      if (alt.interfaceClass !== VENDOR_CLASS || alt.interfaceSubclass !== VENDOR_SUBCLASS || alt.interfaceProtocol !== VENDOR_PROTOCOL) continue;
       const bulk = alt.endpoints.filter((e) => e.type === 'bulk');
       const input = bulk.find((e) => e.direction === 'in');
       const output = bulk.find((e) => e.direction === 'out');
@@ -79,7 +86,7 @@ export async function openDevice(device) {
 export async function vendorTransport(device, { readSize = 16384, depth = 4 } = {}) {
   await openDevice(device);
   const vi = findVendorInterface(device.configuration);
-  if (!vi) throw new Error('no vendor-class (0xFF) interface with a bulk IN/OUT pair on the device');
+  if (!vi) throw new Error('no OEP vendor interface (class 0xFF, subclass 0x4F, protocol 0x45) with a bulk IN/OUT pair on the device');
   await device.claimInterface(vi.interfaceNumber);
   if (vi.alternateSetting !== 0) await device.selectAlternateInterface(vi.interfaceNumber, vi.alternateSetting);
 

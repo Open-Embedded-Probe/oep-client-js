@@ -39,7 +39,7 @@ function matches(d, { unitId, vendorId, productId }) {
 }
 
 /**
- * The OEP probes on USB (the OEP VID:PID, or an iProduct starting "OEP"), with their unit id (the USB serial).
+ * The OEP probes on USB (an iProduct starting "OEP", core §3.3), with their unit id (the USB serial).
  * @returns {Promise<{ unitId: string | null, vendorId: number, productId: number, product: string | null, device: UsbDevice }[]>}
  */
 export async function findUsbProbes() {

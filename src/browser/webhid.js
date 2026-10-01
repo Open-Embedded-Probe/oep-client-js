@@ -1,10 +1,14 @@
 // @ts-check
-// WebHID: the probe's vendor HID interface (usage page 0xFF00-0xFFFF). Each report carries count(u16 LE) and then that
-// many bytes of the length(u16) frame stream, the rest zero (oep-core §3.1). The report ID, when the descriptor
-// declares one, is WebHID's business: sendReport takes it apart, an inputreport gives it apart.
-import { OEP_PRODUCT_ID, OEP_VENDOR_ID, isOepDevice } from '../usbvendor.js';
+// WebHID: the probe's vendor HID interface (usage page 0xFF4F, usage 0x45 - core §3.3, registry usb). Each report
+// carries count(u16 LE) and then that many bytes of the length(u16) frame stream, the rest zero (oep-core §3.1). The
+// report ID, when the descriptor declares one, is WebHID's business: sendReport takes it apart, an inputreport gives
+// it apart.
+import * as reg from '../registry.js';
+import { isOepDevice } from '../usbvendor.js';
 
-export const VENDOR_USAGE_PAGE_MIN = 0xff00;
+/** The OEP HID collection: usage page 0xFF4F ('O' in the vendor pages), usage 0x45 ('E'). */
+export const OEP_USAGE_PAGE = reg.USB.hid_usage_page;
+export const OEP_USAGE = reg.USB.hid_usage;
 
 /**
  * The part of WebHID used here (lib.dom does not carry WebHID).
@@ -34,7 +38,7 @@ export function reportBytes(report) {
 }
 
 /**
- * The vendor-page collection's input and output reports (the largest of each, 3 bytes at least).
+ * The OEP collection's (usage page 0xFF4F, usage 0x45) input and output reports (the largest of each, 3 bytes at least).
  * @param {HidCollection[]} collections
  * @returns {{ inputReportId: number, inputSize: number, outputReportId: number, outputSize: number } | null}
  */
@@ -42,7 +46,7 @@ export function findVendorReports(collections) {
   /** @param {HidCollection[]} list @returns {ReturnType<typeof findVendorReports>} */
   const walk = (list) => {
     for (const c of list) {
-      if ((c.usagePage ?? 0) >= VENDOR_USAGE_PAGE_MIN) {
+      if (c.usagePage === OEP_USAGE_PAGE && (c.usage === undefined || c.usage === OEP_USAGE)) {
         /** @param {HidReportInfo[] | undefined} reports */
         const best = (reports) => (reports ?? []).map((r) => ({ id: r.reportId ?? 0, size: reportBytes(r) }))
           .filter((r) => r.size >= 3).sort((a, b) => b.size - a.size)[0];
@@ -97,18 +101,18 @@ const hidApi = () => {
 };
 
 /**
- * Ask the user for an OEP probe's vendor HID interface (a vendor usage page; the one picked must be an OEP device).
- * WebHID may give several HIDDevice objects for one USB device: the one with the vendor collection is taken.
+ * Ask the user for an OEP probe's HID interface (usage page 0xFF4F, usage 0x45; the one picked must be an OEP device).
+ * WebHID may give several HIDDevice objects for one USB device: the one with the OEP collection is taken.
  * @param {{ filters?: object[] }} [opts]
  * @returns {Promise<HidDeviceLike>}
  */
 export async function requestHidProbe({ filters } = {}) {
   /** @type {HidDeviceLike[]} */
   const devices = await hidApi().requestDevice({
-    filters: filters ?? [{ vendorId: OEP_VENDOR_ID, productId: OEP_PRODUCT_ID }, { usagePage: VENDOR_USAGE_PAGE_MIN }],
+    filters: filters ?? [{ usagePage: OEP_USAGE_PAGE, usage: OEP_USAGE }],
   });
   const device = devices.find((d) => findVendorReports(d.collections));
-  if (!device) throw new Error(devices.length ? 'the device has no vendor HID interface' : 'no device chosen');
+  if (!device) throw new Error(devices.length ? 'the device has no OEP HID collection (usage page 0xFF4F, usage 0x45)' : 'no device chosen');
   if (!isOepDevice(device.vendorId, device.productId, device.productName)) throw new Error(`not an OEP probe: ${device.productName ?? 'no product name'}`);
   return device;
 }
@@ -120,7 +124,7 @@ export async function requestHidProbe({ filters } = {}) {
  */
 export async function webHidTransport(device) {
   const r = findVendorReports(device.collections);
-  if (!r) throw new Error('no vendor-page HID collection with input and output reports');
+  if (!r) throw new Error('no OEP HID collection (usage page 0xFF4F, usage 0x45) with input and output reports');
   if (!device.opened) await device.open();
   /** @type {((e: HidInputReportEvent) => void) | null} */
   let listener = null;
