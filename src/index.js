@@ -18,8 +18,8 @@ export { connect } from './open.js';
 export { Host } from './host.js';
 export { Link } from './link.js';
 export {
-  OepError, ProtocolError, ShortPayload, Rejected, Failed, NotV1, Timeout, InUse, Locked, NoSession, Busy,
-  NoConnection, Unsupported, Unavailable,
+  OepError, ProtocolError, ShortPayload, BadTlv, Rejected, Failed, NotV1, Timeout, InUse, Locked, NoSession, Expired,
+  Busy, NoConnection, Unsupported, Unavailable,
 } from './errors.js';
 
 export * as registry from './registry.js';

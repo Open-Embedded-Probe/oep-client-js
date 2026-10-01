@@ -3,7 +3,7 @@
 // transports, the pin plan, taking the lock - and `Interface`, the base every interface client shares.
 
 import * as reg from './registry.js';
-import { Writer, getU16, text } from './bytes.js';
+import { Writer, getU16, getU32, text } from './bytes.js';
 import * as catalog from './catalog.js';
 import * as m from './message.js';
 import { OepError } from './errors.js';
@@ -55,9 +55,12 @@ export async function revision(hst, name, fn) {
   return rev;
 }
 
-/** Every describe TLV of `fn` (0: the probe itself), paged.
+/** Every describe TLV of `fn` (0: the probe itself), paged. Declarations only (core §7.3): cached on the host while
+ * the probe's boot_id stays the same.
  * @param {import('./host.js').Host} hst @param {number} fn @returns {Promise<[number, Uint8Array][]>} */
 export async function describe(hst, fn = 0) {
+  const cached = hst.describes.get(fn);
+  if (cached) return [...cached];
   /** @type {[number, Uint8Array][]} */
   const out = [];
   for (;;) {
@@ -67,11 +70,23 @@ export async function describe(hst, fn = 0) {
     out.push(...page);
     if (!more || !page.length) break;
   }
-  return out;
+  hst.describes.set(fn, out);
+  return [...out];
+}
+
+/** The longest one request may take on this probe (oep.core describe max_op_ms, core §7.5): the ceiling of run's
+ * timeout_ms, a dmi list's waits, an attach's hold_ms. A probe that declares none (not v1-complete) is taken as the
+ * reference firmware's 10000 ms.
+ * @param {import('./host.js').Host} hst */
+export async function maxOpMs(hst) {
+  for (const [tag, v] of await describe(hst, 0)) if ((tag & 0x7f) === D.max_op_ms && v.length >= 4) return getU32(v);
+  return reg.LIMITS.max_op_ms_reference;
 }
 
 /**
- * oep.core's describe decoded (core §7.5).
+ * oep.core's describe decoded (core §7.5). labels: the firmware's fixed channel labels (0x46); the labels the settings
+ * gave are read from oep.probe.config (config.ProbeConfig.items(), Label). discoverable: the probe enumerates in a way
+ * discovery lists (an iProduct starting "OEP", core §3.3). maxOpMs: the longest one request may take.
  * @param {import('./host.js').Host} hst
  */
 export async function probeInfo(hst) {
@@ -81,7 +96,7 @@ export async function probeInfo(hst) {
     profile: /** @type {string | null} */ (null), channels: 0,
     /** @type {number[]} */ reserved: [], /** @type {Map<string, number>} */ labels: new Map(),
     /** @type {{ index: number, kind: number, usbInterface: number }[]} */ transports: [],
-    oepPid: false, planRoles: /** @type {number | null} */ (null),
+    discoverable: false, planRoles: /** @type {number | null} */ (null), maxOpMs: /** @type {number | null} */ (null),
     /** @type {[number, Uint8Array][]} */ other: [],
   };
   for (const [tag, v] of await describe(hst, 0)) {
@@ -95,8 +110,9 @@ export async function probeInfo(hst) {
     else if (t === D.reserved) info.reserved = catalog.bitmapToChannels(getU16(v), v.slice(2));
     else if (t === D.label && v.length >= 2) info.labels.set(text(v.slice(2)), getU16(v));
     else if (t === D.transport && v.length >= 2) info.transports.push({ index: v[0], kind: v[1], usbInterface: v.length > 2 ? v[2] : 0xff });
-    else if (t === D.oep_pid) info.oepPid = v[0] === 1;
-    else if (t === D.plan_roles) info.planRoles = getU16(v);
+    else if (t === D.discoverable) info.discoverable = v[0] === 1;
+    else if (t === D.plan_roles && v.length >= 4) info.planRoles = getU32(v);
+    else if (t === D.max_op_ms && v.length >= 4) info.maxOpMs = getU32(v);
     else info.other.push([tag, v]);
   }
   return info;

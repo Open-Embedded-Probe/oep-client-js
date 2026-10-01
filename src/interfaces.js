@@ -6,13 +6,14 @@
 // like. An interface missing from here is still listed and described - with raw role numbers, raw feature bits and raw
 // tag bytes.
 
-import { getU16, getU32, hex, text } from './bytes.js';
+import { getU16, getU32, text } from './bytes.js';
 import { bitmapToChannels } from './catalog.js';
 
 /** @typedef {(v: Uint8Array) => string} Decoder */
 
 /** @param {Uint8Array} v */ const u16 = (v) => String(getU16(v));
 /** @param {Uint8Array} v */ const u32 = (v) => String(getU32(v));
+/** @param {Uint8Array} v */ const bits32 = (v) => { const b = getU32(v); return Array.from({ length: 32 }, (_, i) => i).filter((i) => (b >>> i) & 1).join(', '); };
 /** @param {Uint8Array} v */ const asText = (v) => text(v);
 /** @param {Uint8Array} v */ const channels = (v) => ranges(bitmapToChannels(getU16(v), v.slice(2)));
 /** @param {Uint8Array} v */ const label = (v) => `${getU16(v)} = ${text(v.slice(2))}`;
@@ -21,7 +22,7 @@ import { bitmapToChannels } from './catalog.js';
 /** @type {Record<number, string>} */
 const TRANSPORTS = { 1: 'UART bridge', 2: 'USB CDC', 3: 'USB-Serial/JTAG', 4: 'vendor bulk', 5: 'HID', 6: 'TCP' };
 /** @type {Record<number, string>} */
-const MECHANISMS = { 0: 'SDI', 1: 'DMDATA', 2: 'dmseq' };
+const MECHANISMS = { 0: 'SDI', 1: 'DMDATA', 2: 'dmseq', 0xff: 'none' };
 
 /** @param {Uint8Array} v */
 function transport(v) {
@@ -51,8 +52,8 @@ export const KNOWN = {
     { tags: { 0x40: ['firmware', asText], 0x41: ['model', asText], 0x42: ['unit id', asText],
       0x43: ['channels', u16], 0x44: ['reserved', channels], 0x45: ['profile', asText],
       0x46: ['label', label], 0x47: ['resets on open', () => 'yes'],
-      0x49: ['transport', transport], 0x4a: ['OEP VID:PID', (v) => (v[0] === 1 ? 'yes' : 'no')],
-      0x4b: ['plan roles', u16], 0x4c: ['chip', asText] } }),
+      0x49: ['transport', transport], 0x4a: ['discoverable', (v) => (v[0] === 1 ? 'yes' : 'no')],
+      0x4b: ['plan roles', u32], 0x4c: ['chip', asText], 0x4d: ['max op ms', u32] } }),
   'oep.wire.rvswd': known('scan, attach, detach over RVSWD (attach returns a connection)',
     { roles: { 1: 'SWDIO', 2: 'SWCLK', 3: 'reset' }, tags: { 0x40: ['max connections', first] } }),
   'oep.wire.swio': known('scan, attach, detach over SWIO, one wire (attach returns a connection)',
@@ -65,13 +66,13 @@ export const KNOWN = {
   'oep.target.arm-adi': known('ARM Debug Interface: DP/AP transfer lists, block transfers'),
   'oep.target.console': known('console streams on a debug connection (position-addressed, marks)',
     { tags: { 0x40: ['mechanisms', (v) => Array.from(v, (b) => MECHANISMS[b] ?? String(b)).join(', ')] } }),
-  'oep.probe.config': known('the probe\'s configuration (plan, labels, idle pins, slots, binds) and its storage',
-    { tags: { 0x40: ['storage', (v) => `${u32(v.slice(0, 4))} bytes, state ${v[4]}`],
+  'oep.probe.config': known('the probe\'s configuration (plan, labels, idle pins, slots, binds, uart) and its storage; the state is op state',
+    { tags: { 0x40: ['storage', (v) => `${u32(v.slice(0, 4))} bytes`],
       0x41: ['items', (v) => Array.from(v, String).join(', ')], 0x42: ['slots', first],
-      0x43: ['bind modes', (v) => ['last-reset', 'manual', 'mixed'].filter((_, b) => (v[0] >> b) & 1).join(', ')],
-      0x44: ['slot state', hex], 0x45: ['bind state', hex] } }),
-  'oep.fixture.gpio': known('drive and read probe pins', { roles: { 1: 'line' } }),
-  'oep.fixture.uart': known('a UART (USART, asynchronous) on probe pins', { roles: { 1: 'RX', 2: 'TX' } }),
+      0x43: ['bind modes', (v) => ['last-reset', 'manual', 'mixed'].filter((_, b) => (getU32(v) >>> b) & 1).join(', ')] } }),
+  'oep.fixture.gpio': known('drive and read probe pins', { roles: { 1: 'line' }, tags: { 0x40: ['modes', bits32] } }),
+  'oep.fixture.uart': known('a UART (USART, asynchronous) on probe pins', { roles: { 1: 'RX', 2: 'TX' },
+    tags: { 0x40: ['formats', (v) => Array.from(v.slice(1, 1 + v[0]), (b) => `0x${b.toString(16).padStart(2, '0')}`).join(', ')] } }),
   'oep.fixture.logic': known('sampled logic capture', { roles: LOGIC_LINES }),
   'oep.fixture.i2c-target': known('an I2C target the DUT can address (ESP-IDF slave driver)',
     { roles: { 1: 'SDA', 2: 'SCL' }, features: { 0: 'preloaded tx', 1: 'clock stretching' } }),

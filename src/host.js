@@ -3,7 +3,10 @@
 //
 // Every open picks a random u32 session id (never a counter: after a probe reboot a counter would match an old
 // process's id). Role 0x81 (a session id in the header) goes only to a probe whose confirm answered revision 1 or
-// more. When the probe's boot_id changes (open, heartbeat), every connection and the plan are gone: `epoch` counts it.
+// more. core §6.5 / §9: when the probe's boot_id changes (confirm, open, heartbeat), when the lease lapsed (rejected
+// expired, open answering resumed = 2) and when another session came in between, by force or not (rejected
+// no_session), every connection, stream and the plan this session had are gone: `epoch` counts those losses. An
+// expired session is never re-opened behind the caller's back: Expired is thrown and the caller opens again.
 
 import * as reg from './registry.js';
 import { Writer, text, utf8 } from './bytes.js';
@@ -13,8 +16,14 @@ import { Failed, InUse, Locked, NotV1, Rejected, rejection } from './errors.js';
 export const MIN_REVISION = 1, MAX_REVISION = 1;
 const OWNER = reg.CORE.tlv.open.owner;
 
-/** @typedef {{ revision: number, flags: number, maxFrame: number, window: number, maxInflight: number, tail: m.Tail }} Limits */
-/** @typedef {{ leaseMs: number, bootId: number, resumed: boolean }} Opened */
+/** @typedef {{ revision: number, flags: number, maxFrame: number, window: number, maxInflight: number, bootId: number, tail: m.Tail }} Limits */
+/**
+ * open's answer. resumed (core §6.4): 0 a new session, 1 the same id with its resources kept, 2 the same id after its
+ * lease lapsed and the probe swept them (`swept`: the host rebuilds its plan and connections; `epoch` moved).
+ * @typedef {{ leaseMs: number, bootId: number, resumed: number, swept: boolean }} Opened
+ */
+
+export const RESUMED = reg.CORE.enum.resumed;
 
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -37,7 +46,9 @@ export class Host {
     this.corr = 0;
     /** @type {Map<string, number>} interface name -> fn, until the probe reboots */ this.fns = new Map();
     /** @type {Map<number, number>} fn -> interface revision from list */ this.revisions = new Map();
+    /** @type {Map<number, [number, Uint8Array][]>} fn -> its describe TLVs (declarations: valid for one boot_id) */ this.describes = new Map();
     /** @type {number | null} */ this.bootId = null;
+    /** @type {number | null} the lease the last open gave (named by Expired) */ this.leaseMs = null;
   }
 
   nextCorr() { this.corr = (this.corr % 0xffff) + 1; return this.corr; }
@@ -59,7 +70,7 @@ export class Host {
     if (result.corr !== req.corr) throw new m.ProtocolError(`result for correlation ${result.corr}, expected ${req.corr}`);
     if (result.resolution === m.REJECTED) {
       this.rejected(result);
-      throw rejection(result);
+      throw rejection(result, this.leaseMs);
     }
     return result;
   }
@@ -74,20 +85,27 @@ export class Host {
 
   /** @param {m.Result} result */
   rejected(result) {
-    if (result.detail === m.REJECT.no_session) {
-      this.subscriptions.clear();
-      if (this.bootId === 0) this.lost();
-    }
+    // expired: the lease lapsed and the probe swept this session's resources (core §9). no_session: another session
+    // opened in between (a force among them) and took them over. Either way they are not ours.
+    if (result.detail === m.REJECT.no_session || result.detail === m.REJECT.expired) this.swept();
   }
 
-  lost() {
+  /** This session's resources (plan, connections, streams, subscriptions) are gone; the probe is the same. */
+  swept() {
     this.epoch++;
-    this.fns.clear();
-    this.revisions.clear();
     this.subscriptions.clear();
   }
 
-  /** @param {number} bootId */
+  /** The probe restarted: the resources, and the fn numbers with them. */
+  lost() {
+    this.swept();
+    this.fns.clear();
+    this.revisions.clear();
+    this.describes.clear();
+  }
+
+  /** A boot_id from confirm, an open result or a heartbeat: a change means the probe restarted (core §6.5).
+   * @param {number} bootId */
   bootIdSeen(bootId) {
     if (this.bootId !== null && bootId !== this.bootId) this.lost();
     this.bootId = bootId;
@@ -115,7 +133,7 @@ export class Host {
   async pipelineCalls(requests, opts = {}) {
     const results = await this.pipeline(requests, opts);
     for (const r of results) {
-      if (r.resolution === m.REJECTED) throw rejection(r);
+      if (r.resolution === m.REJECTED) throw rejection(r, this.leaseMs);
       if (!r.succeeded) throw new Failed(r);
     }
     return results;
@@ -123,7 +141,8 @@ export class Host {
 
   // ---- confirm (§7.1) -------------------------------------------------------------------------------------
 
-  /** Ask for a revision in [minRev, maxRev] -> the probe's limits. Also sets the link's frame limit. */
+  /** Ask for a revision in [minRev, maxRev] -> the probe's limits, with its boot_id (core §6.5, §7.1: a host without
+   * the lock learns of a restart from it). Also sets the link's frame limit. */
   async confirm(minRev = MIN_REVISION, maxRev = MAX_REVISION) {
     let r;
     try {
@@ -141,9 +160,11 @@ export class Host {
       throw new NotV1('the probe speaks OEP revision 0');
     }
     if (revision < minRev || revision > maxRev) throw new m.ProtocolError(`confirm answered revision ${revision}, outside ${minRev}..${maxRev}`);
-    const flags = rd.u8(), maxFrame = rd.u16(), window = rd.u32(), maxInflight = rd.u8();
+    const flags = rd.u8(), maxFrame = rd.u16(), window = rd.u32(), maxInflight = rd.u8(), bootId = rd.u32();
+    const tail = rd.tail();
+    this.bootIdSeen(bootId);
     this.revision = revision;
-    this.limits = { revision, flags, maxFrame, window, maxInflight, tail: rd.tail() };
+    this.limits = { revision, flags, maxFrame, window, maxInflight, bootId, tail };
     if (this.link.framing === 'length' && maxFrame) this.link.maxFrame = maxFrame;
     return this.limits;
   }
@@ -164,7 +185,9 @@ export class Host {
   // ---- the session and the lock (§6) -----------------------------------------------------------------------
 
   /**
-   * A new random id unless `session` is given. leaseMs 0 = the probe's default. owner: who holds the lock (shown).
+   * A new random id unless `session` is given. leaseMs 0 = the probe's default; 1000..60000 are taken as asked. owner:
+   * who holds the lock (1-32 bytes, shown to other hosts). Opened.resumed: 0 a new session, 1 the same id with its
+   * resources kept, 2 the same id after its lease lapsed swept them (core §6.4).
    * @param {number} leaseMs @param {{ force?: boolean, session?: number, owner?: string }} [opts]
    * @returns {Promise<Opened>}
    */
@@ -177,10 +200,13 @@ export class Host {
     if (sid !== this.session) this.subscriptions.clear();
     this.session = sid;
     const rd = new m.Reader(r.payload);
-    const lease = rd.u32(), bootId = rd.u32(), resumed = rd.u8() !== 0;
+    const lease = rd.u32(), bootId = rd.u32(), resumed = rd.u8();
+    rd.tail();
     this.bootIdSeen(bootId);
-    if (!resumed) this.subscriptions.clear();
-    return { leaseMs: lease, bootId, resumed };
+    this.leaseMs = lease;
+    if (resumed === RESUMED.swept) this.swept();
+    else if (resumed !== RESUMED.resumed) this.subscriptions.clear();
+    return { leaseMs: lease, bootId, resumed, swept: resumed === RESUMED.swept };
   }
 
   async end() {
@@ -223,9 +249,12 @@ export class Host {
 
   // ---- notifications (§11) ---------------------------------------------------------------------------------
 
-  /** @param {number} fn @param {number} minBytes @param {number} maxDelayMs */
+  /** Events and data pushes from `fn` (fn 0: heartbeats `boot_id uptime_ns` every maxDelayMs, 0 = 1000 ms). Send when
+   * minBytes are ready or maxDelayMs (u32) after the first byte (0, 0: as soon as there is anything). Ends with the
+   * lock; an fn that emits nothing is rejected Unsupported (core §11.3).
+   * @param {number} fn @param {number} minBytes @param {number} maxDelayMs */
   async subscribe(fn, minBytes = 0, maxDelayMs = 0) {
-    await this.call(m.CORE_FN, m.OP.subscribe, new Writer().u16(fn).u16(minBytes).u16(maxDelayMs).done());
+    await this.call(m.CORE_FN, m.OP.subscribe, new Writer().u16(fn).u16(minBytes).u32(maxDelayMs).done());
     this.subscriptions.add(fn);
   }
 

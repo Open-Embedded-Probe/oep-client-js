@@ -20,7 +20,8 @@ export class ScriptedHost extends Host {
     /** @type {[number, number, Uint8Array][]} */ this.log = [];
     for (const [name, fn] of Object.entries(FNS)) { this.fns.set(name, fn); this.revisions.set(fn, 1); }
     this.revision = 1;
-    this.limits = { revision: 1, flags: 0, maxFrame, window: 4096, maxInflight: 8, tail: new m.Tail() };
+    this.limits = { revision: 1, flags: 0, maxFrame, window: 4096, maxInflight: 8, bootId: 1, tail: new m.Tail() };
+    for (const fn of Object.values(FNS)) this.describes.set(fn, []);   // declares nothing: attach's default max_speed
   }
 
   /** @param {number} fn @param {number} op @param {Uint8Array} payload */
