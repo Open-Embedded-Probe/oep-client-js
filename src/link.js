@@ -10,10 +10,16 @@
 //
 // A request whose answer does not come in time goes once more with the same corr: the probe keeps the lock holder's
 // recent results and answers the repeat from them, so a state-changing request does not run twice (§5.2).
+//
+// port_speed (oep-core §3.5, opt-in: speed.js raiseSpeed): on a serial port whose transport can change its rate
+// (`setBaudRate`), the link knows the boot speed (`baseBaud`) and the rate now (`baud`). A completed end or port_speed
+// revert puts the link back at the boot speed at once; a request unanswered (its resend too) while the rate is raised
+// takes the link back to the boot speed - the probe went back by itself -, confirms there and goes once more: the
+// link never wedges at a rate the probe left.
 
 import * as reg from './registry.js';
 import * as cobs from './cobs.js';
-import { ROLE_DATA, ROLE_EVENT, ROLE_RESULT } from './message.js';
+import { COMPLETED, CORE_FN, OP, ROLE_DATA, ROLE_EVENT, ROLE_RESULT, ROLE_SESSION, Request, CONFIRM_REQUEST } from './message.js';
 import { Timeout } from './errors.js';
 
 const STALL_MS = reg.TIMING.probe_frame_gap_ms;   // a frame whose bytes stop this long is not coming
@@ -28,6 +34,8 @@ const STALL_MS = reg.TIMING.probe_frame_gap_ms;   // a frame whose bytes stop th
  * @property {'cobs' | 'length'} framing  what the transport carries (serial ports: cobs; bulk, HID, TCP: length)
  * @property {string} [kind]              for display: serial, vendor, hid, tcp
  * @property {number} [maxWrite]          the most one write takes (HID: a report's room); longer writes are split
+ * @property {number} [baudRate]          a serial port's rate now (what it was opened with, then set)
+ * @property {(rate: number) => Promise<void>} [setBaudRate]   a serial port this host opened: change its rate
  */
 
 /** @typedef {{ resolve: (b: Uint8Array) => void, reject: (e: unknown) => void, timer: any, message: Uint8Array, attempt: number }} Pending */
@@ -53,6 +61,16 @@ export class Link {
     this.closed = false;
     /** @type {unknown} */ this.closeError = undefined;
     this.started = false;
+    this.resend = true;                      // a missing answer: the request once more with the same corr
+    /** @type {number | null} the boot speed every port_speed revert goes back to (serial ports that can change it) */
+    this.baseBaud = transport.setBaudRate && transport.baudRate ? transport.baudRate : null;
+    /** @type {number | null} the rate the host side runs at now */ this.baud = this.baseBaud;
+    /** @type {import('./speed.js').SpeedReport | null} the last raiseSpeed's report */ this.speed = null;
+    this.speedLost = 0;                      // times a raised rate was found gone (back to the boot speed)
+    this.fallback = true;                    // a raised rate that stops answering: back to the boot speed
+    /** @type {() => number} */ this.corrSource = () => { this.ownCorr = (this.ownCorr % 0xffff) + 1; return this.ownCorr; };
+    this.ownCorr = 0x8000;
+    /** @type {Promise<boolean> | null} */ this.falling = null;
   }
 
   /** Begin reading (once). */
@@ -178,12 +196,32 @@ export class Link {
    * @param {Uint8Array} message
    * @returns {Promise<Uint8Array>}
    */
-  send(message) {
+  async send(message) {
+    let reply;
+    try {
+      reply = await this.sendOnce(message);
+    } catch (e) {
+      if (!(e instanceof Timeout) || !(await this.speedFallback())) throw e;
+      reply = await this.sendOnce(message);   // once more at the boot speed (the probe answers a repeat from what it kept)
+    }
+    if (this.baseBaud !== null && this.baud !== this.baseBaud && reverts(message, reply)) {
+      await this.setBaud(this.baseBaud);    // the probe went back right after this answer (core §3.5)
+      if (this.speed) { this.speed.rate = this.baseBaud; this.speed.chosen = null; }
+    }
+    return reply;
+  }
+
+  /**
+   * One request on the wire (its resend after timeoutMs unless `resend` is off).
+   * @param {Uint8Array} message @param {{ timeoutMs?: number, resend?: boolean }} [opts]
+   * @returns {Promise<Uint8Array>}
+   */
+  sendOnce(message, { timeoutMs = this.timeoutMs, resend = this.resend } = {}) {
     if (this.closed) return Promise.reject(this.closeError instanceof Error ? this.closeError : new Error('the link is closed'));
     const corr = message[1] | (message[2] << 8);
     return new Promise((resolve, reject) => {
       /** @type {Pending} */
-      const p = { resolve, reject, timer: null, message, attempt: 0 };
+      const p = { resolve, reject, timer: null, message, attempt: resend ? 0 : 1 };
       const arm = () => {
         p.timer = setTimeout(() => {
           if (p.attempt === 0) {
@@ -195,12 +233,67 @@ export class Link {
             this.pending.delete(corr);
             reject(new Timeout(`no result from the probe (corr ${corr})`));
           }
-        }, this.timeoutMs);
+        }, timeoutMs);
       };
       this.pending.set(corr, p);
       arm();
       this.write(this.framed(message)).catch((e) => { clearTimeout(p.timer); this.pending.delete(corr); reject(e); });
     });
+  }
+
+  // ---- port_speed (core §3.5) -------------------------------------------------------------------------------
+
+  /** The host side of the serial port to `rate`; what was gathered so far dropped. @param {number} rate */
+  async setBaud(rate) {
+    if (!this.transport.setBaudRate) throw new Error('this transport cannot change its rate');
+    await this.transport.setBaudRate(rate);
+    this.baud = rate;
+    this.buf = new Uint8Array(0);
+  }
+
+  /** A confirm straight on the link: true when its answer came within timeoutMs. @param {number} timeoutMs */
+  async confirmRaw(timeoutMs) {
+    const confirm = new Uint8Array(CONFIRM_REQUEST.length + 2);
+    confirm.set(CONFIRM_REQUEST);
+    confirm[CONFIRM_REQUEST.length + 1] = 0xff;   // revisions 0..255
+    try {
+      await this.sendOnce(new Request(this.corrSource(), CORE_FN, OP.confirm, confirm).pack(), { timeoutMs, resend: false });
+      return true;
+    } catch (e) {
+      if (e instanceof Timeout) return false;
+      throw e;
+    }
+  }
+
+  /** At the boot speed again, the probe confirmed there: a confirm every 250 ms up to waitMs (a probe still trying
+   * waits out its verify_ms; one committed reverts at the broken candidates these make). @param {number} waitMs */
+  async backToBase(waitMs = 3000) {
+    if (this.baseBaud === null) return false;
+    await this.setBaud(this.baseBaud);
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      if (await this.confirmRaw(250)) return true;
+      if (Date.now() >= deadline) return false;
+    }
+  }
+
+  /** A request went unanswered while the link ran above the boot speed: back there, confirmed. true = send again. */
+  speedFallback() {
+    if (!this.fallback || this.baseBaud === null) return Promise.resolve(false);
+    if (this.falling) return this.falling;
+    if (this.baud === this.baseBaud) return Promise.resolve(false);
+    const from = this.baud;
+    this.falling = (async () => {
+      try {
+        if (!(await this.backToBase())) throw new Error(`the probe answers neither at ${from} nor at the boot speed ${this.baseBaud}`);
+        this.speedLost++;
+        if (this.speed) { this.speed.rate = /** @type {number} */ (this.baseBaud); this.speed.chosen = null; this.speed.lost = true; }
+        return true;
+      } finally {
+        this.falling = null;
+      }
+    })();
+    return this.falling;
   }
 
   /**
@@ -260,4 +353,13 @@ export class Link {
       listeners.add(listener);
     });
   }
+}
+
+/** A completed end, or port_speed's revert: the probe is back at its boot speed once this answer is out.
+ * @param {Uint8Array} message @param {Uint8Array} reply */
+function reverts(message, reply) {
+  if (message.length < 6 || reply.length < 4 || reply[3] !== COMPLETED || (message[3] | (message[4] << 8)) !== CORE_FN) return false;
+  if (message[5] === OP.end) return true;
+  const at = 6 + (message[0] & ROLE_SESSION ? 4 : 0) + 5;   // port(u8) baud(u32) step(u8)
+  return message[5] === OP.port_speed && message.length > at && message[at] === reg.CORE.enum.port_speed_step.revert;
 }

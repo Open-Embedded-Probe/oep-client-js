@@ -32,9 +32,17 @@ export async function serialTransport({ path, baudRate = 115200 }) {
   const port = new SerialPort({ path, baudRate, lock: true, autoOpen: false });
   await new Promise((resolve, reject) => port.open((/** @type {Error | null} */ e) => (e ? reject(e) : resolve(undefined))));
   let closing = false;
-  return {
+  /** @type {import('../link.js').Transport} */
+  const transport = {
     framing: 'cobs',
     kind: 'serial',
+    baudRate,
+    // port_speed (oep-core §3.5): the rate changed in place (serialport's update)
+    setBaudRate: (rate) => new Promise((resolve, reject) => port.update({ baudRate: rate }, (/** @type {Error | null} */ e) => {
+      if (e) return reject(e);
+      transport.baudRate = rate;
+      resolve();
+    })),
     write: (data) => new Promise((resolve, reject) => {
       port.write(Buffer.from(data.buffer, data.byteOffset, data.length), (/** @type {Error | null | undefined} */ e) => {
         if (e) return reject(e);
@@ -55,4 +63,5 @@ export async function serialTransport({ path, baudRate = 115200 }) {
       port.close(() => resolve());
     }),
   };
+  return transport;
 }

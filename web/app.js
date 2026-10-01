@@ -3,7 +3,7 @@
 // operations, update its firmware (docs/design.md §4). Everything goes through oep-client-js.
 import {
   VERSION, config, core, dump, fixture, openWebHid, openWebSerial, openWebUsb, parseFirmwareManifest, pickFirmware,
-  requestDfuDevice, dfuUpdate, verifyFirmware, Rejected, Unavailable,
+  requestDfuDevice, dfuUpdate, verifyFirmware, Rejected, Unavailable, raiseSpeed, speedText,
 } from './oep-client.js';
 
 // ---- words ---------------------------------------------------------------------------------------------------
@@ -27,6 +27,8 @@ const WORDS = {
     fwRp2: 'RP2040 / RP2350',
     fwRp2Hint: 'Hold BOOTSEL while plugging it in, then copy OepProbe-<profile>-<version>.uf2 to the drive that appears.',
     locked: 'lock held', noLock: 'no lock',
+    speedHint: 'A UART bridge (serial) probe that offers port_speed runs faster for this session: each rate is tried, checked both ways with full frames, and the first that passes is kept (the probe goes back to 115200 when the lock is released). Which rates pass depends on the bridge chip.',
+    speedTry: 'Try the rates',
   },
   ja: {
     unsupported: 'このブラウザには WebUSB / WebSerial / WebHID がありません。Chrome か Edge で、HTTPS か localhost で開いてください。',
@@ -46,6 +48,8 @@ const WORDS = {
     fwRp2: 'RP2040 / RP2350',
     fwRp2Hint: 'BOOTSEL を押しながら挿し、出てきたドライブに OepProbe-<profile>-<version>.uf2 をコピーします。',
     locked: 'ロックあり', noLock: 'ロックなし',
+    speedHint: 'port_speed を持つ UART bridge（シリアル）の probe は、このセッションの間速くできます。速さを順に試し、両方向に大きなフレームで確かめ、最初に通った速さを使います（ロックを放すと probe は 115200 に戻る）。通る速さは変換チップで決まります。',
+    speedTry: '速さを試す',
   },
 };
 /** @type {'en' | 'ja'} */
@@ -327,6 +331,14 @@ function wireTools() {
   $('uart-read').onclick = () => act(async () => {
     const data = await (await uart()).readAll();
     $('uart-out').textContent += new TextDecoder().decode(data);
+  });
+  $('speed-try').onclick = () => act(async () => {
+    if (!host) return;
+    const rates = input('speed-rates').value.split(',').map((r) => Number(r.trim())).filter((r) => r > 0);
+    $('speed-out').textContent = '...';
+    const report = await raiseSpeed(host, rates);
+    $('speed-out').textContent = speedText(report);
+    log(report.chosen ? `link at ${report.chosen}` : `link at ${report.rate}`);
   });
   $('uart-send').onclick = () => act(async () => {
     const text = input('uart-text').value + (input('uart-crlf').checked ? '\r\n' : '');

@@ -144,6 +144,15 @@
           <button id="uart-send" type="button" data-i18n="send" data-needs="lock"></button>
         </div>
       </div>
+      <div class="card">
+        <h3>port_speed</h3>
+        <p class="muted" data-i18n="speedHint"></p>
+        <div class="row">
+          <label>rates <input id="speed-rates" value="1500000,921600,500000"></label>
+          <button id="speed-try" type="button" data-i18n="speedTry" data-needs="lock"></button>
+        </div>
+        <pre id="speed-out" class="out small"></pre>
+      </div>
     </section>
 
     <section id="tab-firmware" class="tab" hidden>

@@ -17,6 +17,7 @@ export const VERSION = '0.0.1';
 export { connect } from './open.js';
 export { Host } from './host.js';
 export { Link } from './link.js';
+export { raiseSpeed, speedText } from './speed.js';
 export {
   OepError, ProtocolError, ShortPayload, BadTlv, Rejected, Failed, NotV1, Timeout, InUse, Locked, NoSession, Expired,
   Busy, NoConnection, Unsupported, Unavailable,
@@ -39,4 +40,5 @@ export * as fixture from './fixture.js';
 export * as capture from './capture.js';
 export * as decode from './decode.js';
 export * as dfu from './dfu.js';
+export * as speed from './speed.js';
 export * as firmware from './firmware.js';
