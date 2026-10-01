@@ -141,7 +141,7 @@ export class Host {
     await this.beforeRequest();
     const reqs = requests.map(([fn, op, payload]) => new m.Request(this.nextCorr(), fn, op, payload, session));
     const limits = await this.confirmed();
-    const replies = await this.link.exchange(reqs.map((r) => r.pack()), { maxInflight: limits.maxInflight, window: limits.window });
+    const replies = await this.link.exchange(reqs.map((r) => r.pack()), { maxInflight: limits.maxInflight, window: limits.window, maxFrame: limits.maxFrame });
     const results = replies.map((b) => m.Result.unpack(b));
     results.forEach((res, i) => {
       if (res.corr !== reqs[i].corr) throw new m.ProtocolError(`result for correlation ${res.corr}, expected ${reqs[i].corr}`);

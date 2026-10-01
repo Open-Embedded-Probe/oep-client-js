@@ -36,6 +36,8 @@ import * as cobs from './cobs.js';
 import { COMPLETED, CORE_FN, OP, ROLE_DATA, ROLE_EVENT, ROLE_RESULT, ROLE_SESSION, Request, CONFIRM_REQUEST } from './message.js';
 import { Timeout } from './errors.js';
 
+/** a serial port's answer bytes in flight at most (Linux cdc_acm lost 8 x 1008 B answer bursts; 7 passed) */
+const ANSWER_BURST_MAX = 6144;
 const STALL_MS = reg.TIMING.probe_frame_gap_ms;   // a frame whose bytes stop this long is not coming
 /** After a baud change, before the first byte at the new rate (an M5Stack ATOM's FTDI lost it at once, core §3.5). */
 export const SWITCH_SETTLE_MS = 20;
@@ -110,6 +112,7 @@ export class Link {
     /** @type {() => number | null} the session's lease (bound by Host; raised: bounds each wait) */ this.lease = () => null;
     /** @type {() => number | null} the session id (bound by Host) */ this.sessionId = () => null;
     this.inflightCap = 0;                    // port_speed: the in-flight requests the raised rate verified with (0: no cap)
+    this.answerBurst = ANSWER_BURST_MAX;     // serial ports: answer bytes in flight at most (0: no bound)
     /** @type {() => boolean} a session holds the port (its raw transfer stopped): a broken frame = resend */
     this.held = () => false;
     /** @type {() => number} */ this.corrSource = () => { this.ownCorr = (this.ownCorr % 0xffff) + 1; return this.ownCorr; };
@@ -493,8 +496,14 @@ export class Link {
    * outstanding; answers in order.
    * @param {Uint8Array[]} messages @param {{ maxInflight: number, window: number }} limits
    */
-  async exchange(messages, { maxInflight: probeMax, window }) {
-    const maxInflight = Math.max(1, Math.min(probeMax, this.inflightCap || 255));
+  async exchange(messages, { maxInflight: probeMax, window, maxFrame = 0 }) {
+    let maxInflight = Math.min(probeMax, this.inflightCap || 255);
+    // A serial port on an OS CDC driver loses answers that burst past what the driver buffers (Linux cdc_acm, HS: 8 KiB;
+    // oep-spec docs/link-measurements.ja.md §1.1): on COBS links the answer bytes expected in flight stay under answerBurst.
+    if (this.framing === 'cobs' && this.answerBurst && maxFrame) {
+      maxInflight = Math.min(maxInflight, Math.floor(this.answerBurst / cobs.frameMax(maxFrame)));
+    }
+    maxInflight = Math.max(1, maxInflight);
     /** @type {Promise<Uint8Array>[]} */
     const answers = [];
     /** @type {{ size: number, done: Promise<unknown> }[]} */
