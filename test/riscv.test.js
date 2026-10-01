@@ -9,7 +9,8 @@ import { join } from 'node:path';
 import { Writer, fromHex } from '../src/bytes.js';
 import * as m from '../src/message.js';
 import { Failed, NoConnection, Rejected, Unavailable, Unsupported } from '../src/errors.js';
-import { planApply } from '../src/core.js';
+import { describe, find, planApply } from '../src/core.js';
+import { decodeDescription } from '../src/catalog.js';
 import * as rv from '../src/riscv.js';
 import { RiscvDm, StepListError, TargetError, Wire } from '../src/riscv.js';
 import { openTcp } from '../src/node/index.js';
@@ -160,6 +161,36 @@ test('block access round-trips and reports how far it got', { skip: !haveFake },
   assert.equal(await dm.read32(0x20000010), 0xdeadbeef);
   assert.throws(() => RiscvDm.writeBlockBody(0, Uint8Array.of(1, 2)), RangeError);
 }));
+
+test('the fake declares max_length = max_frame - 24 rounded to a word; a block past it is unsupported, an odd address malformed', { skip: !haveFake }, async () => {
+  // oep-if-debug §4.5: a probe with block ops declares max_length (bytes, a multiple of 4) so that a read_block answer
+  // (5 + 2 + 1 + words) and a write_block request (10 + 2 + 4 + 2 + words) both fit its max_frame
+  /** @type {[string, number, number][]} */
+  const profiles = [['p4-x035', 1024, 1000], ['esp32-v003', 64, 40]];
+  for (const [profile, maxFrame, declared] of profiles) {
+    await withFake(['--profile', profile], async (hst) => {
+      const limits = await hst.confirmed();
+      assert.equal(limits.maxFrame, maxFrame);
+      const fn = await find(hst, 'oep.target.riscv-dm');
+      const d = decodeDescription(await describe(hst, fn));
+      assert.equal(d.maxLength, declared);
+      assert.equal(declared, Math.floor((maxFrame - 24) / 4) * 4);
+      assert.ok(declared % 4 === 0 && 8 + declared <= maxFrame && 18 + declared <= maxFrame);
+    });
+  }
+  await withFake(X035, async (hst) => {
+    const { dm } = await attached(hst);
+    const words = 1000 / 4;
+    assert.equal((await dm.readBlock(0x20000000, words)).length, 4 * words);
+    await assert.rejects(dm.readBlock(0x20000000, words + 1),
+      (e) => e instanceof Unsupported && e.tag === null && e.result.payload.length === 1 && e.result.payload[0] === 0);
+    await assert.rejects(dm.writeBlock(0x20000000, new Uint8Array(4 * (words + 1))),
+      (e) => e instanceof Unsupported && e.result.payload[0] === 0);
+    await assert.rejects(dm.writeBlock(0x20000002, new Uint8Array(4 * (words + 1))),   // the address first (core §4.3 order 5)
+      (e) => e instanceof Rejected && e.result.detail === m.REJECT.malformed);
+    await dm.writeBlock(0x20000000, new Uint8Array(4 * words));
+  });
+});
 
 test('run returns the registers asked for; a timeout is returned, not thrown', { skip: !haveFake }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'oep-run-'));

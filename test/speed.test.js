@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as m from '../src/message.js';
-import { Rejected, Timeout } from '../src/errors.js';
+import { Rejected, Timeout, Unavailable } from '../src/errors.js';
 import { Link, SWITCH_SETTLE_MS, IDLE_MAX_MS, KEEPALIVE_MS, OPEN_RETRY_MS } from '../src/link.js';
 import { getU32 } from '../src/bytes.js';
 import { Host } from '../src/host.js';
@@ -359,14 +359,97 @@ test('raiseSpeed commits the idle maximum by default, and for 0', { skip: !haveF
       return true;
     },
   }, async (hst) => {
-    await raiseSpeed(hst, [750000], FAST);
-    await raiseSpeed(hst, [500000], { ...FAST, idleMs: 0 });
-    await raiseSpeed(hst, [500000], { ...FAST, idleMs: 600000 });
-    await raiseSpeed(hst, [500000], { ...FAST, idleMs: 1500 });
+    // a try while committed is rejected (core §3.5: a step that does not fit the port's state): one raise per session
+    for (const opts of [FAST, { ...FAST, idleMs: 0 }, { ...FAST, idleMs: 600000 }, { ...FAST, idleMs: 1500 }]) {
+      const report = await raiseSpeed(hst, [750000], opts);
+      assert.equal(report.chosen, 750000);
+      await hst.end();
+      await take(hst, 10000);
+    }
   });
   assert.equal(IDLE_MAX_MS, 3000);
   assert.deepEqual(idles, [3000, 3000, 3000, 1500]);
 });
+
+// ---- the fake probe's port_speed handshake (core §3.5), driven straight from the link -----------------------------
+
+/** The port_speed request body: port(u8) baud(u32) step(u8) verify_ms(u16) idle_ms(u32).
+ * @param {number} port @param {number} baud @param {number} step @param {number} [verifyMs] @param {number} [idleMs] */
+function ps(port, baud, step, verifyMs = 5000, idleMs = 0) {
+  const out = new Uint8Array(12);
+  const v = new DataView(out.buffer);
+  v.setUint8(0, port); v.setUint32(1, baud, true); v.setUint8(5, step); v.setUint16(6, verifyMs, true); v.setUint32(8, idleMs, true);
+  return out;
+}
+const TRY = 0, COMMIT = 1, REVERT = 2;
+/** @param {import('../src/host.js').Host} hst @param {Uint8Array} body */
+const portSpeed = (hst, body) => hst.call(m.CORE_FN, m.OP.port_speed, body);
+/** @param {unknown} e */
+const wrongState = (e) => e instanceof Unavailable && e.cause === 'wrong_state';
+/** @param {unknown} e */
+const malformed = (e) => e instanceof Rejected && e.result.detail === m.REJECT.malformed;
+/** A broken candidate at the probe: bytes between 0x00s that do not decode (core §3.5 "broken"). The link's own
+ * write is bypassed so nothing is resent. @param {import('../src/host.js').Host} hst */
+const noise = (hst) => hst.link.transport.write(Uint8Array.of(0, 0x11, 0x22, 0x33, 0));
+
+test('fake: a step that does not fit the port state is unavailable cause 6; a step above 2 is malformed', { skip: !haveFake },
+  () => withSpeedFake([], async (hst) => {
+    await assert.rejects(portSpeed(hst, ps(0, 500000, COMMIT)), wrongState);             // commit at the boot speed
+    await assert.rejects(portSpeed(hst, ps(0, 500000, REVERT)), wrongState);             // revert at the boot speed
+    await assert.rejects(portSpeed(hst, ps(0, 500000, 3)), malformed);                   // not a defined step
+    await assert.rejects(portSpeed(hst, ps(0, 500000, 0xff)), malformed);
+    const tried = await portSpeed(hst, ps(0, 1500000, TRY));
+    assert.equal(getU32(tried.payload), 1500000);
+    await hst.link.setBaud(1500000);
+    await assert.rejects(portSpeed(hst, ps(0, 1500000, TRY)), wrongState);               // a try while trying
+    await assert.rejects(portSpeed(hst, ps(0, 1000000, COMMIT)), wrongState);            // another baud
+    const committed = await portSpeed(hst, ps(0, 1500000, COMMIT));
+    assert.equal(getU32(committed.payload), 1500000);
+    await assert.rejects(portSpeed(hst, ps(0, 1500000, COMMIT)), wrongState);            // committed already
+    await assert.rejects(portSpeed(hst, ps(0, 921600, TRY)), wrongState);                // a try while committed
+    const reverted = await portSpeed(hst, ps(0, 1500000, REVERT));
+    assert.equal(getU32(reverted.payload), 115200);
+    assert.equal(hst.link.baud, 115200);                                                 // obligation 6: the link followed
+    await assert.rejects(portSpeed(hst, ps(0, 1500000, REVERT)), wrongState);            // back already: nothing to revert
+    await hst.keepalive();
+  }));
+
+test('fake: self-revert 2 counts a broken candidate only after the first good frame; 4 is 3 in a row, no time window', { skip: !haveFake },
+  () => withSpeedFake([], async (hst) => {
+    // trying: the switch-over's leftovers (before any good frame at the new speed) do not count
+    await portSpeed(hst, ps(0, 230400, TRY));
+    await hst.link.setBaud(230400);
+    await noise(hst);
+    await noise(hst);
+    await portSpeed(hst, ps(0, 230400, COMMIT));                                         // still trying: the commit fits
+    // committed: broken candidates in a row revert at 3; a good frame between restarts the run
+    await noise(hst);
+    await noise(hst);
+    await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array(), { locked: false });   // a good frame
+    await noise(hst);
+    await noise(hst);
+    const reverted = await portSpeed(hst, ps(0, 230400, REVERT));                        // still committed
+    assert.equal(getU32(reverted.payload), 115200);
+    assert.equal(hst.link.baud, 115200);
+    // trying: one broken candidate after the first good frame at the new speed reverts
+    await portSpeed(hst, ps(0, 230400, TRY));
+    await hst.link.setBaud(230400);
+    await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array(), { locked: false });   // the first good frame
+    await noise(hst);
+    await assert.rejects(portSpeed(hst, ps(0, 230400, COMMIT)), wrongState);             // reverted: at the boot speed
+    await hst.link.setBaud(115200);
+    // committed: 3 in a row revert however far apart they are (no window)
+    await portSpeed(hst, ps(0, 230400, TRY));
+    await hst.link.setBaud(230400);
+    await portSpeed(hst, ps(0, 230400, COMMIT, 5000, 3000));
+    await noise(hst);
+    await sleep(1100);
+    await noise(hst);
+    await noise(hst);
+    await assert.rejects(portSpeed(hst, ps(0, 230400, REVERT)), wrongState);             // back already
+    await hst.link.setBaud(115200);
+    await hst.keepalive();
+  }));
 
 test('a raised link keeps the line alive when quiet', { skip: !haveFake }, async () => {
   let keepalives = 0;
