@@ -410,8 +410,44 @@ export function dmiValueCount(kinds, done, status) {
   return n;
 }
 
+/** The probe declares no max_length for an interface with read_block / write_block. oep-if-debug §4.5 / §6 make it
+ * mandatory there, and the host takes its block size from it alone - never from max_frame. */
+export class NoMaxLength extends OepError {}
+
+/**
+ * The describe common tag max_length (core §7.4) of interface `fn`, in bytes, rounded down to a word. The probe declares
+ * it so that both a read_block answer and a write_block request fit its max_frame (oep-if-debug §4.5). Throws
+ * NoMaxLength when the probe does not declare it (or declares less than one word).
+ * @param {import('./host.js').Host} hst @param {number} fn @param {string} name
+ */
+export async function declaredMaxLength(hst, fn, name) {
+  for (const [tag, v] of await describe(hst, fn)) {
+    if ((tag & ~m.TAG_CRITICAL) === catalog.COMMON.max_length && v.length >= 2) {
+      const length = Math.floor(getU16(v) / 4) * 4;
+      if (length >= 4) return length;
+      break;
+    }
+  }
+  throw new NoMaxLength(`${name} (fn ${fn}) declares no usable max_length: read_block / write_block need it `
+    + '(oep-if-debug §4.5; the host does not compute a block size from max_frame)');
+}
+
+/**
+ * `maxLength` (bytes one read_block / write_block may move, from the probe's describe) and `maxWords` on an interface
+ * with block operations (RiscvDm, ArmAdi): read once, on first need. Throws NoMaxLength when the probe declares none.
+ * @param {Interface & { maxLength: number | null, maxWords: number | null }} iface @returns {Promise<number>} maxWords
+ */
+export async function blockWords(iface) {
+  if (iface.maxWords === null || iface.maxLength === null) {
+    iface.maxLength = await declaredMaxLength(iface.host, iface.fn, iface.name);
+    iface.maxWords = iface.maxLength / 4;
+  }
+  return iface.maxWords;
+}
+
 /** oep.target.riscv-dm on one connection (every request starts with the connection, u16). Build with
- * `await RiscvDm.on(host, conn)`. */
+ * `await RiscvDm.on(host, conn)`. `maxLength` (bytes) / `maxWords` bound read_block / write_block: the probe's declared
+ * max_length (oep-if-debug §4.5), filled by `on()` when declared, else null (`blockWords()` then throws NoMaxLength). */
 export class RiscvDm extends Interface {
   static NAME = 'oep.target.riscv-dm';
   static REVISION = 1;
@@ -432,12 +468,22 @@ export class RiscvDm extends Interface {
   static TAG_RESET_METHOD = RV.tlv.reset.method;
   static DPC = 0x07B1;
 
+  /** @type {number | null} bytes one block operation may move (describe max_length; never computed from max_frame) */
+  maxLength = null;
+  /** @type {number | null} words (u32) one block operation may move: maxLength / 4 */
+  maxWords = null;
+
   /** @param {import('./host.js').Host} hst @param {number} conn @param {{ fn?: number, name?: string }} [opts] */
   static async on(hst, conn, { fn, name } = {}) {
-    return /** @type {RiscvDm} */ (await RiscvDm.open(hst, { fn, name, prefix: u16(conn) }));
+    const dm = /** @type {RiscvDm} */ (await RiscvDm.open(hst, { fn, name, prefix: u16(conn) }));
+    await dm.blockWords().catch((e) => { if (!(e instanceof NoMaxLength)) throw e; });   // undeclared: null until a block op needs it
+    return dm;
   }
 
   get conn() { return getU16(this.prefix); }
+
+  /** The words one read_block / write_block may move, from the probe's declared max_length (NoMaxLength when none). */
+  blockWords() { return blockWords(this); }
 
   /** @param {string} what @param {number} op */
   async statusOnly(what, op) {

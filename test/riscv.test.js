@@ -154,6 +154,9 @@ test('dmi counts its steps and a poll that gives up stops the list with its last
 
 test('block access round-trips and reports how far it got', { skip: !haveFake }, () => withFake(X035, async (hst) => {
   const { dm } = await attached(hst);
+  assert.equal(dm.maxLength, 1000);                                        // from describe (max_frame 1024 - 24), not max_frame
+  assert.equal(dm.maxWords, 250);
+  assert.equal(await dm.blockWords(), 250);
   const data = w().u32(1).u32(2).u32(3).done();
   await dm.writeBlock(0x20000000, data);
   assert.deepEqual(await dm.readBlock(0x20000000, 3), data);

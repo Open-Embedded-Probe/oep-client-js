@@ -10,9 +10,9 @@ import { Writer, concat, getU16 } from './bytes.js';
 import * as m from './message.js';
 import { OepError, Timeout } from './errors.js';
 import { Interface } from './core.js';
-import { ATTACH_FLAGS, OK, TargetError, WireBase, ran } from './riscv.js';
+import { ATTACH_FLAGS, NoMaxLength, OK, TargetError, WireBase, blockWords, ran } from './riscv.js';
 
-export { ATTACH_FLAGS, OK, TargetError, WireBase, check, ran, statusName } from './riscv.js';
+export { ATTACH_FLAGS, NoMaxLength, OK, TargetError, WireBase, check, declaredMaxLength, ran, statusName } from './riscv.js';
 
 export const DP_DPIDR = 0x0, DP_ABORT = 0x0;
 export const DP_CTRL_STAT = 0x4;
@@ -70,7 +70,9 @@ export function transferReads(steps) {
   return out;
 }
 
-/** oep.target.arm-adi on one connection (§6). Build with `await ArmAdi.on(host, conn, { adiv6 })`. */
+/** oep.target.arm-adi on one connection (§6). Build with `await ArmAdi.on(host, conn, { adiv6 })`. `maxLength` (bytes)
+ * / `maxWords` bound read_block / write_block: the probe's declared max_length (oep-if-debug §6, mandatory there),
+ * filled by `on()` when declared, else null (`blockWords()` then throws NoMaxLength). */
 export class ArmAdi extends Interface {
   static NAME = 'oep.target.arm-adi';
   static REVISION = 1;
@@ -81,16 +83,24 @@ export class ArmAdi extends Interface {
   adiv6 = false;
   /** @type {number | null} the SELECT value last written (null: unknown) */ selected = null;
   /** the raw ACK of the last transfer */ lastAck = 0;
+  /** @type {number | null} bytes one block operation may move (describe max_length; never computed from max_frame) */
+  maxLength = null;
+  /** @type {number | null} words (u32) one block operation may move: maxLength / 4 */
+  maxWords = null;
 
   /** @param {import('./host.js').Host} hst @param {number} conn
    * @param {{ adiv6?: boolean, fn?: number, name?: string }} [opts] */
   static async on(hst, conn, { adiv6 = false, fn, name } = {}) {
     const adi = /** @type {ArmAdi} */ (await ArmAdi.open(hst, { fn, name, prefix: new Writer().u16(conn).done() }));
     adi.adiv6 = adiv6;
+    await adi.blockWords().catch((e) => { if (!(e instanceof NoMaxLength)) throw e; });   // undeclared: null until a block op needs it
     return adi;
   }
 
   get conn() { return getU16(this.prefix); }
+
+  /** The words one read_block / write_block may move, from the probe's declared max_length (NoMaxLength when none). */
+  blockWords() { return blockWords(this); }
 
   // ---- raw transfers ----
 
@@ -183,10 +193,8 @@ export class MemAp {
    * @param {ArmAdi} adi @param {number} ap @param {{ cswSet?: number, cswClear?: number }} [opts]
    */
   static async open(adi, ap, { cswSet = 0, cswClear = 0 } = {}) {
-    // Words per block operation, from the probe's frame limit: request header 6 + session 4 + connection 2 +
-    // address 4 + count 2 on the way in (the answer's 5 + done 2 + status 1 is smaller).
-    const chunk = Math.max(1, Math.floor(((await adi.host.confirmed()).maxFrame - 18) / 4));
-    const mem = new MemAp(adi, ap, chunk);
+    // words per block operation: the probe's declared max_length (oep-if-debug §6), never computed from max_frame
+    const mem = new MemAp(adi, ap, await adi.blockWords());
     const csw = await adi.apRead(ap, mem.base);
     await adi.apWrite(ap, mem.base, ((((csw & ~0x37) | 0x12) | cswSet) & ~cswClear) >>> 0);
     await adi.apSelect(ap, mem.base);   // the bank the block operations assume
