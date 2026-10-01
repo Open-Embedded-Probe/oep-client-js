@@ -34,13 +34,14 @@ class FakeAdi {
         if (addr === 0x2D00) {
           if (read) { out.u32(this.posted); this.posted = this.csw; } else this.csw = value;
         } else if (addr === 0xE000) {
-          return [m.COMPLETED, m.FAILED, Uint8Array.from([...w().u16(done).u8(3).u8(4).done(), ...out.done()])];   // fault, ACK FAULT
+          return [m.COMPLETED, m.FAILED, Uint8Array.from([...w().u16(done).u8(3).u8(4).u16(out.bytes.length / 4).done(), ...out.done()])];   // fault, ACK FAULT
         }
       }
       done++;
     }
     assert.equal(done, n);
-    return ok([...w().u16(done).u8(0).u8(1).done(), ...out.done()]);
+    const values = out.done();
+    return ok([...w().u16(done).u8(0).u8(1).u16(values.length / 4).done(), ...values]);   // done status ack nvals values
   }
 
   /** @param {Uint8Array} p @returns {[number, number, Uint8Array]} */
@@ -66,7 +67,7 @@ function bench() {
   const hst = new ScriptedHost(handlers([
     [5, ArmAdi.TRANSFER, (p) => fake.transfer(p)], [5, ArmAdi.READ_BLOCK, (p) => fake.readBlock(p)],
     [5, ArmAdi.WRITE_BLOCK, (p) => fake.writeBlock(p)],
-    [4, SwdWire.ATTACH, () => ok(w().u16(1).u32(0x4c013477).u8(1).u32(2_000_000).done())],
+    [4, SwdWire.ATTACH, (p) => { assert.equal(p[0], 0); return ok(w().u16(1).u32(0x4c013477).u8(4).u32(2_000_000).done()); }],   // method 0; dormant_woken = bit2
   ]));
   return { fake, hst };
 }
@@ -75,10 +76,12 @@ test('swd attach decodes DPIDR and dormant; targetsel and max_speed go critical'
   const { hst } = bench();
   const wire = await SwdWire.open(hst);
   assert.deepEqual(await wire.attach(), { conn: 1, dpidr: 0x4c013477, dormant: true });
-  await wire.attach({ targetsel: 0x01002927, maxSpeed: 1_000_000 });
+  assert.deepEqual([...hst.log[hst.log.length - 1][2]], [0, 0x81, 4, ...w().u32(1_000_000).done()]);   // max_speed is required: the default
+  await wire.attach({ targetsel: 0x01002927, maxSpeed: 2_000_000, reset: [7, 20] });
   assert.deepEqual([...hst.log[hst.log.length - 1][2]],
-    [0x81, 4, ...w().u32(1_000_000).done(), 0x82, 4, ...w().u32(0x01002927).done()]);
+    [0, 0x81, 4, ...w().u32(2_000_000).done(), 0x85, 4, 7, 0, 20, 0, 0x82, 4, ...w().u32(0x01002927).done()]);
   assert.equal(wire.speedHz, 2_000_000);
+  assert.equal(wire.flags, 4);
   assert.ok(!wire.existing);
 });
 

@@ -10,9 +10,9 @@ import { Writer, concat, getU16 } from './bytes.js';
 import * as m from './message.js';
 import { OepError, Timeout } from './errors.js';
 import { Interface } from './core.js';
-import { OK, TargetError, WireBase, ran } from './riscv.js';
+import { ATTACH_FLAGS, OK, TargetError, WireBase, ran } from './riscv.js';
 
-export { OK, TargetError, WireBase, check, ran, statusName } from './riscv.js';
+export { ATTACH_FLAGS, OK, TargetError, WireBase, check, ran, statusName } from './riscv.js';
 
 export const DP_DPIDR = 0x0, DP_ABORT = 0x0;
 export const DP_CTRL_STAT = 0x4;
@@ -28,24 +28,28 @@ const hex32 = (v) => `0x${(v >>> 0).toString(16).padStart(8, '0')}`;
 export class SwdWire extends WireBase {
   static NAME = 'oep.wire.swd';
   static TAG_TARGETSEL = SWD.tlv.attach.targetsel;
+  static RUN = SWD.enum.attach_method.run;
 
   speedHz = 0;
   existing = false;
 
   /**
-   * -> { conn, dpidr, dormant: woke from dormant }. targetsel (multidrop) and maxSpeed go as critical TLVs: a probe that
-   * cannot honour them refuses. this.existing: the wire was attached already (its connection returned).
-   * @param {{ targetsel?: number | null, maxSpeed?: number | null, pins?: [number, number] | null }} [opts]
+   * -> { conn, dpidr, dormant: woke from dormant }. The request is method 0 (swd has no halting attach) and TLVs:
+   * maxSpeed (required, critical; null: the wire's declared max_clock_hz), targetsel (multidrop, critical), pins,
+   * reset = [channel, holdMs] (critical). this.existing: the wire was attached already (its connection returned).
+   * this.flags: the attach_flags byte.
+   * @param {{ targetsel?: number | null, maxSpeed?: number | null, pins?: [number, number] | null, reset?: [number, number] | null }} [opts]
    */
-  async attach({ targetsel = null, maxSpeed = null, pins = null } = {}) {
-    let body = concat(this.speedTlv(maxSpeed), this.pinsTlv(pins));
+  async attach({ targetsel = null, maxSpeed = null, pins = null, reset = null } = {}) {
+    let body = concat([SwdWire.RUN], this.speedTlv(await this.speedOrDefault(maxSpeed)), this.pinsTlv(pins), this.resetTlv(reset));
     if (targetsel != null) body = concat(body, m.tlv(SwdWire.TAG_TARGETSEL, new Writer().u32(targetsel).done(), true));
     const rd = new m.Reader((await this.call(SwdWire.ATTACH, body)).payload);
-    const conn = rd.u16(), dpidr = rd.u32(), flags = rd.u8();
+    const conn = rd.u16(), dpidr = rd.u32();
+    this.flags = rd.u8();
     this.speedHz = rd.u32();
-    this.existing = !!(flags & 2);
+    this.existing = !!(this.flags & ATTACH_FLAGS.existing);
     rd.tail();
-    return { conn, dpidr, dormant: !!(flags & 1) };
+    return { conn, dpidr, dormant: !!(this.flags & ATTACH_FLAGS.dormant_woken) };
   }
 }
 
@@ -107,7 +111,7 @@ export class ArmAdi extends Interface {
     const rd = ran(r);
     const done = rd.u16(), status = rd.u8();
     this.lastAck = rd.u8();
-    const values = rd.words(reads.slice(0, done).filter(Boolean).length);
+    const values = rd.words(rd.u16());   // nvals: the values the answer carries (§6)
     rd.tail();
     if (status !== OK || !r.succeeded || done !== reads.length) {
       throw new AdiError(`transfer (ack 0x${this.lastAck.toString(16)})`, status, r, { done, values });
