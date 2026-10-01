@@ -5,10 +5,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Writer, u32 } from '../src/bytes.js';
 import * as config from '../src/config.js';
-import { Bind, Idle, Label, Plan, ProbeConfig, Slot, Uart } from '../src/config.js';
-import { Rejected, OepError, Unsupported } from '../src/errors.js';
+import { Bind, Disable, Idle, Label, Plan, ProbeConfig, Slot, Uart } from '../src/config.js';
+import { Rejected, OepError, Unavailable, Unsupported } from '../src/errors.js';
 import * as m from '../src/message.js';
-import { FixtureUart } from '../src/fixture.js';
+import { FixtureUart, Gpio, GpioUnavailable } from '../src/fixture.js';
+import { planApply, planRelease } from '../src/core.js';
+import { Wire } from '../src/riscv.js';
 import { openTcp } from '../src/node/index.js';
 import { haveFake, startFake } from './fake.js';
 
@@ -240,3 +242,62 @@ test('the uart item sets the UART when its plan comes; a session configure wins 
   assert.ok(!(await cfg.items()).some((i) => i instanceof Uart));
   await hst.end();
 }));
+
+// ---- the disable item (0x07, probe.config §1): a channel the probe never uses or touches ------------------------
+
+/** rejected unavailable with this cause and channel @param {string} cause @param {number} ch */
+const refused = (cause, ch) => (/** @type {any} */ e) => e instanceof Unavailable && e.cause === cause && e.channels.includes(ch);
+
+test('the disable item: its value, decode, removal and hash', () => {
+  const d = new Disable({ channel: 40 });
+  assert.equal(config.ITEM.disable, 0x07);
+  assert.deepEqual([...config.item(d)], [0x07, 2, 40, 0]);
+  assert.deepEqual(config.decode(config.ITEM.disable, d.value()), d);
+  assert.deepEqual([...config.remove('disable', 41).encoded()], [3, 0x07, 41, 0]);
+  const order = config.canonical([new Disable({ channel: 9 }), new Label({ channel: 1, text: 'NC' }), new Disable({ channel: 3 })]);
+  assert.deepEqual(order.map(([t, v]) => [t, v[0]]), [[2, 1], [7, 3], [7, 9]]);
+});
+
+test('a disabled channel is refused everywhere with cause 5 and its channel', { skip: !haveFake }, () => withFake(['--profile', 'p4-bench'], async (hst) => {
+  await hst.open(3000);
+  const cfg = await ProbeConfig.open(hst);
+  const h = await cfg.set([new Disable({ channel: 30 }), new Disable({ channel: 4 }), new Label({ channel: 30, text: 'NC' })]);
+  assert.equal(h, (await cfg.get()).hash);
+  assert.equal(config.canonicalHash(/** @type {config.Item[]} */ (await cfg.items())), h);
+  assert.ok((await cfg.items()).some((i) => i instanceof Disable && i.channel === 30));
+  await assert.rejects(planApply(hst, [[4, 1, 30]]), refused('held_by_settings', 30));             // plan_apply
+  await assert.rejects(cfg.set([new Plan({ fn: 5, role: 1, channel: 30 })]), refused('held_by_settings', 30));   // a settings plan
+  await assert.rejects(cfg.set([new Slot({ slot: 0, wireFn: 1, pins: [4, 5], name: 'b' })]), refused('held_by_settings', 4));
+  const wire = await Wire.open(hst);
+  await assert.rejects(wire.attach({ pins: [4, 5] }), refused('held_by_settings', 4));            // an attach's pins
+  await assert.rejects(wire.scan([[4, 5]]), refused('held_by_settings', 4));                       // scan pairs
+  assert.deepEqual((await wire.scan()).map((f) => f.pins), [[2, 3], [6, 7]]);                       // count 0 skips it
+  const gpio = await Gpio.open(hst);
+  await assert.rejects(gpio.set([[30, Gpio.OUTPUT_HIGH]]), (e) => e instanceof GpioUnavailable && e.cause === 'held_by_settings' && e.index === 0);
+  await assert.rejects(gpio.read([30]), refused('held_by_settings', 30));
+  await cfg.unset([['disable', 30]]);                                                              // enabled again
+  await planApply(hst, [[4, 1, 30]]);
+  await hst.end();
+}));
+
+test('disabling a channel in use is cause 1; idle and disable on one channel is malformed', { skip: !haveFake }, () => withFake(['--profile', 'p4-bench'], async (hst) => {
+  await hst.open(3000);
+  const cfg = await ProbeConfig.open(hst);
+  await planApply(hst, [[4, 1, 30]]);
+  await assert.rejects(cfg.set([new Disable({ channel: 30 })]), refused('pin_in_use', 30));
+  await planRelease(hst, [4]);
+  await cfg.set([new Disable({ channel: 30 })]);
+  await assert.rejects(cfg.set([new Idle({ channel: 31 }), new Disable({ channel: 31 })]), (e) => e instanceof Rejected && e.result.detail === m.REJECT.malformed);
+  await assert.rejects(cfg.set([new Idle({ channel: 30 })]), (e) => e instanceof Rejected && e.result.detail === m.REJECT.malformed);
+  assert.deepEqual((await cfg.items()).filter((i) => i instanceof Idle), []);                      // nothing changed
+  await hst.end();
+}));
+
+test('a disabled reset line', { skip: !haveFake }, () => withFake(['--profile', 'esp32-v003'], async (hst) => {
+  await hst.open(3000);
+  const cfg = await ProbeConfig.open(hst);
+  await cfg.set([new Disable({ channel: 23 })]);
+  const wire = await Wire.open(hst, { name: 'oep.wire.swio' });
+  await assert.rejects(wire.attachUnderReset(23, { holdMs: 5 }), refused('held_by_settings', 23));
+  await hst.end();
+}, 'cobs'));

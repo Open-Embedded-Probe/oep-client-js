@@ -1,6 +1,6 @@
 // @ts-check
 // oep.probe.config revision 1 (oep-spec docs/oep-if-probe-config.ja.md): the probe's settings - plan, labels, idle
-// pins, slots, binds, fixture UART settings - read and set as items, removed with unset, saved when the host says so,
+// pins, slots, binds, fixture UART settings, disabled channels - read and set as items, removed with unset, saved when the host says so,
 // and the live slot / bind / storage state as its own lock-free operation (describe is declarations only, core §7.3).
 //
 //   const cfg = await ProbeConfig.open(hst);
@@ -97,6 +97,18 @@ export class Uart {
   value() { return new Writer().u16(this.fn).u32(this.baud).u8(this.format).done(); }
 }
 
+/**
+ * A channel the probe never uses or touches (probe.config §1, item 0x07): not on this board, or wired to another part.
+ * Any request naming it is refused unavailable (cause 5, held by settings); describe still declares it.
+ */
+export class Disable {
+  static TAG = ITEM.disable;
+  /** @param {{ channel: number }} o */
+  constructor({ channel }) { this.channel = channel; }
+  key() { return [this.channel]; }
+  value() { return new Writer().u16(this.channel).done(); }
+}
+
 /** @typedef {{ scheme: number, mask: Uint8Array, value: Uint8Array }} Lock  the target_id a connection must show */
 
 /**
@@ -156,9 +168,9 @@ export class Bind {
   }
 }
 
-/** @typedef {Plan | Label | Idle | Slot | Bind | Uart} Item */
+/** @typedef {Plan | Label | Idle | Slot | Bind | Uart | Disable} Item */
 /** @typedef {{ tag: number, value: Uint8Array }} RawItem  an item of a tag this client does not know (or a malformed one) */
-/** @typedef {'plan' | 'label' | 'idle' | 'slot' | 'bind' | 'uart'} ItemKind */
+/** @typedef {'plan' | 'label' | 'idle' | 'slot' | 'bind' | 'uart' | 'disable'} ItemKind */
 
 /** One item as its TLV.
  * @param {Item} it */
@@ -168,7 +180,7 @@ export function item(it) { return m.tlv(/** @type {any} */ (it.constructor).TAG,
 export class Removal {
   /** @param {ItemKind} kind @param {number} key */
   constructor(kind, key) { this.kind = kind; this.key = key; }
-  /** len(u8) tag(u8) key: the key is fn(u16) for plan / uart, channel(u16) for label / idle, slot(u8), port(u8). */
+  /** len(u8) tag(u8) key: the key is fn(u16) for plan / uart, channel(u16) for label / idle / disable, slot(u8), port(u8). */
   encoded() {
     const key = this.kind === 'slot' || this.kind === 'bind' ? Uint8Array.of(this.key) : new Writer().u16(this.key).done();
     return new Writer().u8(1 + key.length).u8(ITEM[this.kind]).raw(key).done();
@@ -176,7 +188,7 @@ export class Removal {
 }
 
 /** The removal of the item of this key (for `unset`, or in a `set` list): kind plan (key fn: its whole plan), label /
- * idle (channel), slot, bind (port), uart (fn).
+ * idle / disable (channel), slot, bind (port), uart (fn).
  * @param {ItemKind} kind @param {number} key */
 export function remove(kind, key) {
   if (ITEM[kind] === undefined) throw new RangeError(`no item kind ${kind}`);
@@ -205,6 +217,7 @@ export function decode(tag, v) {
       attach: nameOf(ATTACH, v[7]), retryS: getU32(v, 8) / 1000, maxSpeed: getU32(v, 12), idleClock: nameOf(IDLE_CLOCK, v[16]),
       mechanism: nameOf(MECHANISM, v[17]), lock });
   }
+  if (tag === ITEM.disable && v.length >= 2) return new Disable({ channel: getU16(v) });
   if (tag === ITEM.uart && v.length >= 7) return new Uart({ fn: getU16(v), baud: getU32(v, 2), format: v[6] });
   if (tag === ITEM.bind && v.length >= 4) {
     /** @type {[string, number][]} */
@@ -238,8 +251,8 @@ export function crc32(data) {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-/** The canonical order's key of one item (probe.config §2): plan (fn, role, channel), label / idle channel, slot, port,
- * uart fn. @param {number} tag @param {Uint8Array} value */
+/** The canonical order's key of one item (probe.config §2): plan (fn, role, channel), label / idle / disable channel,
+ * slot, port, uart fn. @param {number} tag @param {Uint8Array} value */
 function sortKey(tag, value) {
   if (tag === ITEM.plan && value.length >= 5) return [getU16(value), value[2], getU16(value, 3)];
   if (tag === ITEM.slot || tag === ITEM.bind) return value.length ? [value[0]] : [-1];
@@ -348,7 +361,7 @@ export class ProbeConfig extends Interface {
     }
   }
 
-  /** The current settings, decoded (Plan, Label, Idle, Slot, Bind, Uart; { tag, value } for others). */
+  /** The current settings, decoded (Plan, Label, Idle, Slot, Bind, Uart, Disable; { tag, value } for others). */
   async items() { return (await this.get()).items.map(([t, v]) => decode(t, v)); }
 
   /** Items (objects of the classes above, or item TLV bytes) -> the new hash. Removals (`remove()`) in the list go as

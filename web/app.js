@@ -16,6 +16,7 @@ const WORDS = {
     tabDescribe: 'Probe', tabSettings: 'Settings', tabTools: 'Tools', tabFirmware: 'Firmware',
     describeRun: 'Read everything it declares', saveJson: 'Save as JSON', read: 'Read', saveToProbe: 'Save in the probe',
     erase: 'Erase the saved', addItem: 'Add or change', slot: 'Slot', bind: 'Bind', label: 'Label', idle: 'Idle state',
+    disable: 'Disable channels (not on this board: never used or touched)',
     plan: 'Plan', uart: 'UART', set: 'Set', remove: 'Remove', configure: 'Configure', send: 'Send',
     gpioHint: 'Plan the channel to oep.fixture.gpio first (it takes the pin for this session).', gpioPlan: 'Plan it',
     uartHint: 'The UART needs its RX / TX planned (Settings: plan, or a saved plan).',
@@ -34,6 +35,7 @@ const WORDS = {
     tabDescribe: 'probe', tabSettings: '設定', tabTools: '操作', tabFirmware: 'firmware',
     describeRun: '宣言をすべて読む', saveJson: 'JSON で保存', read: '読む', saveToProbe: 'probe に保存', erase: '保存を消す',
     addItem: '足す・変える', slot: 'スロット', bind: 'bind', label: 'ラベル', idle: '空きのときの状態', plan: 'plan',
+    disable: '使わない channel（このボードに出ていない: 使わず、触れない）',
     uart: 'UART', set: '設定', remove: '消す', configure: '設定', send: '送る',
     gpioHint: '先にその channel を oep.fixture.gpio に plan します（このセッションの間、ピンを持ちます）。', gpioPlan: 'plan する',
     uartHint: 'UART は RX / TX の plan が要ります（設定の plan か、保存した plan）。',
@@ -199,6 +201,7 @@ function itemText(it) {
   if (it instanceof config.Bind) return `bind port ${it.port} ${it.mode}: ${it.streams.map((s) => s.join(':')).join(', ')}`;
   if (it instanceof config.Label) return `label ${it.channel} "${it.text}"`;
   if (it instanceof config.Idle) return `idle ${it.channel} ${it.mode}`;
+  if (it instanceof config.Disable) return `disable ${it.channel}`;
   if (it instanceof config.Plan) return `plan fn ${it.fn} role ${it.role} → channel ${it.channel}`;
   if (it instanceof config.Uart) return `uart fn ${it.fn} ${it.baud} baud, format 0x${it.format.toString(16).padStart(2, '0')}`;
   return `tag 0x${it.tag?.toString(16)}`;
@@ -211,6 +214,7 @@ function itemKey(it) {
   if (it instanceof config.Bind) return ['bind', it.port];
   if (it instanceof config.Label) return ['label', it.channel];
   if (it instanceof config.Idle) return ['idle', it.channel];
+  if (it instanceof config.Disable) return ['disable', it.channel];
   if (it instanceof config.Plan) return ['plan', it.fn];
   if (it instanceof config.Uart) return ['uart', it.fn];
   return null;
@@ -270,6 +274,8 @@ function wireForms() {
     streams: String(d.streams).split(',').map((s) => { const [k, v] = s.trim().split(':'); return [k, +v]; }) })]);
   on('form-label', (d) => [new config.Label({ channel: +d.channel, text: d.text })]);
   on('form-idle', (d) => [new config.Idle({ channel: +d.channel, mode: d.mode })]);
+  on('form-disable', (d) => String(d.channels).split(',').filter((s) => s.trim() !== '')
+    .map((s) => new config.Disable({ channel: +s.trim() })));
   on('form-plan', (d) => String(d.roles).split(',').map((s) => {
     const [role, ch] = s.trim().split('=');
     return new config.Plan({ fn: +d.fn, role: +role, channel: +ch });
