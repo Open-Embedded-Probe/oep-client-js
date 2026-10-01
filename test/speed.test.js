@@ -12,6 +12,7 @@ import { Host } from '../src/host.js';
 import { connect } from '../src/open.js';
 import * as cobs from '../src/cobs.js';
 import { raiseSpeed, speedText } from '../src/speed.js';
+import { RiscvDm, Wire } from '../src/riscv.js';
 import { take } from '../src/core.js';
 import { openTcp, tcpTransport } from '../src/node/index.js';
 import { haveFake, startFake } from './fake.js';
@@ -537,5 +538,37 @@ test('in use: no answer at a raised rate falls back well inside the lease and th
     await hst.keepalive();
     const again = await raiseSpeed(hst, [921600], FAST);
     assert.match(again.trials[0].why, /^stepped down/);
+  }, 3000);
+});
+
+test('a long run at a raised rate waits its timeoutMs, no step down; the keepalive goes before its corr', { skip: !haveFake }, async () => {
+  /** @type {number[]} */ const sent = [];
+  await withLine([], {
+    onWrite(msg) { sent.push(m.Request.unpack(msg).corr); return true; },
+  }, async (hst) => {
+    const report = await raiseSpeed(hst, [921600], FAST);
+    assert.equal(report.chosen, 921600);
+    hst.link.timeoutMs = 3000;                            // an ordinary request waits 750 ms (lease / 4)
+    const wire = await Wire.open(hst, { name: 'oep.wire.swio' });
+    const { conn } = await wire.attach({ halt: true });
+    const dm = await RiscvDm.on(hst, conn);
+    const write = hst.link.transport.write.bind(hst.link.transport);
+    hst.link.transport.write = async (data) => {          // the run takes 1.9 s on the probe: its answer comes then
+      const req = m.Request.unpack(cobs.unframe(data.subarray(1, data.length - 1)));
+      if (req.op === RiscvDm.RUN && req.fn === dm.fn) setTimeout(() => write(data), 1900);
+      else await write(data);
+    };
+    const t0 = performance.now();
+    const r = await dm.run(0x20000000, [], { timeoutMs: 2000 });
+    const took = performance.now() - t0;
+    assert.ok(r.status === 0 && took > 1800 && took < 3000, `took ${took}`);
+    assert.equal(hst.link.baud, 921600);
+    assert.equal(report.steppedDown, false);
+    assert.equal(hst.link.stats.retries, 0);
+    assert.equal(hst.link.strikes.length, 0);
+    sent.length = 0;
+    await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());   // after 1.9 s of quiet: a keepalive first
+    assert.equal(sent.length, 2);
+    assert.ok(sent[0] < sent[1], `corrs ${sent}`);
   }, 3000);
 });

@@ -43,7 +43,7 @@ export class SwdWire extends WireBase {
   async attach({ targetsel = null, maxSpeed = null, pins = null, reset = null } = {}) {
     let body = concat([SwdWire.RUN], this.speedTlv(await this.speedOrDefault(maxSpeed)), this.pinsTlv(pins), this.resetTlv(reset));
     if (targetsel != null) body = concat(body, m.tlv(SwdWire.TAG_TARGETSEL, new Writer().u32(targetsel).done(), true));
-    const rd = new m.Reader((await this.call(SwdWire.ATTACH, body)).payload);
+    const rd = new m.Reader((await this.call(SwdWire.ATTACH, body, { expectMs: reset?.[1] ?? 0 })).payload);
     const conn = rd.u16(), dpidr = rd.u32();
     this.flags = rd.u8();
     this.speedHz = rd.u32();

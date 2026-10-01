@@ -451,7 +451,7 @@ export class LogicCapture extends Interface {
 
   /** -> blockingMs (0: the probe keeps answering while it captures). this.generation: the new capture's. */
   async start() {
-    const rd = new m.Reader((await this.call(LogicCapture.START)).payload);
+    const rd = new m.Reader((await this.call(LogicCapture.START, undefined, { expectMs: this.config?.blockingMs ?? 0 })).payload);
     const blocking = rd.u32();
     this.generation = rd.u32();
     rd.tail();
@@ -784,7 +784,8 @@ export class CaptureGroup extends Interface {
    * generations names each track's new generation; this.generations keeps them by fn).
    * @param {LogicCapture[]} tracks */
   async start(tracks = []) {
-    const rd = new m.Reader((await this.call(CaptureGroup.START)).payload);
+    const rd = new m.Reader((await this.call(CaptureGroup.START, undefined,
+      { expectMs: Math.max(0, ...tracks.map((t) => t.config?.blockingMs ?? 0)) })).payload);
     const blockingMs = rd.u32(), startNs = rd.u64();
     const gens = rd.tail().get(GROUP_GENERATIONS) ?? new Uint8Array();
     this.generations = new Map();

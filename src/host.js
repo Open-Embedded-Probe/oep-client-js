@@ -63,6 +63,12 @@ export class Host {
 
   nextCorr() { this.corr = (this.corr % 0xffff) + 1; return this.corr; }
 
+  /** Before a request takes its corr: the link's keepalive at a raised port_speed rate, so what goes first carries the
+   * lower corr (or the probe takes the request for an old one, core §4.1). */
+  async beforeRequest() {
+    if (this.link && typeof this.link.keepRaised === 'function') await this.link.keepRaised();
+  }
+
   /** @param {boolean} locked */
   async sessionFor(locked) {
     if (!locked || this.session === null) return null;
@@ -72,11 +78,16 @@ export class Host {
 
   /**
    * One request. locked: send the session id once a session is open. Rejections throw; any other answer comes back.
-   * @param {number} fn @param {number} op @param {Uint8Array} payload @param {{ locked?: boolean }} [opts]
+   * expectMs: how long it may take on the probe (a run's timeoutMs, a dmi list's waits, an attach's holdMs, a capture's
+   * blocking, a save; core §6.1: the probe does not count the lease meanwhile): the link waits at least that and a
+   * margin for its answer, also at a raised port_speed rate (where an ordinary request waits a quarter of the lease).
+   * @param {number} fn @param {number} op @param {Uint8Array} payload @param {{ locked?: boolean, expectMs?: number }} [opts]
    */
-  async request(fn, op, payload = new Uint8Array(), { locked = true } = {}) {
-    const req = new m.Request(this.nextCorr(), fn, op, payload, await this.sessionFor(locked));
-    const result = m.Result.unpack(await this.link.send(req.pack()));
+  async request(fn, op, payload = new Uint8Array(), { locked = true, expectMs = 0 } = {}) {
+    const session = await this.sessionFor(locked);
+    await this.beforeRequest();
+    const req = new m.Request(this.nextCorr(), fn, op, payload, session);
+    const result = m.Result.unpack(await this.link.send(req.pack(), expectMs ? { expectMs } : undefined));
     if (result.corr !== req.corr) throw new m.ProtocolError(`result for correlation ${result.corr}, expected ${req.corr}`);
     if (result.resolution === m.REJECTED) {
       this.rejected(result);
@@ -86,7 +97,7 @@ export class Host {
   }
 
   /** request() that also throws Failed unless the probe says it worked.
-   * @param {number} fn @param {number} op @param {Uint8Array} payload @param {{ locked?: boolean }} [opts] */
+   * @param {number} fn @param {number} op @param {Uint8Array} payload @param {{ locked?: boolean, expectMs?: number }} [opts] */
   async call(fn, op, payload = new Uint8Array(), opts = {}) {
     const r = await this.request(fn, op, payload, opts);
     if (!r.succeeded) throw new Failed(r);
@@ -127,6 +138,7 @@ export class Host {
    */
   async pipeline(requests, { locked = true } = {}) {
     const session = await this.sessionFor(locked);
+    await this.beforeRequest();
     const reqs = requests.map(([fn, op, payload]) => new m.Request(this.nextCorr(), fn, op, payload, session));
     const limits = await this.confirmed();
     const replies = await this.link.exchange(reqs.map((r) => r.pack()), { maxInflight: limits.maxInflight, window: limits.window });

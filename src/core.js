@@ -182,10 +182,10 @@ export class Interface {
     return out;
   }
 
-  /** @param {number} op @param {Uint8Array} body @param {{ locked?: boolean }} [opts] */
+  /** @param {number} op @param {Uint8Array} body @param {{ locked?: boolean, expectMs?: number }} [opts] */
   call(op, body = new Uint8Array(), opts = {}) { return this.host.call(this.fn, op, this.withPrefix(body), opts); }
   /** Rejections throw; completed results of any outcome come back.
-   * @param {number} op @param {Uint8Array} body @param {{ locked?: boolean }} [opts] */
+   * @param {number} op @param {Uint8Array} body @param {{ locked?: boolean, expectMs?: number }} [opts] */
   request(op, body = new Uint8Array(), opts = {}) { return this.host.request(this.fn, op, this.withPrefix(body), opts); }
   /** The raw (fn, op, payload) of one operation, for Host.pipeline.
    * @param {number} op @param {Uint8Array} body @returns {[number, number, Uint8Array]} */
