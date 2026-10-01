@@ -6,10 +6,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as m from '../src/message.js';
 import { Rejected } from '../src/errors.js';
-import { Link } from '../src/link.js';
+import { Link, SWITCH_SETTLE_MS } from '../src/link.js';
+import { Host } from '../src/host.js';
+import { connect } from '../src/open.js';
+import * as cobs from '../src/cobs.js';
 import { raiseSpeed, speedText } from '../src/speed.js';
 import { take } from '../src/core.js';
-import { openTcp } from '../src/node/index.js';
+import { openTcp, tcpTransport } from '../src/node/index.js';
 import { haveFake, startFake } from './fake.js';
 
 const FAST = { verifyBytes: 2048, verifySeconds: 0.3, verifyMs: 600 };
@@ -42,7 +45,9 @@ test('commit at a good rate, with the report; the end takes the link back', { sk
   assert.equal(hst.link.speed, report);
   assert.equal(hst.link.baud, 1500000);
   await hst.keepalive();
-  assert.match(speedText(report), /committed/);
+  assert.equal(t.inflight, 4);                       // the fake's max_inflight: pipelined passed, no cap
+  assert.equal(hst.link.inflightCap, 0);
+  assert.match(speedText(report), /committed \(in flight 4\)/);
   await hst.end();
   assert.equal(hst.link.baud, 115200);
   assert.equal(report.rate, 115200);
@@ -56,7 +61,8 @@ test('a broken rate reverts, an unmakeable one is skipped, the next is committed
     assert.equal(a.committed, false);
     assert.equal(a.why, 'frames broke');
     assert.ok(a.brokenIn > 0);
-    assert.ok(b.brokenIn > 0 && !b.committed);
+    assert.equal(b.committed, false);
+    assert.equal(b.why, 'no confirm at the new rate');   // its answers to the confirm never arrive
     assert.match(c.why, /^unsupported/);
     assert.equal(d.committed, true);
     assert.equal(report.chosen, 500000);
@@ -169,4 +175,166 @@ test('WebSerial: a new rate closes and opens the same port, releases DTR / RTS, 
   assert.deepEqual(calls, [['open', 115200], ['close'], ['open', 1500000],
     ['signals', { dataTerminalReady: false, requestToSend: false }], ['write', 2]]);
   await t.close();
+});
+
+/**
+ * The fake probe over TCP behind a line model of the host's side: `onWrite(message, line)` may drop a request (return
+ * false); `garble(line)` breaks the next frame from the probe. line: the host's rate, the requests outstanding (written
+ * less frames received), when the rate last changed, and the most outstanding at once since `line.peak` was reset.
+ * @param {string[]} args
+ * @param {{ onWrite?: (msg: Uint8Array, line: any) => boolean, garble?: (line: any) => boolean }} model
+ * @param {(hst: import('../src/host.js').Host, line: any) => Promise<void>} body
+ */
+async function withLine(args, model, body) {
+  const fake = await startFake(['--profile', 'esp32-v003', ...args], 'cobs');
+  const inner = await tcpTransport({ port: fake.port, framing: 'cobs', baudRate: 115200 });
+  const line = { outstanding: 0, peak: 0, switchedAt: 0, garbled: 0, dropped: /** @type {Uint8Array[]} */ ([]), gaps: /** @type {number[]} */ ([]) };
+  let rx = new Uint8Array(0);
+  /** @type {import('../src/link.js').Transport} */
+  const transport = {
+    framing: 'cobs', kind: 'tcp',
+    get baudRate() { return inner.baudRate; },
+    async setBaudRate(rate) {
+      await /** @type {(r: number) => Promise<void>} */ (inner.setBaudRate)(rate);
+      line.switchedAt = performance.now();
+      line.outstanding = 0;   // what was on the line is gone
+    },
+    async write(data) {
+      const msg = cobs.unframe(data.subarray(1, data.length - 1));
+      if (line.switchedAt) { line.gaps.push(performance.now() - line.switchedAt); line.switchedAt = 0; }
+      if (model.onWrite && !model.onWrite(msg, line)) { line.dropped.push(msg); return; }
+      line.outstanding++;
+      line.peak = Math.max(line.peak, line.outstanding);
+      await inner.write(data);
+    },
+    start(onData, onClose) {
+      return inner.start((chunk) => {
+        const joined = new Uint8Array(rx.length + chunk.length);
+        joined.set(rx);
+        joined.set(chunk, rx.length);
+        rx = joined;
+        for (let end = rx.indexOf(0); end >= 0; end = rx.indexOf(0)) {
+          const cand = rx.slice(0, end);
+          rx = rx.slice(end + 1);
+          if (!cand.length) continue;
+          if (model.garble?.(line)) { cand[1] = cand[1] === 1 ? 2 : 1; line.garbled++; }   // a byte changed: the CRC fails
+          line.outstanding = Math.max(0, line.outstanding - 1);
+          onData(Uint8Array.of(0, ...cand, 0));
+        }
+      }, onClose);
+    },
+    close: () => inner.close(),
+  };
+  const hst = await connect(transport, { timeoutMs: 1000 });
+  try {
+    await take(hst, 10000);
+    await body(hst, line);
+  } finally {
+    await hst.link.close();
+    fake.stop();
+  }
+}
+
+test('after the switch: settled before the first byte, a lost first frame found again with a confirm', { skip: !haveFake }, async () => {
+  let dropNext = false;
+  await withLine([], {
+    onWrite() {
+      if (dropNext) { dropNext = false; return false; }   // the switch-over costs the first frame
+      return true;
+    },
+  }, async (hst, line) => {
+    const raised = /** @type {(r: number) => Promise<void>} */ (hst.link.transport.setBaudRate);
+    hst.link.transport.setBaudRate = async (rate) => { await raised(rate); dropNext = rate !== 115200; };
+    const report = await raiseSpeed(hst, [1500000], FAST);
+    const [t] = report.trials;
+    assert.equal(t.committed, true);
+    assert.equal(report.chosen, 1500000);
+    assert.equal(line.dropped.length, 1);
+    const lost = m.Request.unpack(line.dropped[0]);
+    assert.equal(lost.op, m.OP.confirm);                // the first byte at the new rate was a confirm, sent again
+    assert.ok(line.gaps.every((/** @type {number} */ g) => g >= SWITCH_SETTLE_MS - 2), `gaps ${line.gaps}`);
+    await hst.keepalive();
+  });
+});
+
+test('pipelined frames break, one at a time passes: committed in flight 1, the cap honoured until the boot speed', { skip: !haveFake }, async () => {
+  /** @type {() => number | null} */ let rateNow = () => 115200;
+  await withLine([], {
+    garble: (line) => rateNow() !== 115200 && line.outstanding > 1,   // both ways busy at a raised rate: the reply breaks
+  }, async (hst, line) => {
+    rateNow = () => hst.link.baud;
+    const report = await raiseSpeed(hst, [1500000], FAST);
+    const [t] = report.trials;
+    assert.equal(t.committed, true);
+    assert.equal(t.inflight, 1);
+    assert.equal(t.brokenIn + t.brokenOut, 0);          // the one-at-a-time verify's count
+    assert.ok(line.garbled > 0);                        // the pipelined one broke
+    assert.equal(hst.link.inflightCap, 1);
+    assert.match(speedText(report), /committed \(in flight 1\)/);
+    line.peak = 0;
+    const results = await hst.pipeline(Array.from({ length: 8 }, () => [m.CORE_FN, m.OP.link_source, Uint8Array.of(32, 0, 0, 0)]), { locked: false });
+    assert.equal(results.length, 8);
+    assert.ok(results.every((r) => r.succeeded && r.payload.length === 32));
+    assert.equal(line.peak, 1);                         // one request at a time
+    await hst.end();
+    assert.equal(hst.link.baud, 115200);
+    assert.equal(hst.link.inflightCap, 0);
+  });
+});
+
+/**
+ * A scripted serial probe: the first answer to corr `brokenCorr` comes out broken (its CRC wrong), every other is
+ * answered at once. Each write is logged with its time.
+ * @param {number} brokenCorr
+ */
+function brokenOnce(brokenCorr) {
+  /** @type {(c: Uint8Array) => void} */ let deliver = () => {};
+  /** @type {{ corr: number, at: number }[]} */ const writes = [];
+  let broke = false;
+  /** @type {import('../src/link.js').Transport} */
+  const transport = {
+    framing: 'cobs', kind: 'serial',
+    async write(data) {
+      const req = m.Request.unpack(cobs.unframe(data.subarray(1, data.length - 1)));
+      writes.push({ corr: req.corr, at: performance.now() });
+      const out = cobs.frame(new m.Result(req.corr, m.COMPLETED, m.SUCCESS, Uint8Array.of(1, 2, 3)).pack());
+      if (req.corr === brokenCorr && !broke) { broke = true; out[2] = out[2] === 1 ? 2 : 1; }
+      setTimeout(() => deliver(out), 1);
+    },
+    start(onData) { deliver = onData; },
+    async close() {},
+  };
+  return { transport, writes };
+}
+
+test('a broken frame on a port a session holds: the request goes again at once, the same corr', async () => {
+  const { transport, writes } = brokenOnce(5);
+  const link = new Link(transport, { timeoutMs: 2000 });
+  await link.start();
+  const hst = new Host(link);
+  assert.equal(link.held(), false);
+  hst.session = 7;                                       // a session holds the port (its raw transfer stopped)
+  assert.equal(link.held(), true);
+  const t0 = performance.now();
+  const reply = await link.send(new m.Request(5, 0, m.OP.keepalive, new Uint8Array(), 7).pack());
+  assert.equal(m.Result.unpack(reply).corr, 5);
+  assert.ok(performance.now() - t0 < 500, 'resent before the timeout');
+  assert.deepEqual(writes.map((w) => w.corr), [5, 5]);
+  assert.equal(link.stats.retries, 1);
+  assert.equal(link.stats.corrupt, 1);
+  assert.ok(link.stats.noise > 0);
+});
+
+test('a broken frame with no session is noise: skipped, the request resent only after its timeout', async () => {
+  const { transport, writes } = brokenOnce(5);
+  const link = new Link(transport, { timeoutMs: 300 });
+  await link.start();
+  new Host(link);                                        // no session open
+  const t0 = performance.now();
+  const reply = await link.send(new m.Request(5, 0, m.OP.keepalive, new Uint8Array()).pack());
+  assert.equal(m.Result.unpack(reply).corr, 5);
+  assert.ok(performance.now() - t0 >= 290, 'waited out the timeout');
+  assert.deepEqual(writes.map((w) => w.corr), [5, 5]);
+  assert.equal(link.stats.corrupt, 0);
+  assert.ok(link.stats.noise > 0);
 });

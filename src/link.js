@@ -15,7 +15,15 @@
 // (`setBaudRate`), the link knows the boot speed (`baseBaud`) and the rate now (`baud`). A completed end or port_speed
 // revert puts the link back at the boot speed at once; a request unanswered (its resend too) while the rate is raised
 // takes the link back to the boot speed - the probe went back by itself -, confirms there and goes once more: the
-// link never wedges at a rate the probe left.
+// link never wedges at a rate the probe left. After a rate change the link waits SWITCH_SETTLE_MS before its first byte
+// (the probe switches once its answer is out; an FTDI lost the first frame sent at once). A raised rate that verified
+// only one request at a time keeps that cap (`inflightCap`) on the pipelined exchange until the link is back at the
+// boot speed.
+//
+// A serial port that a session holds carries no raw bytes from the probe (oep-core §3.4): a broken candidate there is
+// a broken frame, most likely the reply the oldest request waits for, so that request goes once more at once (the
+// same corr, answered from the probe's retry table, §5.2) instead of after its timeout. Without a session it is the
+// port's raw bytes: noise, skipped.
 
 import * as reg from './registry.js';
 import * as cobs from './cobs.js';
@@ -23,6 +31,8 @@ import { COMPLETED, CORE_FN, OP, ROLE_DATA, ROLE_EVENT, ROLE_RESULT, ROLE_SESSIO
 import { Timeout } from './errors.js';
 
 const STALL_MS = reg.TIMING.probe_frame_gap_ms;   // a frame whose bytes stop this long is not coming
+/** After a baud change, before the first byte at the new rate (an M5Stack ATOM's FTDI lost it at once, core §3.5). */
+export const SWITCH_SETTLE_MS = 20;
 
 /**
  * The bytes a transport moves. `start` begins delivering what arrives (onData for every chunk; onClose when the
@@ -38,7 +48,7 @@ const STALL_MS = reg.TIMING.probe_frame_gap_ms;   // a frame whose bytes stop th
  * @property {(rate: number) => Promise<void>} [setBaudRate]   a serial port this host opened: change its rate
  */
 
-/** @typedef {{ resolve: (b: Uint8Array) => void, reject: (e: unknown) => void, timer: any, message: Uint8Array, attempt: number }} Pending */
+/** @typedef {{ resolve: (b: Uint8Array) => void, reject: (e: unknown) => void, timer: any, message: Uint8Array, attempt: number, arm: () => void }} Pending */
 
 export class Link {
   /**
@@ -68,6 +78,9 @@ export class Link {
     /** @type {import('./speed.js').SpeedReport | null} the last raiseSpeed's report */ this.speed = null;
     this.speedLost = 0;                      // times a raised rate was found gone (back to the boot speed)
     this.fallback = true;                    // a raised rate that stops answering: back to the boot speed
+    this.inflightCap = 0;                    // port_speed: the in-flight requests the raised rate verified with (0: no cap)
+    /** @type {() => boolean} a session holds the port (its raw transfer stopped): a broken frame = resend */
+    this.held = () => false;
     /** @type {() => number} */ this.corrSource = () => { this.ownCorr = (this.ownCorr % 0xffff) + 1; return this.ownCorr; };
     this.ownCorr = 0x8000;
     /** @type {Promise<boolean> | null} */ this.falling = null;
@@ -127,6 +140,7 @@ export class Link {
         message = cobs.unframe(raw);
       } catch {
         this.stats.noise += raw.length;     // the port's raw bytes, or a broken frame: noise, no resend
+        if (this.held()) this.resendNow();  // ... unless a session holds the port: then it was a broken frame
         continue;
       }
       this.deliver(message);
@@ -169,6 +183,26 @@ export class Link {
     } else {
       this.stats.dropped++;                     // a role this client does not handle (§2.4)
     }
+  }
+
+  /** A broken frame on a held port: the oldest request still waiting goes once more now (its one resend), not after
+   * its timeout. One already sent twice (or sent with resend off) fails at once with cobs.CorruptFrame. */
+  resendNow() {
+    const first = this.pending.entries().next();
+    if (first.done) return;
+    const [corr, p] = first.value;
+    this.stats.corrupt++;
+    if (p.attempt !== 0) {
+      clearTimeout(p.timer);
+      this.pending.delete(corr);
+      p.reject(new cobs.CorruptFrame(`a broken frame for corr ${corr} on a held port`));
+      return;
+    }
+    p.attempt = 1;
+    this.stats.retries++;
+    clearTimeout(p.timer);
+    p.arm();
+    this.write(this.framed(p.message)).catch((e) => { clearTimeout(p.timer); this.pending.delete(corr); p.reject(e); });
   }
 
   // ---- sending ---------------------------------------------------------------------------------------------
@@ -221,7 +255,7 @@ export class Link {
     const corr = message[1] | (message[2] << 8);
     return new Promise((resolve, reject) => {
       /** @type {Pending} */
-      const p = { resolve, reject, timer: null, message, attempt: resend ? 0 : 1 };
+      const p = { resolve, reject, timer: null, message, attempt: resend ? 0 : 1, arm: () => {} };
       const arm = () => {
         p.timer = setTimeout(() => {
           if (p.attempt === 0) {
@@ -235,6 +269,7 @@ export class Link {
           }
         }, timeoutMs);
       };
+      p.arm = arm;
       this.pending.set(corr, p);
       arm();
       this.write(this.framed(message)).catch((e) => { clearTimeout(p.timer); this.pending.delete(corr); reject(e); });
@@ -243,15 +278,18 @@ export class Link {
 
   // ---- port_speed (core §3.5) -------------------------------------------------------------------------------
 
-  /** The host side of the serial port to `rate`; what was gathered so far dropped. @param {number} rate */
+  /** The host side of the serial port to `rate`, settled (SWITCH_SETTLE_MS); what was gathered so far dropped. Back
+   * at the boot speed, the in-flight cap a raised rate had is gone. @param {number} rate */
   async setBaud(rate) {
     if (!this.transport.setBaudRate) throw new Error('this transport cannot change its rate');
     await this.transport.setBaudRate(rate);
     this.baud = rate;
+    if (rate === this.baseBaud) this.inflightCap = 0;
+    if (this.framing === 'cobs') await new Promise((r) => setTimeout(r, SWITCH_SETTLE_MS));   // the probe switches once its answer is out
     this.buf = new Uint8Array(0);
   }
 
-  /** A confirm straight on the link: true when its answer came within timeoutMs. @param {number} timeoutMs */
+  /** A confirm straight on the link: true when its answer came (unbroken) within timeoutMs. @param {number} timeoutMs */
   async confirmRaw(timeoutMs) {
     const confirm = new Uint8Array(CONFIRM_REQUEST.length + 2);
     confirm.set(CONFIRM_REQUEST);
@@ -260,7 +298,7 @@ export class Link {
       await this.sendOnce(new Request(this.corrSource(), CORE_FN, OP.confirm, confirm).pack(), { timeoutMs, resend: false });
       return true;
     } catch (e) {
-      if (e instanceof Timeout) return false;
+      if (e instanceof Timeout || e instanceof cobs.CorruptFrame) return false;
       throw e;
     }
   }
@@ -268,6 +306,7 @@ export class Link {
   /** At the boot speed again, the probe confirmed there: a confirm every 250 ms up to waitMs (a probe still trying
    * waits out its verify_ms; one committed reverts at the broken candidates these make). @param {number} waitMs */
   async backToBase(waitMs = 3000) {
+    this.inflightCap = 0;
     if (this.baseBaud === null) return false;
     await this.setBaud(this.baseBaud);
     const deadline = Date.now() + waitMs;
@@ -297,10 +336,12 @@ export class Link {
   }
 
   /**
-   * Pipelined: up to maxInflight requests and window bytes outstanding; answers in order.
+   * Pipelined: up to maxInflight requests (and no more than a raised rate's inflightCap) and window bytes
+   * outstanding; answers in order.
    * @param {Uint8Array[]} messages @param {{ maxInflight: number, window: number }} limits
    */
-  async exchange(messages, { maxInflight, window }) {
+  async exchange(messages, { maxInflight: probeMax, window }) {
+    const maxInflight = Math.max(1, Math.min(probeMax, this.inflightCap || 255));
     /** @type {Promise<Uint8Array>[]} */
     const answers = [];
     /** @type {{ size: number, done: Promise<unknown> }[]} */
