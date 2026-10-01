@@ -28,11 +28,12 @@ const report = (id, bytes) => ({ reportId: id, items: [{ reportSize: 8, reportCo
 test('HID: the vendor usage page collection (nested), its report sizes and ID', () => {
   const collections = [
     { usagePage: 0x01, usage: 6, inputReports: [report(1, 8)], outputReports: [report(1, 1)] },
-    { usagePage: 0x0c, children: [{ usagePage: 0xff00, usage: 1, inputReports: [report(3, 511)], outputReports: [report(3, 511)] }] },
+    { usagePage: 0xff00, usage: 1, inputReports: [report(2, 64)], outputReports: [report(2, 64)] },   // another vendor page
+    { usagePage: 0x0c, children: [{ usagePage: 0xff4f, usage: 0x45, inputReports: [report(3, 511)], outputReports: [report(3, 511)] }] },
   ];
   assert.deepEqual(findVendorReports(collections), { inputReportId: 3, inputSize: 511, outputReportId: 3, outputSize: 511 });
-  assert.equal(findVendorReports([{ usagePage: 0xff00, inputReports: [report(0, 64)] }]), null);
-  assert.equal(findVendorReports([collections[0]]), null);
+  assert.equal(findVendorReports([{ usagePage: 0xff4f, usage: 0x45, inputReports: [report(0, 64)] }]), null);
+  assert.equal(findVendorReports(collections.slice(0, 2)), null);
 });
 
 test('HID transport: writes as reports with their ID, input reports unpacked', async () => {
@@ -42,7 +43,7 @@ test('HID transport: writes as reports with their ID, input reports unpacked', a
   const listener = { fn: null };
   const device = {
     vendorId: 0x303a, productId: 2, productName: 'OEP probe (ESP32-P4)', opened: false,
-    collections: [{ usagePage: 0xff00, inputReports: [report(7, 16)], outputReports: [report(7, 16)] }],
+    collections: [{ usagePage: 0xff4f, usage: 0x45, inputReports: [report(7, 16)], outputReports: [report(7, 16)] }],
     async open() { this.opened = true; },
     async close() { this.opened = false; },
     /** @param {number} id @param {Uint8Array} data */
@@ -83,7 +84,8 @@ function mockUsbDevice() {
     interfaces: [
       { interfaceNumber: 0, alternates: [{ alternateSetting: 0, interfaceClass: 0x02, interfaceSubclass: 2, interfaceProtocol: 0, endpoints: [ep(3, 'in', 'interrupt')] }] },
       { interfaceNumber: 1, alternates: [{ alternateSetting: 0, interfaceClass: 0x0a, interfaceSubclass: 0, interfaceProtocol: 0, endpoints: [ep(4, 'in'), ep(4, 'out')] }] },
-      { interfaceNumber: 2, alternates: [{ alternateSetting: 0, interfaceClass: 0xff, interfaceSubclass: 0, interfaceProtocol: 0, endpoints: [ep(1, 'out'), ep(1, 'in')] }] },
+      { interfaceNumber: 2, alternates: [{ alternateSetting: 0, interfaceClass: 0xff, interfaceSubclass: 0, interfaceProtocol: 0, endpoints: [ep(2, 'out'), ep(2, 'in')] }] },   // another vendor interface
+      { interfaceNumber: 4, alternates: [{ alternateSetting: 0, interfaceClass: 0xff, interfaceSubclass: 0x4f, interfaceProtocol: 0x45, endpoints: [ep(1, 'out'), ep(1, 'in')] }] },
       { interfaceNumber: 3, alternates: [{ alternateSetting: 0, interfaceClass: 0xfe, interfaceSubclass: 1, interfaceProtocol: 2, endpoints: [] }] },
     ],
   };
@@ -136,13 +138,13 @@ function mockUsbDevice() {
   return device;
 }
 
-test('USB vendor interface: chosen by class 0xFF, not the first bulk pair', () => {
+test('USB vendor interface: chosen by class 0xFF, subclass 0x4F, protocol 0x45 - not the first bulk or vendor pair', () => {
   const d = mockUsbDevice();
-  assert.deepEqual(findVendorInterface(d.configurations[0]), { interfaceNumber: 2, alternateSetting: 0, endpointIn: 1, endpointOut: 1, packetSizeOut: 512 });
-  assert.equal(findVendorInterface({ configurationValue: 1, interfaces: [d.configurations[0].interfaces[1]] }), null);
+  assert.deepEqual(findVendorInterface(d.configurations[0]), { interfaceNumber: 4, alternateSetting: 0, endpointIn: 1, endpointOut: 1, packetSizeOut: 512 });
+  assert.equal(findVendorInterface({ configurationValue: 1, interfaces: d.configurations[0].interfaces.slice(0, 3) }), null);
   assert.equal(findVendorInterface(null), null);
   assert.equal(isOepDevice(0x303a, 2, 'OEP probe (ESP32-P4)'), true);
-  assert.equal(isOepDevice(0x1209, 0x4f45, null), true);
+  assert.equal(isOepDevice(0x1209, 0x4f45, null), false);                 // the VID:PID tells nothing (core §3.3)
   assert.equal(isOepDevice(0x303a, 0x1001, 'USB JTAG/serial debug unit'), false);
   assert.equal(usbUnitId(d), '30eda0e31108');
 });
@@ -150,7 +152,7 @@ test('USB vendor interface: chosen by class 0xFF, not the first bulk pair', () =
 test('USB vendor transport: claim, reads in order, a ZLP after a whole number of packets, close', async () => {
   const d = mockUsbDevice();
   const t = await vendorTransport(d, { depth: 3, readSize: 1024 });
-  assert.deepEqual(d.log, ['open', 'config 1', 'claim 2']);
+  assert.deepEqual(d.log, ['open', 'config 1', 'claim 4']);
   assert.equal(t.framing, 'length');
   assert.equal(t.kind, 'vendor');
   /** @type {number[]} */
@@ -170,11 +172,11 @@ test('USB vendor transport: claim, reads in order, a ZLP after a whole number of
   await t.close();
   await new Promise((r) => setTimeout(r, 10));
   assert.deepEqual(closes, [undefined]);
-  assert.ok(d.log.includes('release 2') && d.log.includes('close'));
+  assert.ok(d.log.includes('release 4') && d.log.includes('close'));
 });
 
 test('USB vendor transport: a device without the vendor interface is refused', async () => {
   const d = mockUsbDevice();
-  d.configurations[0].interfaces.splice(2, 1);
-  await assert.rejects(vendorTransport(d), /vendor-class/);
+  d.configurations[0].interfaces.splice(3, 1);
+  await assert.rejects(vendorTransport(d), /OEP vendor interface/);
 });

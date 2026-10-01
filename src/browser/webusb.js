@@ -1,7 +1,7 @@
 // @ts-check
-// WebUSB: the probe's vendor bulk interface (bInterfaceClass 0xFF, one bulk IN / OUT pair; length(u16) frames,
-// oep-core §3.1, §3.3). The same code runs in Node through the `usb` package (src/usbvendor.js).
-import { OEP_PRODUCT_ID, OEP_VENDOR_ID, VENDOR_CLASS, isOepDevice, usbUnitId, vendorTransport } from '../usbvendor.js';
+// WebUSB: the probe's vendor bulk interface (class 0xFF, subclass 0x4F, protocol 0x45, one bulk IN / OUT pair;
+// length(u16) frames, oep-core §3.1, §3.3). The same code runs in Node through the `usb` package (src/usbvendor.js).
+import { VENDOR_CLASS, VENDOR_PROTOCOL, VENDOR_SUBCLASS, isOepDevice, usbUnitId, vendorTransport } from '../usbvendor.js';
 
 export { usbUnitId, isOepDevice };
 
@@ -24,14 +24,14 @@ export function webUsbTransport(device, opts) {
 }
 
 /**
- * Ask the user for an OEP probe's USB device. The OEP VID:PID is not granted yet, so the chooser offers devices with a
- * vendor-class interface, and the one picked must have an iProduct starting "OEP" (core §3.3).
+ * Ask the user for an OEP probe's USB device: the chooser offers devices with the OEP vendor interface (class 0xFF,
+ * subclass 0x4F, protocol 0x45), and the one picked must have an iProduct starting "OEP" (core §3.3).
  * @param {{ filters?: object[] }} [opts]
  * @returns {Promise<UsbDevice>}
  */
 export async function requestUsbProbe({ filters } = {}) {
   const device = /** @type {UsbDevice} */ (await usbApi().requestDevice({
-    filters: filters ?? [{ vendorId: OEP_VENDOR_ID, productId: OEP_PRODUCT_ID }, { classCode: VENDOR_CLASS }],
+    filters: filters ?? [{ classCode: VENDOR_CLASS, subclassCode: VENDOR_SUBCLASS, protocolCode: VENDOR_PROTOCOL }],
   }));
   if (!isOepDevice(device.vendorId, device.productId, device.productName)) {
     throw new Error(`not an OEP probe: ${device.productName ?? 'no product name'} (${hex(device.vendorId)}:${hex(device.productId)})`);

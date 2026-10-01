@@ -1,7 +1,7 @@
 // @ts-check
 // WebSerial: a serial port (USB CDC, USB-Serial/JTAG, a USB-UART bridge). COBS frames and the port's raw bytes on
 // one line (oep-core §3.1, §3.4).
-import { OEP_PRODUCT_ID, OEP_VENDOR_ID, P4_PRODUCT_ID, P4_VENDOR_ID } from '../usbvendor.js';
+import { REFERENCE_PRODUCT_ID, REFERENCE_VENDOR_ID } from '../usbvendor.js';
 
 /**
  * The part of WebSerial's SerialPort used here (lib.dom does not carry WebSerial).
@@ -14,10 +14,10 @@ import { OEP_PRODUCT_ID, OEP_VENDOR_ID, P4_PRODUCT_ID, P4_VENDOR_ID } from '../u
  */
 /** @typedef {{ usbVendorId?: number, usbProductId?: number }} SerialPortFilter */
 
-/** The USB serial ports an OEP probe shows (the OEP VID:PID; the reference P4's until then). */
+/** The USB serial ports the reference firmware shows (its VID:PID, registry usb). A probe is told by its iProduct
+ * (core §3.3), which WebSerial does not show: this is a hint for the chooser, not a test. */
 export const OEP_SERIAL_FILTERS = [
-  { usbVendorId: OEP_VENDOR_ID, usbProductId: OEP_PRODUCT_ID },
-  { usbVendorId: P4_VENDOR_ID, usbProductId: P4_PRODUCT_ID },
+  { usbVendorId: REFERENCE_VENDOR_ID, usbProductId: REFERENCE_PRODUCT_ID },
 ];
 
 /** @returns {any} */
