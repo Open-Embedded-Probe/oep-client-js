@@ -49,6 +49,7 @@ export class Host {
     /** @type {Map<number, [number, Uint8Array][]>} fn -> its describe TLVs (declarations: valid for one boot_id) */ this.describes = new Map();
     /** @type {number | null} */ this.bootId = null;
     /** @type {number | null} the lease the last open gave (named by Expired) */ this.leaseMs = null;
+    if (link && 'corrSource' in link) link.corrSource = () => this.nextCorr();   // the link's own confirms (port_speed)
   }
 
   nextCorr() { this.corr = (this.corr % 0xffff) + 1; return this.corr; }
