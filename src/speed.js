@@ -1,9 +1,12 @@
 // @ts-check
 // port_speed (oep-core §3.5, optional, opt-in): a faster UART bridge for one session. `raiseSpeed` tries the host's
 // rates in order on the serial port this host opened: try (answered at the speed now, then the probe switches) -> the
-// host switches (WebSerial: close and open the port again at the new rate; Node: serialport's update) -> a verify both
-// ways with max_frame-sized frames (link_source / link_sink, pipelined) for verifyBytes or verifySeconds, counting
-// broken frames and measuring KB/s each way -> commit when nothing broke; else revert, back to the boot speed and
+// host switches (WebSerial: close and open the port again at the new rate; Node: serialport's update), waits
+// SWITCH_SETTLE_MS and finds the new rate with a confirm (up to 3, 200 ms each: the switch-over may cost the first
+// frame) -> a verify both ways with max_frame-sized frames (link_source / link_sink) for verifyBytes or verifySeconds,
+// pipelined at the probe's max_inflight and, when frames break there (a line that loses bytes while both ways are busy:
+// an M5Stack ATOM's FTDI at 500 kbaud and up), once more one request at a time, counting broken frames and measuring
+// KB/s each way -> commit when nothing broke, the in-flight count that passed kept as the link's cap (`inflightCap`); else revert, back to the boot speed and
 // confirmed there (a lost revert: the probe's verify_ms waited out), and the next rate. The report stays on the link
 // (`host.link.speed`), for budgeting a capture or a write. The same procedure as oep-client-python's link.raise_speed.
 
@@ -20,9 +23,10 @@ const UART_BRIDGE = reg.CORE.enum.transport_kind.uart_bridge;
 
 /**
  * One rate tried: what the probe said it runs at, the verify's bytes, KB/s (1000 B/s) and broken frames each way
- * (in = probe to host, link_source; out = host to probe, link_sink), and whether it was committed (why not).
+ * (in = probe to host, link_source; out = host to probe, link_sink), whether it was committed (why not), and the
+ * requests kept in flight the verify passed with (`inflight`, 0: none passed).
  * @typedef {{ rate: number, actual: number | null, inBytes: number, outBytes: number, inKBs: number | null,
- *   outKBs: number | null, brokenIn: number, brokenOut: number, committed: boolean, why: string }} SpeedTrial
+ *   outKBs: number | null, brokenIn: number, brokenOut: number, committed: boolean, why: string, inflight: number }} SpeedTrial
  */
 
 /**
@@ -55,15 +59,16 @@ async function speedPort(hst) {
 }
 
 /**
- * Both ways with max_frame-sized frames, `inflight` at a time: up to half of verifyBytes or verifySeconds each (in
- * first, then out). Stops at the first frame that breaks (lost, or its content wrong).
+ * Both ways with max_frame-sized frames, `inflight` at a time (default: as the probe allows): up to half of
+ * verifyBytes or verifySeconds each (in first, then out). Stops at the first frame that breaks (lost, or its content
+ * wrong).
  * @param {import('./host.js').Host} hst @param {number} rate @param {SpeedTrial} trial
- * @param {number} verifyBytes @param {number} verifySeconds
+ * @param {number} verifyBytes @param {number} verifySeconds @param {number} [inflightAsked]
  */
-async function verify(hst, rate, trial, verifyBytes, verifySeconds) {
+async function verify(hst, rate, trial, verifyBytes, verifySeconds, inflightAsked) {
   const link = hst.link;
   const limits = await hst.confirmed();
-  const inflight = Math.max(1, limits.maxInflight);
+  const inflight = Math.max(1, inflightAsked || limits.maxInflight);
   const nIn = limits.maxFrame - m.RESULT_HEADER;    // link_source: a whole result frame
   const nOut = limits.maxFrame - m.REQUEST_HEADER;  // link_sink: a whole request frame (no session)
   const timeoutMs = Math.max(300, 4000 * ((limits.maxFrame + 8) * 10 / rate) * inflight + 100);
@@ -140,7 +145,7 @@ export async function raiseSpeed(hst, rates, { verifyBytes = 32768, verifySecond
   try {
     for (const rate of rates) {
       /** @type {SpeedTrial} */
-      const trial = { rate, actual: null, inBytes: 0, outBytes: 0, inKBs: null, outKBs: null, brokenIn: 0, brokenOut: 0, committed: false, why: '' };
+      const trial = { rate, actual: null, inBytes: 0, outBytes: 0, inKBs: null, outKBs: null, brokenIn: 0, brokenOut: 0, committed: false, why: '', inflight: 0 };
       report.trials.push(trial);
       let answer;
       try {
@@ -163,19 +168,33 @@ export async function raiseSpeed(hst, rates, { verifyBytes = 32768, verifySecond
         continue;
       }
       trial.actual = getU32(answer.payload);
-      await link.setBaud(rate);
-      if (await verify(hst, rate, trial, verifyBytes, verifySeconds)) {
+      await link.setBaud(rate);   // settled (SWITCH_SETTLE_MS) before the first byte
+      // the switch-over itself may cost the first frame (bytes in flight while both ends change): a confirm, sent again a
+      // couple of times, finds the new rate before anything is measured (core §3.5)
+      const heard = await confirmAgain(link);
+      let ok = heard;
+      // pipelined first (what the host will use); a line that loses bytes while both ways carry at once gets a second
+      // verify one request at a time
+      const full = Math.max(1, (await hst.confirmed()).maxInflight);
+      for (const n of heard ? (full === 1 ? [1] : [full, 1]) : []) {
+        trial.brokenIn = trial.brokenOut = 0;
+        ok = await verify(hst, rate, trial, verifyBytes, verifySeconds, n);
+        if (ok) { trial.inflight = n; break; }
+        await confirmAgain(link);   // the broken frames' leftovers read past
+      }
+      if (ok) {
         try {
           await hst.call(m.CORE_FN, OP_PORT_SPEED, request(at, rate, STEP.commit, 0, idleMs));
           trial.committed = true;
           report.rate = rate;
           report.chosen = rate;
+          link.inflightCap = trial.inflight < full ? trial.inflight : 0;
           return report;
         } catch (e) {
           trial.why = `the commit failed: ${e instanceof Error ? e.message : e}`;
         }
       } else {
-        trial.why = 'frames broke';
+        trial.why = heard ? 'frames broke' : 'no confirm at the new rate';
         const revert = new m.Request(hst.nextCorr(), m.CORE_FN, OP_PORT_SPEED, request(at, rate, STEP.revert, 0, 0), hst.session).pack();
         await link.sendOnce(revert, { timeoutMs: 300, resend: false }).catch(() => {});   // lost: the probe goes back by itself
       }
@@ -188,6 +207,12 @@ export async function raiseSpeed(hst, rates, { verifyBytes = 32768, verifySecond
   }
 }
 
+/** A confirm at the rate now, up to 3 tries of 200 ms: true when one came back. @param {import('./link.js').Link} link */
+async function confirmAgain(link) {
+  for (let i = 0; i < 3; i++) if (await link.confirmRaw(200)) return true;
+  return false;
+}
+
 /** The report as text: a line per rate tried, then the rate in force. @param {SpeedReport} report */
 export function speedText(report) {
   if (!report.supported) return `port_speed not supported: ${report.why} (stays at ${report.rate})\n`;
@@ -195,7 +220,7 @@ export function speedText(report) {
   const kb = (v) => (v === null ? '-' : v.toFixed(1)).padStart(8);
   const lines = [`${'rate'.padStart(9)} ${'actual'.padStart(9)} ${'in KB/s'.padStart(8)} ${'out KB/s'.padStart(8)} ${'broken in/out'.padStart(13)}  result`];
   for (const t of report.trials) {
-    lines.push(`${String(t.rate).padStart(9)} ${String(t.actual ?? '-').padStart(9)} ${kb(t.inKBs)} ${kb(t.outKBs)} ${`${t.brokenIn}/${t.brokenOut}`.padStart(13)}  ${t.committed ? 'committed' : t.why}`);
+    lines.push(`${String(t.rate).padStart(9)} ${String(t.actual ?? '-').padStart(9)} ${kb(t.inKBs)} ${kb(t.outKBs)} ${`${t.brokenIn}/${t.brokenOut}`.padStart(13)}  ${t.committed ? `committed (in flight ${t.inflight})` : t.why}`);
   }
   lines.push(`in force: ${report.rate}${report.chosen ? ' (raised)' : ' (the boot speed)'}`);
   return lines.join('\n') + '\n';

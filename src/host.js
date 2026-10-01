@@ -50,6 +50,7 @@ export class Host {
     /** @type {number | null} */ this.bootId = null;
     /** @type {number | null} the lease the last open gave (named by Expired) */ this.leaseMs = null;
     if (link && 'corrSource' in link) link.corrSource = () => this.nextCorr();   // the link's own confirms (port_speed)
+    if (link && 'held' in link) link.held = () => this.session !== null;   // a held serial port: a broken frame is resent at once
   }
 
   nextCorr() { this.corr = (this.corr % 0xffff) + 1; return this.corr; }
