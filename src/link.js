@@ -54,6 +54,8 @@ export const STRIKE_WINDOW_MS = 5000;
 export const STEP_DOWN_WAIT_MS = 200;
 /** Raised, in use: each wait for an answer is a quarter of the lease, at least this. */
 export const RAISED_WAIT_MIN_MS = 300;
+/** A request that may take long on the probe (Host.request expectMs): waited that long and this. */
+export const EXPECT_MARGIN_MS = 500;
 
 /**
  * The bytes a transport moves. `start` begins delivering what arrives (onData for every chunk; onClose when the
@@ -260,19 +262,21 @@ export class Link {
 
   /**
    * The answer to one request (its bytes, the corr in them), sent once more after a missing answer (§5.2).
-   * @param {Uint8Array} message
+   * expectMs: how long it may take on the probe (Host.request): its answer is waited for at least that and
+   * EXPECT_MARGIN_MS, at any rate.
+   * @param {Uint8Array} message @param {{ expectMs?: number }} [opts]
    * @returns {Promise<Uint8Array>}
    */
-  async send(message) {
+  async send(message, { expectMs = 0 } = {}) {
     if (this.falling) await this.falling.catch(() => {});   // a step down or fall back under way: after it, at its rate
     await this.keepRaised();
     const at = this.baud;
     let reply;
     try {
-      reply = await this.sendOnce(message);
+      reply = await this.sendOnce(message, { timeoutMs: this.waitMs(expectMs) });
     } catch (e) {
       if (!(e instanceof Timeout || e instanceof cobs.CorruptFrame) || !(await this.speedFallback(e, at))) throw e;
-      reply = await this.sendOnce(message);   // once more at the boot speed (the probe answers a repeat from what it kept)
+      reply = await this.sendOnce(message, { timeoutMs: this.waitMs(expectMs) });   // once more at the boot speed (the probe answers a repeat from what it kept)
     }
     if (this.baseBaud !== null && this.baud !== this.baseBaud && reverts(message, reply)) {
       await this.setBaud(this.baseBaud);    // the probe went back right after this answer (core §3.5)
@@ -399,10 +403,13 @@ export class Link {
   /** How long one answer is waited for: the link's timeout; raised and in use, at most a quarter of the session's
    * lease (at least RAISED_WAIT_MIN_MS) - a probe that went back by itself (broken candidates, core §3.5 item 5) hears
    * nothing at the raised rate, and the fall back (both waits, the confirm at the boot speed, the request again there)
-   * must end well inside the lease. */
-  waitMs() {
+   * must end well inside the lease. A request that may take longer on the probe (`expectMs`: a run's timeoutMs, a dmi
+   * list's waits, ...; the probe does not count the lease meanwhile, core §6.1) waits at least that and
+   * EXPECT_MARGIN_MS, at any rate. @param {number} [expectMs] */
+  waitMs(expectMs = 0) {
     const lease = this.inUse() ? this.lease() : null;
-    return lease ? Math.min(this.timeoutMs, Math.max(RAISED_WAIT_MIN_MS, lease / 4)) : this.timeoutMs;
+    const wait = lease ? Math.min(this.timeoutMs, Math.max(RAISED_WAIT_MIN_MS, lease / 4)) : this.timeoutMs;
+    return expectMs > 0 ? Math.max(wait, expectMs + EXPECT_MARGIN_MS) : wait;
   }
 
   /** Raised and in use: a frame broke or a request goes again. STRIKE_MAX within STRIKE_WINDOW_MS: the link steps

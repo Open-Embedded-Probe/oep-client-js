@@ -330,6 +330,9 @@ export function canonicalHash(items) {
  * @property {BindState[]} binds
  */
 
+/** A save writes the probe's flash: the link waits at least this for its answer (Host.request expectMs). */
+export const SAVE_EXPECT_MS = 2000;
+
 export class ProbeConfig extends Interface {
   static NAME = CFG.name;
   static REVISION = CFG.revision;
@@ -396,7 +399,7 @@ export class ProbeConfig extends Interface {
   }
 
   /** Save the current settings (a probe with storage; the whole is replaced) -> the hash saved. Needs the lock. */
-  async save() { return ProbeConfig.hashAnswer(await this.call(ProbeConfig.SAVE)); }
+  async save() { return ProbeConfig.hashAnswer(await this.call(ProbeConfig.SAVE, undefined, { expectMs: SAVE_EXPECT_MS })); }
 
   /** Erase what is saved (the current settings stay). Needs the lock. */
   async erase() { await this.call(ProbeConfig.ERASE); }

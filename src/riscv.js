@@ -28,6 +28,21 @@ export const STEP = RV.enum.dmi_step;
 export const STEP_WRITE = STEP.write, STEP_READ = STEP.read, STEP_POLL_READS = STEP.poll_reads;
 export const STEP_WAIT_US = STEP.wait_us, STEP_POLL_US = STEP.poll_us;
 /** @type {Record<number, number>} bytes per step kind, the kind included (§4.1) */
+/** The time a step list may take by its waits and time-bounded polls (wait_us, poll_us), in ms (rounded up).
+ * @param {Uint8Array} raw */
+export function dmiWaitMs(raw) {
+  const v = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  let us = 0;
+  for (let at = 0; at < raw.length;) {
+    const kind = raw[at];
+    if (kind === STEP_WAIT_US) us += v.getUint32(at + 1, true);
+    else if (kind === STEP_POLL_US) us += v.getUint32(at + 10, true);
+    const size = STEP_SIZES[kind];
+    if (!size) break;
+    at += size;
+  }
+  return Math.ceil(us / 1000);
+}
 export const STEP_SIZES = { [STEP_WRITE]: 6, [STEP_READ]: 2, [STEP_POLL_READS]: 12, [STEP_WAIT_US]: 5, [STEP_POLL_US]: 14 };
 export const VALUE_STEPS = new Set([STEP_READ, STEP_POLL_READS, STEP_POLL_US]);   // steps that add a value to the result
 export const POLL_STEPS = new Set([STEP_POLL_READS, STEP_POLL_US]);               // ... and add their last value when they time out
@@ -280,7 +295,7 @@ export class Wire extends WireBase {
    * @param {AttachOptions} [opts]
    */
   async attach(opts = {}) {
-    const rd = new m.Reader((await this.call(Wire.ATTACH, await this.attachBody(opts))).payload);
+    const rd = new m.Reader((await this.call(Wire.ATTACH, await this.attachBody(opts), { expectMs: opts.reset?.[1] ?? 0 })).payload);
     const conn = rd.u16(), dmstatus = rd.u32();
     this.flags = rd.u8();
     this.speedHz = rd.u32();
@@ -552,7 +567,7 @@ export class RiscvDm extends Interface {
    * @param {number} pc @param {[number, number][]} regs @param {{ timeoutMs?: number | null, outs?: number[] }} [opts] */
   async run(pc, regs, { timeoutMs = 200, outs = [REG_A0] } = {}) {
     const limit = timeoutMs ?? await maxOpMs(this.host);
-    const r = await this.request(RiscvDm.RUN, RiscvDm.runBody(pc, regs, { timeoutMs: limit, outs }));
+    const r = await this.request(RiscvDm.RUN, RiscvDm.runBody(pc, regs, { timeoutMs: limit, outs }), { expectMs: limit });
     const res = RiscvDm.runResult(r);
     if (res.status === TIMEOUT && !res.stopped) return res;
     check('run', r, res.status);
@@ -566,7 +581,7 @@ export class RiscvDm extends Interface {
   async dmi(steps) {
     const raw = Array.isArray(steps) ? concat(...steps) : steps;
     const kinds = countSteps(raw);
-    const r = await this.request(RiscvDm.DMI, concat(u16(kinds.length), raw));
+    const r = await this.request(RiscvDm.DMI, concat(u16(kinds.length), raw), { expectMs: dmiWaitMs(raw) });
     const rd = ran(r);
     const done = rd.u16(), status = rd.u8(), nvals = rd.u16();
     const values = rd.words(nvals);
