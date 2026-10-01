@@ -80,11 +80,13 @@ test('one channel packs eight samples per byte, lsb first', () => {
 });
 
 test('a segment without a trigger, and bytes after the known ones skipped', () => {
-  const b = new Writer().u32(0).u64(0).u32(200192).u64(123000).u32(50).u32(0xffffffff).u8(0).raw([9, 9, 9]).done();
+  const b = new Writer().u32(0).u64(0).u32(200192).u64(123000).u32(50).u32(0xffffffff).u8(0).u32(3).raw([9, 9, 9]).done();
   const s = c.Segment.unpack(b);
   assert.equal(s.triggerIndex, null);
   assert.equal(s.samples, 200192);
   assert.equal(s.startNs, 123000n);
+  assert.equal(s.generation, 3);
+  assert.equal(c.SEGMENT_BYTES, 37);
   const ev = c.parseCaptureEvent(Uint8Array.of(0x05, 3, 0, 7, 0, c.EVENT_SEGMENT, ...b));
   assert.deepEqual([ev.fn, ev.seq, ev.segment?.samples], [3, 7, 200192]);
   const trig = c.parseCaptureEvent(Uint8Array.of(0x05, 3, 0, 8, 0, c.EVENT_TRIGGERED,
@@ -92,8 +94,13 @@ test('a segment without a trigger, and bytes after the known ones skipped', () =
   assert.deepEqual([trig.serial, trig.triggerIndex, trig.triggerNs], [0, 5, 12345n]);
 });
 
-/** @param {number} fn @param {number} seq @param {bigint} position @param {string} data */
-const push = (fn, seq, position, data) => new Writer().u8(0x06).u16(fn).u16(seq).u64(position).raw(new TextEncoder().encode(data)).done();
+/** A data frame (core §11.2): role fn seq position(u64) len(u16) data [TLV generation].
+ * @param {number} fn @param {number} seq @param {bigint} position @param {string} data @param {number | null} [generation] */
+const push = (fn, seq, position, data, generation = null) => {
+  const w = new Writer().u8(0x06).u16(fn).u16(seq).u64(position).u16(data.length).raw(new TextEncoder().encode(data));
+  if (generation !== null) w.u8(c.DATA_GENERATION).u8(4).u32(generation);
+  return w.done();
+};
 
 /** pushes arrive in batches, one batch per nextPush() @param {Uint8Array[][]} batches */
 function fakeLink(batches) {
@@ -137,13 +144,27 @@ test("stream does not count the fn's events as lost", async () => {
   assert.equal(link.events.length, 1);
 });
 
-test('read spans frames without the header leaking into the data', async () => {
+test('stream drops pushes of another generation (oep-if-capture §3.4)', async () => {
+  const link = fakeLink([[push(2, 0, 90n, 'old', 4), push(2, 1, 0n, 'ab', 5)],
+    [Uint8Array.from([...push(2, 2, 2n, 'cd', 5), 0x55, 1, 0])]]);   // an unknown TLV after it: skipped
+  const cap = offline({ link, session: null }, 2);
+  cap.generation = 5;
+  const got = await cap.stream({ nbytes: 4 });
+  assert.deepEqual([text(got.data), got.start, got.stale, got.seqLost, got.gaps], ['abcd', 0n, 1, 0, []]);
+  const p = c.unpackPush(push(7, 3, 9n, 'xyz', 12));
+  assert.deepEqual([p.fn, p.seq, p.position, text(p.data), p.generation], [7, 3, 9n, 'xyz', 12]);
+  assert.equal(c.unpackPush(push(7, 3, 9n, 'xyz')).generation, null);
+});
+
+test('read spans frames without the header leaking into the data; the generation goes in every request', async () => {
   const stream = new Uint8Array(3072).map((_, i) => i & 0xff);
   /** @param {Uint8Array} p */
   const ok = (p) => {
     const rd = new m.Reader(p);
-    const pos = Number(rd.u64()), n = rd.u32();
-    return new m.Result(0, m.COMPLETED, m.SUCCESS, new Writer().u64(pos).u8(0).raw(stream.subarray(pos, pos + n)).done());
+    const g = rd.u32(), pos = Number(rd.u64()), n = rd.u32();
+    assert.equal(g, 9);
+    const data = stream.subarray(pos, pos + n);
+    return new m.Result(0, m.COMPLETED, m.SUCCESS, new Writer().u64(pos).u8(0).u32(data.length).raw(data).raw([0x41, 1, 0]).done());   // a TLV after
   };
   const hst = {
     session: null,
@@ -153,7 +174,7 @@ test('read spans frames without the header leaking into the data', async () => {
     /** @param {number} fn @param {number} op @param {Uint8Array} p */
     async call(fn, op, p) { return ok(p); },
   };
-  assert.deepEqual(await offline(hst, 21).read(100n, 2500), stream.slice(100, 2600));
+  assert.deepEqual(await offline(hst, 21).read(100n, 2500, 9), stream.slice(100, 2600));
 });
 
 test('a sigrok file takes sixteen channels in two bytes', { skip: !haveFake }, () => {
@@ -198,15 +219,30 @@ test('one-shot: three channels in four-bit samples, and the recorder hook', opts
   const records = [];
   c.onCapture(hst).push((r) => records.push(r));
   await lc.start();
+  assert.equal(lc.generation, 1);                                          // every start is a generation (§3.2)
   const [seg, ...more] = await lc.wait();
   assert.equal(more.length, 0);
-  assert.deepEqual([seg.serial, seg.samples, seg.triggerIndex, seg.slipped], [0, 1000, null, false]);
+  assert.deepEqual([seg.serial, seg.samples, seg.triggerIndex, seg.slipped, seg.generation], [0, 1000, null, false, 1]);
+  const st = await lc.status();
+  assert.deepEqual([st.state, st.generation, st.error, st.dropped], [c.STATE.done, 1, null, false]);
   const data = await lc.readSegment(seg);
   assert.equal(data.length, 500);
   counterOk(lc, data, 1000);
   assert.equal(records.length, 1);
   assert.equal(records[0].fn, lc.fn);
   assert.ok(records[0].armedMs !== null && records[0].readMs >= records[0].armedMs);
+  await lc.start();
+  assert.equal(lc.generation, 2);
+  await lc.wait();
+  await assert.rejects(lc.read(0, 16, 1), (e) => e instanceof Unavailable && e.cause === 'wrong_state');   // the last capture's
+  await assert.rejects(lc.readSegment(seg), Unavailable);                  // its segment names its own generation
+  await assert.rejects(lc.release(0, 1), Unavailable);
+  await lc.release(0);                                                      // one-shot: nothing to do, ok
+  assert.equal((await lc.read(0, 16)).length, 16);
+  const fresh = await c.LogicCapture.open(hst);                             // a host that did not start it asks status
+  fresh.config = lc.config;
+  assert.equal((await fresh.read(0, 16)).length, 16);
+  assert.equal(fresh.generation, 2);
 }));
 
 test('the classic ESP32 sampler takes a byte a sample', opts, () => withFake(async ({ hst, lc }) => {
@@ -267,6 +303,8 @@ test('repeat fills its ring with the clock and goes on after release', opts, () 
   assert.deepEqual([st.state, st.segmentsDone], [c.STATE.paused, 3]);   // the ring (3) filled and the capture stopped
   const segs = await lc.segments();
   assert.deepEqual(segs.map((s) => s.serial), [0, 1, 2]);
+  const page = await lc.segmentsPage(1);
+  assert.deepEqual([page.segments.map((s) => s.serial), page.more], [[1, 2], false]);
   const parts = [];
   for (const s of segs) parts.push(...await lc.readSegment(s));
   counterOk(lc, Uint8Array.from(parts), 3000);                          // segments follow on without a gap
@@ -275,7 +313,7 @@ test('repeat fills its ring with the clock and goes on after release', opts, () 
   for (let i = 0; i < 200 && !next.length; i++) { await sleep(5); next = await lc.segments(3); }
   assert.equal(next.length >= 1, true);
   assert.ok(next[0].gap);                                              // it stopped: the next segment says so
-  const r = await lc.request(c.LogicCapture.READ, new Writer().u64(0).u32(64).done(), { locked: false });
+  const r = await lc.request(c.LogicCapture.READ, new Writer().u32(/** @type {number} */ (lc.generation)).u64(0).u32(64).done(), { locked: false });
   assert.ok(r.payload[8] & 0x02);                                      // released bytes are gone (read: gap)
 }));
 
@@ -287,10 +325,17 @@ test('streaming pushes the bytes while subscribed', opts, () => withFake(async (
   const got = await lc.stream({ nbytes: 1500, ms: 3000 });
   await lc.stop();
   await lc.finish(got);
-  assert.deepEqual([got.start, got.gaps, got.seqLost], [0n, [], 0]);
+  assert.deepEqual([got.start, got.gaps, got.seqLost, got.stale], [0n, [], 0, 0]);
   assert.ok(got.length >= 1500 && got.frames > 1);
   counterOk(lc, got.data, got.length * 2);
   assert.equal((await lc.status()).writePos, got.reached);
+  const raw = hst.link.pushes.length ? hst.link.pushes[0] : null;
+  await lc.subscribe();
+  await lc.start();
+  const f = await hst.link.nextPush((p) => p[1] === lc.fn, 2000);
+  await lc.stop();
+  assert.ok(f && c.unpackPush(f).generation === lc.generation);         // streaming data names its generation (TLV 0x01)
+  assert.ok(raw === null || c.unpackPush(raw).generation !== null);
 }));
 
 test('events go out only while subscribed', opts, () => withFake(async ({ hst, lc }) => {
@@ -403,7 +448,7 @@ test('analog values, scale and calibration', opts, () => withFake(async ({ hst }
   const cal = await an.calibration();
   assert.deepEqual(cal.factory.map((f) => f.frontend), [0, 1, 2, 3]);
   assert.equal(cal.factory[0].scheme, 'org.example.fake.two-point');
-  assert.deepEqual(cal.vrefint, { raw: 1365, ns: seg.startNs });
+  assert.deepEqual(cal.vrefint, { raw: 1365, ns: seg.startNs, nominalMv: 1100 });
 }));
 
 test('a group starts logic and analog together and marks the trigger on both', opts, () => withFake(async ({ hst, lc }) => {
@@ -418,10 +463,14 @@ test('a group starts logic and analog together and marks the trigger on both', o
   await assert.rejects(an.start(), Rejected);                          // bound: the group starts it
   const { startNs } = await grp.start([lc, an]);
   assert.ok(lc.armedMs !== null && an.armedMs === lc.armedMs);
+  assert.deepEqual([...grp.generations], [[lc.fn, 1], [an.fn, 1]]);       // the group's start names each track's generation
+  assert.deepEqual([lc.generation, an.generation], [1, 1]);
   const st = await grp.wait();
   assert.deepEqual([st.startNs, st.triggerFn], [startNs, lc.fn]);
   const [ls] = await lc.segments();
   const [as] = await an.segments();
+  assert.deepEqual([ls.generation, as.generation], [1, 1]);
+  assert.equal((await lc.readSegment(ls)).length, lc.cfg.bytes);
   assert.equal(ls.startNs - startNs, 0n);
   assert.equal(as.startNs - startNs, 5000n);                           // the analog starts 5 us later
   assert.equal(ls.triggerIndex, 4002);
@@ -444,6 +493,8 @@ test('a group refuses what it cannot bind', opts, () => withFake(async ({ hst, l
   await lc.configure({ rate: 1_000_000, samples: 100 });
   await an.configure({ rate: 10_000, samples: 100, mode: c.REPEAT });
   await assert.rejects(grp.bind([lc, an]), Rejected);                  // the modes differ
+  const stranger = /** @type {c.LogicCapture} */ (offline(hst, 3));
+  await assert.rejects(grp.bind([lc, stranger]), (e) => e instanceof Unsupported && e.tag === null && e.fn === 3);   // not in tracks: 0x00 + TLV fn
   await an.configure({ rate: 41_666, samples: 100 });                  // 2 channels x 41.6 kHz = the ADC's budget
   await grp.bind([lc, an]);
   assert.ok(an.cfg.rate * 2 <= 83_333);
