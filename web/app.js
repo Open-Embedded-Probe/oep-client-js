@@ -16,7 +16,7 @@ const WORDS = {
     tabDescribe: 'Probe', tabSettings: 'Settings', tabTools: 'Tools', tabFirmware: 'Firmware',
     describeRun: 'Read everything it declares', saveJson: 'Save as JSON', read: 'Read', saveToProbe: 'Save in the probe',
     erase: 'Erase the saved', addItem: 'Add or change', slot: 'Slot', bind: 'Bind', label: 'Label', idle: 'Idle state',
-    plan: 'Plan', set: 'Set', remove: 'Remove', configure: 'Configure', send: 'Send',
+    plan: 'Plan', uart: 'UART', set: 'Set', remove: 'Remove', configure: 'Configure', send: 'Send',
     gpioHint: 'Plan the channel to oep.fixture.gpio first (it takes the pin for this session).', gpioPlan: 'Plan it',
     uartHint: 'The UART needs its RX / TX planned (Settings: plan, or a saved plan).',
     fwP4: 'ESP32-P4 (DFU over its HS port)',
@@ -34,7 +34,7 @@ const WORDS = {
     tabDescribe: 'probe', tabSettings: '設定', tabTools: '操作', tabFirmware: 'firmware',
     describeRun: '宣言をすべて読む', saveJson: 'JSON で保存', read: '読む', saveToProbe: 'probe に保存', erase: '保存を消す',
     addItem: '足す・変える', slot: 'スロット', bind: 'bind', label: 'ラベル', idle: '空きのときの状態', plan: 'plan',
-    set: '設定', remove: '消す', configure: '設定', send: '送る',
+    uart: 'UART', set: '設定', remove: '消す', configure: '設定', send: '送る',
     gpioHint: '先にその channel を oep.fixture.gpio に plan します（このセッションの間、ピンを持ちます）。', gpioPlan: 'plan する',
     uartHint: 'UART は RX / TX の plan が要ります（設定の plan か、保存した plan）。',
     fwP4: 'ESP32-P4（HS の口で DFU）',
@@ -114,7 +114,8 @@ function showProbe() {
   const el = $('probe');
   if (!host || !info) { el.textContent = t('notConnected'); return; }
   el.textContent = [`${info.model ?? '?'} ${info.chip ? `(${info.chip})` : ''}`, `unit ${info.unitId ?? '?'}`,
-    `firmware ${info.firmware ?? '?'}`, host.link.transport.kind ?? '', locked ? t('locked') : t('noLock')].join(' · ');
+    `firmware ${info.firmware ?? '?'}`, host.link.transport.kind ?? '', info.discoverable ? 'discoverable' : '',
+    info.maxOpMs !== null ? `max op ${info.maxOpMs} ms` : '', locked ? t('locked') : t('noLock')].filter(Boolean).join(' · ');
 }
 
 // ---- connecting ------------------------------------------------------------------------------------------------
@@ -199,26 +200,33 @@ function itemText(it) {
   if (it instanceof config.Label) return `label ${it.channel} "${it.text}"`;
   if (it instanceof config.Idle) return `idle ${it.channel} ${it.mode}`;
   if (it instanceof config.Plan) return `plan fn ${it.fn} role ${it.role} → channel ${it.channel}`;
+  if (it instanceof config.Uart) return `uart fn ${it.fn} ${it.baud} baud, format 0x${it.format.toString(16).padStart(2, '0')}`;
   return `tag 0x${it.tag?.toString(16)}`;
 }
 
-/** @param {any} it @returns {[string, number] | null} */
+/** The key unset takes for this item (a plan's: its fn, the whole plan of that fn).
+ * @param {any} it @returns {[config.ItemKind, number] | null} */
 function itemKey(it) {
   if (it instanceof config.Slot) return ['slot', it.slot];
   if (it instanceof config.Bind) return ['bind', it.port];
   if (it instanceof config.Label) return ['label', it.channel];
   if (it instanceof config.Idle) return ['idle', it.channel];
   if (it instanceof config.Plan) return ['plan', it.fn];
+  if (it instanceof config.Uart) return ['uart', it.fn];
   return null;
 }
 
+/** The settings: the items (get), what the probe declares (describe) and the live slot / bind / storage state (op
+ * state, lock-free). */
 async function readSettings() {
   const cfg = await probeConfig();
-  const [items, state] = await Promise.all([cfg.items(), cfg.state()]);
-  const slots = state.slots.map((s) => `slot ${s.slot}: ${s.state}${s.connection ? ` (connection ${s.connection})` : ''}`);
+  const [items, declared, state] = await Promise.all([cfg.items(), cfg.describe(), cfg.state()]);
+  const slots = state.slots.map((s) => `slot ${s.slot}: ${s.state}${s.connection ? ` (connection ${s.connection})` : ''}`
+    + (s.lastTryAtNs !== null ? ` (last try at ${(Number(s.lastTryAtNs / 1_000_000n) / 1000).toFixed(3)} s)` : ''));
   const binds = state.binds.map((b) => `port ${b.port}: ${b.flow}`);
-  $('settings-state').textContent = [`storage ${state.storage}${state.unreadable ? ` (${state.unreadable})` : ''}`,
-    ...slots, ...binds].join(' · ');
+  $('settings-state').textContent = [`storage ${state.storage}${state.unreadable ? ` (${state.unreadable})` : ''}`
+    + (declared.storageBytes ? ` of ${declared.storageBytes} bytes` : ''), `${declared.slotsMax} slots`,
+  `bind modes ${declared.bindModes.join(', ') || '-'}`, ...slots, ...binds].join(' · ');
   const body = /** @type {HTMLTableSectionElement} */ ($('settings-items').querySelector('tbody'));
   body.replaceChildren();
   for (const it of items) {
@@ -232,7 +240,7 @@ async function readSettings() {
       b.type = 'button';
       b.textContent = t('remove');
       b.dataset.needs = 'lock';
-      b.onclick = () => act(async () => { await (await probeConfig()).set([config.remove(key[0], key[1])]); await readSettings(); });
+      b.onclick = () => act(async () => { await (await probeConfig()).unset([key]); await readSettings(); });
       td2.append(b);
     }
     tr.append(td, td2);
@@ -266,6 +274,8 @@ function wireForms() {
     const [role, ch] = s.trim().split('=');
     return new config.Plan({ fn: +d.fn, role: +role, channel: +ch });
   }));
+  on('form-uart', (d) => [new config.Uart({ fn: +d.fn, baud: +d.baud,
+    format: fixture.FixtureUart.formatByte(+d.dataBits, d.parity, +d.stopBits) })]);
 }
 
 // ---- tools ---------------------------------------------------------------------------------------------------------

@@ -66,7 +66,7 @@
           <label>retry s <input name="retryS" type="number" min="0" value="0"></label>
           <label>max speed Hz <input name="maxSpeed" type="number" min="0" value="0"></label>
           <label>idle clock <select name="idleClock"><option>high</option><option>low</option></select></label>
-          <label>mechanism <select name="mechanism"><option>dmseq</option><option>dmdata</option><option>sdi</option></select></label>
+          <label>mechanism <select name="mechanism"><option>dmseq</option><option>dmdata</option><option>sdi</option><option>none</option></select></label>
           <button type="submit" data-i18n="set" data-needs="lock"></button>
         </form>
         <form id="form-bind" class="card">
@@ -92,6 +92,15 @@
           <h4 data-i18n="plan"></h4>
           <label>fn <input name="fn" type="number" min="1" required></label>
           <label data-i18n-label="roles">roles <input name="roles" placeholder="1=20,2=21" required></label>
+          <button type="submit" data-i18n="set" data-needs="lock"></button>
+        </form>
+        <form id="form-uart" class="card">
+          <h4 data-i18n="uart"></h4>
+          <label>fn <input name="fn" type="number" min="1" required></label>
+          <label>baud <input name="baud" type="number" min="1" value="115200" required></label>
+          <label>data bits <select name="dataBits"><option>8</option><option>7</option></select></label>
+          <label>parity <select name="parity"><option>N</option><option>E</option><option>O</option></select></label>
+          <label>stop bits <select name="stopBits"><option>1</option><option>2</option></select></label>
           <button type="submit" data-i18n="set" data-needs="lock"></button>
         </form>
       </div>

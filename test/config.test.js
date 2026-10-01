@@ -3,10 +3,12 @@
 // the TCP fake allows (no reboot / DFU, no CLI).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { u32 } from '../src/bytes.js';
+import { Writer, u32 } from '../src/bytes.js';
 import * as config from '../src/config.js';
-import { Bind, Idle, Label, Plan, ProbeConfig, Slot } from '../src/config.js';
-import { Rejected, OepError } from '../src/errors.js';
+import { Bind, Idle, Label, Plan, ProbeConfig, Slot, Uart } from '../src/config.js';
+import { Rejected, OepError, Unsupported } from '../src/errors.js';
+import * as m from '../src/message.js';
+import { FixtureUart } from '../src/fixture.js';
 import { openTcp } from '../src/node/index.js';
 import { haveFake, startFake } from './fake.js';
 
@@ -29,9 +31,10 @@ test('slot and bind values as probe.config §1.1 / §1.2 say, and back', () => {
   const s = new Slot({ slot: 0, wireFn: 1, pins: [2, 54], name: 'x035', attach: 'at-boot', retryS: 1, lock,
     maxSpeed: 1_000_000, idleClock: 'low' });
   const v = s.value();
-  assert.deepEqual([...v.slice(0, 17)], [0, 1, 0, 2, 0, 54, 0, 1, 1, 0, 0x40, 0x42, 0x0f, 0, 1, 2, 4]);
-  assert.equal(v[21], 9);                                            // lock_len = 1 + 2 * 4
-  assert.equal(v.length, 22 + 9);
+  // slot wire_fn swdio swclk attach retry_ms(u32) max_speed_hz(u32) idle_clock mechanism name_len (probe.config §1.1)
+  assert.deepEqual([...v.slice(0, 19)], [0, 1, 0, 2, 0, 54, 0, 1, 0xe8, 3, 0, 0, 0x40, 0x42, 0x0f, 0, 1, 2, 4]);
+  assert.equal(v[23], 9);                                            // lock_len = 1 + 2 * 4
+  assert.equal(v.length, 24 + 9);
   const back = /** @type {Slot} */ (config.decode(config.ITEM.slot, v));
   assert.deepEqual(back, s);
   // bytes after the lock are later fields: skipped
@@ -49,8 +52,18 @@ test('slot and bind values as probe.config §1.1 / §1.2 say, and back', () => {
   // a longer stream's tail is skipped (core §2.3); under 3 is not a bind
   assert.deepEqual(/** @type {Bind} */ (config.decode(config.ITEM.bind, Uint8Array.of(0, 2, 0, 1, 5, 1, 0, 0, 0xef, 0xbe))).streams, [['slot', 0]]);
   assert.ok(!(config.decode(config.ITEM.bind, Uint8Array.of(0, 2, 0, 1, 2, 1, 0)) instanceof Bind));
-  assert.deepEqual([...config.remove('bind', 3)], [config.ITEM.bind, 1, 3]);
-  assert.deepEqual([...config.remove('plan', 0x105)], [config.ITEM.plan, 2, 5, 1]);
+  // removals are unset's keys: len tag key (probe.config §2)
+  assert.deepEqual([...config.remove('bind', 3).encoded()], [2, config.ITEM.bind, 3]);
+  assert.deepEqual([...config.remove('plan', 0x105).encoded()], [3, config.ITEM.plan, 5, 1]);
+  assert.deepEqual([...config.remove('uart', 7).encoded()], [3, config.ITEM.uart, 7, 0]);
+  assert.throws(() => config.remove(/** @type {any} */ ('x'), 1), RangeError);
+  // a slot without a console; the uart item
+  const none = new Slot({ slot: 2, wireFn: 1, pins: [2, 54], name: 'n', mechanism: 'none' });
+  assert.equal(none.value()[17], 0xff);
+  assert.equal(/** @type {Slot} */ (config.decode(config.ITEM.slot, none.value())).mechanism, 'none');
+  const u = new Uart({ fn: 5, baud: 115200, format: FixtureUart.formatByte(8, 'E', 2) });
+  assert.deepEqual([...u.value()], [5, 0, 0, 0xc2, 1, 0, 0b010100]);
+  assert.deepEqual(config.decode(config.ITEM.uart, u.value()), u);
   assert.deepEqual(config.decode(0x33, Uint8Array.of(1)), { tag: 0x33, value: Uint8Array.of(1) });
 });
 
@@ -58,9 +71,13 @@ test('the canonical order and hash (probe.config §2)', () => {
   assert.equal(config.crc32(new TextEncoder().encode('123456789')), 0xcbf43926);
   assert.equal(config.canonicalHash([]), 0);
   const items = [new Label({ channel: 9, text: 'b' }), new Plan({ fn: 5, role: 2, channel: 21 }),
-    new Label({ channel: 3, text: 'a' }), new Plan({ fn: 5, role: 1, channel: 20 }), config.remove('slot', 0)];
-  const order = config.canonical(items).map(([t, v]) => [t, v[0], v[2]]);
-  assert.deepEqual(order, [[1, 5, 1], [1, 5, 2], [2, 3, 97], [2, 9, 98]]);
+    new Label({ channel: 3, text: 'a' }), new Plan({ fn: 5, role: 1, channel: 20 }), new Plan({ fn: 5, role: 1, channel: 19 })];
+  const order = config.canonical(items).map(([t, v]) => [t, v[0], v[2], v[3]]);
+  assert.deepEqual(order, [[1, 5, 1, 19], [1, 5, 1, 20], [1, 5, 2, 21], [2, 3, 97, undefined], [2, 9, 98, undefined]]);   // plan by (fn, role, channel)
+  assert.throws(() => config.canonical([/** @type {any} */ (config.remove('slot', 0))]), RangeError);   // a removal is not an item
+  // the hash is over the one TLV encoding (core §2.2): a long label goes in the long form
+  const long = new Label({ channel: 1, text: 'x'.repeat(300) });
+  assert.equal(config.canonicalHash([long]), config.crc32(m.tlv(config.ITEM.label, long.value())));
   // the critical bit is not part of it; the same key twice is refused
   const crit = config.item(new Label({ channel: 3, text: 'a' }));
   crit[0] |= 0x80;
@@ -68,17 +85,28 @@ test('the canonical order and hash (probe.config §2)', () => {
   assert.throws(() => config.canonical([new Idle({ channel: 1 }), new Idle({ channel: 1, mode: 'hi-z' })]), RangeError);
 });
 
-test('the unreadable reason is the last byte of storage', async () => {
-  const storage = Uint8Array.from([0, 16, 0, 0, 2, 1, 2, 3, 4, 20, 0, 0, 0, 2]);
-  const payload = Uint8Array.from([0, 0x40, storage.length, ...storage]);
-  const hst = /** @type {any} */ ({ request: async () => ({ payload }) });
+test('state is paged by first_slot / first_bind and says why storage is unreadable (probe.config §3.3)', async () => {
+  /** @type {number[][]} */
+  const asked = [];
+  const slot = (/** @type {number} */ n) => m.element(new Writer().u8(n).u8(1).u16(0).u64(0xffffffffffffffffn).u8(0).u8(0).raw([0xee]).done());
+  const bind = (/** @type {number} */ p) => m.element(new Writer().u8(p).u8(2).u8(0xff).u8(1).done());
+  const hst = /** @type {any} */ ({
+    /** @param {number} fn @param {number} op @param {Uint8Array} p */
+    async call(fn, op, p) {
+      asked.push([...p]);
+      const head = new Writer().u8(p[0] === 0 ? 1 : 0).u8(2).u32(0x04030201).u8(2).done();
+      const body = p[0] === 0 ? [...head, 2, ...slot(0), ...slot(1), 1, ...bind(3)] : [...head, 1, ...slot(2), 0, 0x41, 1, 7];
+      return { payload: Uint8Array.from(body) };
+    },
+  });
   const st = await new ProbeConfig(hst, 6, ProbeConfig.NAME).state();
+  assert.deepEqual(asked, [[0, 0], [2, 1]]);
   assert.equal(st.storage, 'unreadable');
-  assert.equal(st.storageBytes, 4096);
   assert.equal(st.savedHash, 0x04030201);
-  assert.equal(st.saveMaxMs, 20);
   assert.equal(st.unreadableReason, 2);
   assert.match(/** @type {string} */ (st.unreadable), /gone/);
+  assert.deepEqual(st.slots.map((s) => [s.slot, s.state, s.lastTryAtNs, s.targetId]), [[0, 'absent', null, null], [1, 'absent', null, null], [2, 'absent', null, null]]);
+  assert.deepEqual(st.binds, [{ port: 3, mode: 'mixed', selected: null, flow: 'streaming' }]);
 });
 
 test('slots and binds round trip and show their state', { skip: !haveFake }, () => withFake(
@@ -93,19 +121,27 @@ test('slots and binds round trip and show their state', { skip: !haveFake }, () 
     assert.equal(slot.name, 'x035');
     assert.deepEqual(slot.lock, lock);
     assert.deepEqual(bind.streams, [['slot', 0], ['uart', 5]]);
+    const declared = await cfg.describe();
+    assert.equal(declared.slotsMax, 4);
+    assert.deepEqual(declared.bindModes, ['last-reset', 'manual', 'mixed']);
+    assert.ok(declared.items.includes(config.ITEM.uart));
     const st = await cfg.state();
-    assert.equal(st.slotsMax, 4);
-    assert.deepEqual(st.bindModes, ['last-reset', 'manual', 'mixed']);
     assert.equal(st.slots[0].state, 'connected');
     assert.deepEqual(st.slots[0].targetId, u32(TID));
+    assert.ok(st.slots[0].lastTryAtNs !== null && st.slots[0].lastTryAtNs >= 0n);   // the probe's clock, ns
     assert.equal(st.binds[0].port, 3);
     assert.equal(st.binds[0].flow, 'streaming');
     const saved = await cfg.save();
     const after = await cfg.state();
     assert.equal(after.savedHash, saved);
     assert.equal(after.storage, 'applied');
-    await cfg.set([config.remove('bind', 3)]);
+    const h = await cfg.set([config.remove('bind', 3)]);                   // goes as an unset
     assert.deepEqual((await cfg.items()).map((i) => i.constructor.name), ['Slot']);
+    assert.equal(h, (await cfg.get()).hash);
+    // a slot lock whose scheme the wire does not have: unsupported (undefined: malformed)
+    await assert.rejects(cfg.set([new Slot({ slot: 1, wireFn: 1, pins: [4, 5], name: 'l', lock: { scheme: 2, mask: u32(1), value: u32(1) } })]), Unsupported);
+    await assert.rejects(cfg.set([new Slot({ slot: 1, wireFn: 1, pins: [4, 5], name: 'l', lock: { scheme: 9, mask: u32(1), value: u32(1) } })]),
+      (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);
     await hst.end();
   }));
 
@@ -135,19 +171,21 @@ test('plan, label, idle and the hash a host computes', { skip: !haveFake }, () =
   assert.ok(items.some((i) => i instanceof Idle && i.channel === 21 && i.mode === 'pull-up'));
   const slot = /** @type {Slot} */ (items.find((i) => i instanceof Slot));
   assert.deepEqual([slot.maxSpeed, slot.idleClock], [1_000_000, 'low']);
-  // removing a key brings the hash back to what the rest gives
-  const h = await cfg.set([config.remove('slot', 1), config.remove('label', 20)]);
+  // unset by key brings the hash back to what the rest gives
+  const h = await cfg.unset([['slot', 1], ['label', 20]]);
   assert.equal(h, config.canonicalHash(want.filter((i) => !(i instanceof Slot) && !(i instanceof Label))));
+  await cfg.unset([['slot', 1]]);                                           // a key that is not there: nothing, ok
   await cfg.save();
   await cfg.erase();
-  assert.equal((await cfg.state()).storage, 'none');
+  const st = await cfg.state();
+  assert.deepEqual([st.storage, st.savedHash], ['none', 0]);
   await hst.end();
 }));
 
 test('a one-wire slot on the swio probe', { skip: !haveFake }, () => withFake(['--profile', 'esp32-v003'], async (hst) => {
   await hst.open(3000);
   const cfg = await ProbeConfig.open(hst);
-  assert.deepEqual((await cfg.state()).bindModes, ['last-reset', 'manual']);
+  assert.deepEqual((await cfg.describe()).bindModes, ['last-reset', 'manual']);
   await cfg.set([new Slot({ slot: 0, wireFn: 1, pins: [16, 0xffff], name: 'v003', attach: 'at-boot', retryS: 1 })]);
   const [slot] = /** @type {Slot[]} */ (await cfg.items());
   assert.deepEqual([slot.wireFn, slot.pins], [1, [16, 0xffff]]);
@@ -173,4 +211,26 @@ test('slots and a bind the probe booted with', { skip: !haveFake }, () => withFa
 
 test('a probe without settings has no oep.probe.config', { skip: !haveFake }, () => withFake(['--profile', 'rp2350-pins'], async (hst) => {
   await assert.rejects(ProbeConfig.open(hst), OepError);
+}));
+
+test('the uart item sets the UART when its plan comes; a session configure wins until the plan goes', { skip: !haveFake }, () => withFake(['--profile', 'p4-bench'], async (hst) => {
+  await hst.open(3000);
+  const cfg = await ProbeConfig.open(hst);
+  const uart = await FixtureUart.open(hst);
+  const fmt = FixtureUart.formatByte(8, 'E', 2);
+  const h = await cfg.set([new Uart({ fn: uart.fn, baud: 9600, format: fmt })]);
+  assert.equal(h, (await cfg.get()).hash);
+  assert.deepEqual((await cfg.items()).filter((i) => i instanceof Uart), [new Uart({ fn: uart.fn, baud: 9600, format: fmt })]);
+  const { planApply, planRelease } = await import('../src/core.js');
+  await planApply(hst, [[uart.fn, 1, 20], [uart.fn, 2, 21]]);
+  assert.deepEqual(await uart.status(), { configured: true, baud: 9600, format: fmt });
+  await uart.configure(115200);
+  assert.equal((await uart.status()).baud, Math.floor(80_000_000 / Math.floor(80_000_000 / 115200)));
+  await planRelease(hst, [uart.fn]);
+  await planApply(hst, [[uart.fn, 1, 20]]);
+  assert.equal((await uart.status()).baud, 9600);                          // the item again
+  await assert.rejects(cfg.set([new Uart({ fn: uart.fn, baud: 50_000_000 })]), Unsupported);   // more than 5 % off
+  await cfg.unset([['uart', uart.fn]]);
+  assert.ok(!(await cfg.items()).some((i) => i instanceof Uart));
+  await hst.end();
 }));
