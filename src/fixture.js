@@ -100,9 +100,13 @@ export class Gpio extends Interface {
   }
 }
 
-/** oep.fixture.uart status (op 0x07, lock-free): whether a configure (or the settings' uart item) is in force, and the
- * baud / format it runs with.
- * @typedef {{ configured: boolean, baud: number, format: number }} UartStatus */
+/** oep.fixture.uart status (op 0x07, lock-free): what is in force - 'default' (115200 8N1, nothing set), 'session' (a
+ * configure), 'item' (the settings' uart item), 'item_fallback' (the item's baud could not be made when the plan ran
+ * the UART: the default applies) - and the baud / format it runs with. isDefault: default or item_fallback.
+ * @typedef {{ configured: string, baud: number, format: number, isDefault: boolean }} UartStatus */
+
+/** The status's configured byte -> its name (registry uart_configured). @type {Record<number, string>} */
+export const UART_CONFIGURED = Object.fromEntries(Object.entries(UART.enum.uart_configured).map(([k, v]) => [v, k]));
 
 /**
  * oep.fixture.uart: one position stream per fn, like the console without a stream number. The stream exists while
@@ -146,9 +150,10 @@ export class FixtureUart extends PositionStream {
   /** configured, baud, format as the UART runs now (lock-free). @returns {Promise<UartStatus>} */
   async status() {
     const rd = new m.Reader((await this.call(FixtureUart.STATUS, new Uint8Array(), { locked: false })).payload);
-    const configured = rd.u8() !== 0, baud = rd.u32(), format = rd.u8();
+    const c = rd.u8(), baud = rd.u32(), format = rd.u8();
     rd.tail();
-    return { configured, baud, format };
+    const configured = UART_CONFIGURED[c] ?? String(c);
+    return { configured, baud, format, isDefault: configured === 'default' || configured === 'item_fallback' };
   }
 }
 
