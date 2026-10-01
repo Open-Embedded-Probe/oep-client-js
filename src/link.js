@@ -18,7 +18,10 @@
 // link never wedges at a rate the probe left. After a rate change the link waits SWITCH_SETTLE_MS before its first byte
 // (the probe switches once its answer is out; an FTDI lost the first frame sent at once). A raised rate that verified
 // only one request at a time keeps that cap (`inflightCap`) on the pipelined exchange until the link is back at the
-// boot speed.
+// boot speed. A committed rate also goes back after port_speed_idle_max_ms (3 s) with no good frame: while raised, the
+// link sends a keepalive before a request when it has been quiet for KEEPALIVE_MS (1 s), and `keepAlive()` does the
+// same for a caller that sits idle for long. Opening a serial port (open.js connect) retries its first confirm for
+// OPEN_RETRY_MS (that maximum and a second): a host that raised the speed and died leaves the probe at its rate until then.
 //
 // A serial port that a session holds carries no raw bytes from the probe (oep-core §3.4): a broken candidate there is
 // a broken frame, most likely the reply the oldest request waits for, so that request goes once more at once (the
@@ -33,6 +36,14 @@ import { Timeout } from './errors.js';
 const STALL_MS = reg.TIMING.probe_frame_gap_ms;   // a frame whose bytes stop this long is not coming
 /** After a baud change, before the first byte at the new rate (an M5Stack ATOM's FTDI lost it at once, core §3.5). */
 export const SWITCH_SETTLE_MS = 20;
+/** A committed rate goes back after this with no good frame on the port (core §3.5; idle_ms 0 and longer mean it). */
+export const IDLE_MAX_MS = reg.TIMING.port_speed_idle_max_ms;
+/** Raised: a keepalive once the link has been quiet this long (well inside IDLE_MAX_MS). */
+export const KEEPALIVE_MS = 1000;
+/** Opening a serial port: the first confirm retried this long (a raised rate a host that died left over). */
+export const OPEN_RETRY_MS = IDLE_MAX_MS + 1000;
+/** Each of those confirms waits this long (at most the link's timeout). */
+export const OPEN_TRY_MS = 500;
 
 /**
  * The bytes a transport moves. `start` begins delivering what arrives (onData for every chunk; onClose when the
@@ -84,6 +95,8 @@ export class Link {
     /** @type {() => number} */ this.corrSource = () => { this.ownCorr = (this.ownCorr % 0xffff) + 1; return this.ownCorr; };
     this.ownCorr = 0x8000;
     /** @type {Promise<boolean> | null} */ this.falling = null;
+    /** @type {(() => Uint8Array) | null} a keepalive in the session (bound by Host) */ this.keepaliveFrame = null;
+    this.lastTx = Date.now();                // when the link last wrote (raised: quiet for KEEPALIVE_MS = a keepalive)
   }
 
   /** Begin reading (once). */
@@ -220,6 +233,7 @@ export class Link {
 
   /** @param {Uint8Array} bytes */
   async write(bytes) {
+    this.lastTx = Date.now();
     const max = this.transport.maxWrite;
     if (!max || bytes.length <= max) return this.transport.write(bytes);
     for (let at = 0; at < bytes.length; at += max) await this.transport.write(bytes.subarray(at, at + max));
@@ -231,6 +245,7 @@ export class Link {
    * @returns {Promise<Uint8Array>}
    */
   async send(message) {
+    await this.keepRaised();
     let reply;
     try {
       reply = await this.sendOnce(message);
@@ -303,16 +318,55 @@ export class Link {
     }
   }
 
+  /** Confirms, each waiting eachMs, until one is answered (true) or waitMs has passed (false).
+   * @param {number} waitMs @param {number} eachMs */
+  async confirmWithin(waitMs, eachMs) {
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      if (await this.confirmRaw(eachMs)) return true;
+      if (Date.now() >= deadline) return false;
+    }
+  }
+
   /** At the boot speed again, the probe confirmed there: a confirm every 250 ms up to waitMs (a probe still trying
    * waits out its verify_ms; one committed reverts at the broken candidates these make). @param {number} waitMs */
   async backToBase(waitMs = 3000) {
     this.inflightCap = 0;
     if (this.baseBaud === null) return false;
     await this.setBaud(this.baseBaud);
-    const deadline = Date.now() + waitMs;
-    for (;;) {
-      if (await this.confirmRaw(250)) return true;
-      if (Date.now() >= deadline) return false;
+    return this.confirmWithin(waitMs, 250);
+  }
+
+  /** A serial port just opened: a confirm at the boot speed, retried for OPEN_RETRY_MS (port_speed_idle_max_ms and a
+   * second; at least the link's timeout) - a host that raised the speed and died leaves the probe at that rate until its
+   * idle limit runs out (core §3.5 item 6). Rejects with Timeout when none was answered. @param {number} [waitMs] */
+  async waitBootSpeed(waitMs = Math.max(OPEN_RETRY_MS, this.timeoutMs)) {
+    if (!(await this.confirmWithin(waitMs, Math.min(this.timeoutMs, OPEN_TRY_MS)))) {
+      throw new Timeout(`no answer to confirm at ${this.baud ?? 'the port\'s rate'} for ${(waitMs / 1000).toFixed(1)} s`);
+    }
+  }
+
+  /** The host side runs above the boot speed. */
+  raised() { return this.baseBaud !== null && this.baud !== this.baseBaud; }
+
+  /** While a raised rate is in force and a session holds the port: a keepalive when the link has been quiet for
+   * KEEPALIVE_MS (1 s). The probe goes back to the boot speed after port_speed_idle_max_ms (3 s) with no good frame
+   * (core §3.5); every request already does this before it goes out, so only a caller that sits idle for long (waiting
+   * on a person, a sleep between requests) calls it - often is fine, it sends nothing otherwise. true when one went out. */
+  async keepAlive() {
+    if (!this.raised() || !this.keepaliveFrame || !this.held()) return false;
+    if (Date.now() - this.lastTx < KEEPALIVE_MS) return false;
+    this.lastTx = Date.now();                // before sending: send() asks again and must not recurse
+    await this.send(this.keepaliveFrame());
+    return true;
+  }
+
+  /** keepAlive before a request; a keepalive that fails is left to the request itself to find out. */
+  async keepRaised() {
+    try {
+      await this.keepAlive();
+    } catch (e) {
+      if (!(e instanceof Timeout || e instanceof cobs.CorruptFrame)) throw e;
     }
   }
 
