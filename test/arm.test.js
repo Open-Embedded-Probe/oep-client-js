@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Writer, getU16, getU32 } from '../src/bytes.js';
 import * as m from '../src/message.js';
-import { AdiError, ArmAdi, CortexM, MemAp, SwdWire, transferReads } from '../src/arm.js';
+import { AdiError, ArmAdi, CortexM, MemAp, NoMaxLength, SwdWire, transferReads } from '../src/arm.js';
+import { RiscvDm } from '../src/riscv.js';
 import { ScriptedHost, handlers, ok } from './scripted.js';
 
 const w = () => new Writer();
@@ -62,13 +63,14 @@ class FakeAdi {
   }
 }
 
-function bench() {
+/** @param {number | null} [maxLength] what the probe declares for arm-adi / riscv-dm (null: nothing) */
+function bench(maxLength = 1000) {
   const fake = new FakeAdi();
   const hst = new ScriptedHost(handlers([
     [5, ArmAdi.TRANSFER, (p) => fake.transfer(p)], [5, ArmAdi.READ_BLOCK, (p) => fake.readBlock(p)],
     [5, ArmAdi.WRITE_BLOCK, (p) => fake.writeBlock(p)],
     [4, SwdWire.ATTACH, (p) => { assert.equal(p[0], 0); return ok(w().u16(1).u32(0x4c013477).u8(4).u32(2_000_000).done()); }],   // method 0; dormant_woken = bit2
-  ]));
+  ]), 1024, maxLength);
   return { fake, hst };
 }
 
@@ -103,7 +105,7 @@ test('power-up clears sticky errors and waits for both acks', async () => {
   assert.equal(await adi.powerUp(), 0xF0000000);
 });
 
-test('the MEM-AP sets CSW from the caller and chunks blocks by the frame limit', async () => {
+test('the MEM-AP sets CSW from the caller and chunks blocks by the declared max_length', async () => {
   const { fake, hst } = bench();
   const adi = await ArmAdi.on(hst, 1, { adiv6: true });
   const mem = await MemAp.open(adi, 0x2000, { cswClear: 1 << 30 });
@@ -111,7 +113,10 @@ test('the MEM-AP sets CSW from the caller and chunks blocks by the frame limit',
   const words = await mem.readBlock(0x1000, 500);
   assert.deepEqual(words, Array.from({ length: 500 }, (_, i) => 0x1000 + 4 * i));
   const blocks = hst.log.filter(([, op]) => op === ArmAdi.READ_BLOCK).map(([, , p]) => getU16(p, 6));
-  assert.deepEqual(blocks, [251, 249]);                                   // (1024 - 18) / 4 words per block
+  assert.deepEqual(blocks, [250, 250]);                                   // the declared max_length 1000 / 4 words
+  assert.equal(adi.maxLength, 1000);
+  assert.equal(adi.maxWords, 250);
+  assert.equal(mem.chunk, 250);
   const values = Array.from({ length: 16 }, (_, i) => i);
   await mem.writeBlock(0x2007F3F0, values);
   assert.deepEqual(await mem.readBlock(0x2007F3F0, 16), values);
@@ -120,6 +125,24 @@ test('the MEM-AP sets CSW from the caller and chunks blocks by the frame limit',
   await mem.writeMany([[0x20000004, 7]]);
   const last = hst.log[hst.log.length - 1][2];
   assert.equal(getU16(last, 2), 3);                                       // TAR, DRW, RDBUFF
+});
+
+test('the block length comes from the declared max_length only; a probe that declares none is an error, named', async () => {
+  // oep-if-debug §4.5 / §6: the host takes max_length from describe and never computes it from max_frame
+  let { hst } = bench(96);
+  let adi = await ArmAdi.on(hst, 1, { adiv6: true });
+  assert.equal(adi.maxLength, 96);
+  assert.equal(adi.maxWords, 24);
+  assert.equal((await MemAp.open(adi, 0x2000)).chunk, 24);
+  assert.equal((await RiscvDm.on(new ScriptedHost(handlers([]), 1024, 42), 1)).maxLength, 40);   // rounded down to a word
+  ({ hst } = bench(null));
+  adi = await ArmAdi.on(hst, 1, { adiv6: true });
+  assert.equal(adi.maxLength, null);
+  await assert.rejects(MemAp.open(adi, 0x2000), (e) => e instanceof NoMaxLength && /oep\.target\.arm-adi \(fn 5\) declares no usable max_length/.test(e.message));
+  const dm = await RiscvDm.on(new ScriptedHost(handlers([]), 1024, null), 1);
+  assert.equal(dm.maxWords, null);
+  await assert.rejects(dm.blockWords(), (e) => e instanceof NoMaxLength && /riscv-dm/.test(e.message));
+  await assert.rejects((await RiscvDm.on(new ScriptedHost(handlers([]), 1024, 2), 1)).blockWords(), NoMaxLength);   // less than one word: none
 });
 
 test('a transfer fault throws with the step count and the ACK', async () => {

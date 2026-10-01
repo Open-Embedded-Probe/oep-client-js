@@ -4,6 +4,7 @@
 import { Host } from '../src/host.js';
 import * as m from '../src/message.js';
 import { rejection } from '../src/errors.js';
+import { COMMON } from '../src/catalog.js';
 
 /** @typedef {(payload: Uint8Array) => [number, number, Uint8Array]} Handler */
 
@@ -13,8 +14,10 @@ export const FNS = { 'oep.wire.rvswd': 1, 'oep.target.riscv-dm': 2, 'oep.fixture
 export const ok = (body = []) => [m.COMPLETED, m.SUCCESS, Uint8Array.from(body)];
 
 export class ScriptedHost extends Host {
-  /** @param {Map<string, Handler>} handlers keyed `${fn}:${op}` @param {number} maxFrame */
-  constructor(handlers, maxFrame = 1024) {
+  /** @param {Map<string, Handler>} handlers keyed `${fn}:${op}` @param {number} maxFrame
+   * @param {number | null} maxLength  what the block-op interfaces (riscv-dm, arm-adi) declare as max_length (oep-if-debug
+   *   §4.5 / §6: mandatory there); null leaves it out. The other interfaces declare nothing (attach's default max_speed). */
+  constructor(handlers, maxFrame = 1024, maxLength = 1000) {
     super(/** @type {any} */ (null));
     this.handlers = handlers;
     /** @type {[number, number, Uint8Array][]} */ this.log = [];
@@ -22,6 +25,11 @@ export class ScriptedHost extends Host {
     this.revision = 1;
     this.limits = { revision: 1, flags: 0, maxFrame, window: 4096, maxInflight: 8, bootId: 1, tail: new m.Tail() };
     for (const fn of Object.values(FNS)) this.describes.set(fn, []);   // declares nothing: attach's default max_speed
+    if (maxLength !== null) {
+      for (const fn of [FNS['oep.target.riscv-dm'], FNS['oep.target.arm-adi']]) {
+        this.describes.set(fn, [[COMMON.max_length, Uint8Array.of(maxLength & 0xff, maxLength >> 8)]]);
+      }
+    }
   }
 
   /** @param {number} fn @param {number} op @param {Uint8Array} payload */
