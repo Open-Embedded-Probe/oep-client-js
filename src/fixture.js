@@ -6,7 +6,7 @@
 // 3 = MISO, 4 = CS. Only channels the plan assigned can be used.
 
 import * as reg from './registry.js';
-import { Writer, concat } from './bytes.js';
+import { Writer, concat, getU64 } from './bytes.js';
 import * as m from './message.js';
 import { Unavailable } from './errors.js';
 import { Interface } from './core.js';
@@ -68,12 +68,13 @@ export class Gpio extends Interface {
   /** @param {number} channel @param {number} mode */
   configure(channel, mode) { return this.set([[channel, mode]]); }
 
-  /** -> one level (0 / 1) per channel. Lock-free. @param {number[]} channels */
+  /** -> one level (0 / 1) per channel. Lock-free. The answer is n(u8) n x level [TLV] (fixture §1).
+   * @param {number[]} channels */
   async read(channels) {
     const w = new Writer().u8(channels.length);
     for (const c of channels) w.u16(c);
     const rd = new m.Reader((await this.call(Gpio.READ, w.done(), { locked: false })).payload);
-    const levels = Array.from(rd.bytes(channels.length));
+    const levels = Array.from(rd.counted(1));
     rd.tail();
     return levels;
   }
@@ -99,15 +100,21 @@ export class Gpio extends Interface {
   }
 }
 
+/** oep.fixture.uart status (op 0x07, lock-free): whether a configure (or the settings' uart item) is in force, and the
+ * baud / format it runs with.
+ * @typedef {{ configured: boolean, baud: number, format: number }} UartStatus */
+
 /**
- * oep.fixture.uart: one position stream per fn, like the console without a stream number. Received bytes are kept
- * from configure until plan_release, whatever the session; reads are lock-free and do not consume. TX idles high
- * while the plan holds it.
+ * oep.fixture.uart: one position stream per fn, like the console without a stream number. The stream exists while
+ * the plan gives the fn RX or TX; received bytes are kept from then on, whatever the session, and the position never
+ * goes back within one boot (a plan released and applied again carries on). Reads are lock-free and do not consume.
+ * TX idles high while planned, before configure too.
  */
 export class FixtureUart extends PositionStream {
   static NAME = 'oep.fixture.uart';
   static REVISION = 1;
   static CONFIGURE = UART.op.configure;
+  static STATUS = UART.op.status;
   static TAG_FORMAT = UART.tlv.configure.format;
   // format bits: data bits (0 = 8, 1 = 7), parity (0 none, 1 even, 2 odd) << 2, stop bits (0 = 1, 1 = 2) << 4
   static EIGHT_N_1 = 0x00;
@@ -122,8 +129,9 @@ export class FixtureUart extends PositionStream {
   }
 
   /**
-   * -> the actual baud. fmt (formatByte()) goes as a critical TLV: a probe that cannot set it refuses (Unsupported)
-   * rather than running 8N1; none leaves the default 8N1.
+   * -> the actual baud (within 5 % of the one asked, else the probe refuses Unsupported). fmt (formatByte()) goes as a
+   * critical TLV: a probe that cannot set it refuses (Unsupported) rather than running 8N1; none leaves the default
+   * 8N1. An fn whose plan has neither RX nor TX is rejected Unavailable (cause 6).
    * @param {number} baud @param {number} [fmt]
    */
   async configure(baud, fmt) {
@@ -133,6 +141,14 @@ export class FixtureUart extends PositionStream {
     const actual = rd.u32();
     rd.tail();
     return actual;
+  }
+
+  /** configured, baud, format as the UART runs now (lock-free). @returns {Promise<UartStatus>} */
+  async status() {
+    const rd = new m.Reader((await this.call(FixtureUart.STATUS, new Uint8Array(), { locked: false })).payload);
+    const configured = rd.u8() !== 0, baud = rd.u32(), format = rd.u8();
+    rd.tail();
+    return { configured, baud, format };
   }
 }
 
@@ -168,8 +184,11 @@ export class FixtureUartIO extends StreamIO {
 
 /** @typedef {{ state: number, mode: number, armed: boolean, queued: number, rxFrames: number, txSlots: number, errors: number }} I2cStatus
  * state 0 not configured, 1 running; mode: the configure mode; armed: mode 1 waiting for a write; queued: frames
- * waiting for readRx; rxFrames: received so far; txSlots: preloaded so far (u8, wraps); errors: overflows and receive
- * errors (u16, wraps). */
+ * waiting for readRx; rxFrames: received so far; txSlots: preloaded and not yet read (mode 3); errors: overflows,
+ * receive errors and unarmed writes dropped (u32). */
+
+/** @param {m.Tail} tail @param {number} tag */
+const nsOf = (tail, tag) => { const v = tail.get(tag); return v && v.length >= 8 ? getU64(v) : null; };
 
 /**
  * oep.fixture.i2c-target (fixture §3): the probe as an I2C target. Mode 1 fixed rx (armRx with the exact length),
@@ -190,6 +209,10 @@ export class I2cTarget extends Interface {
   static MODE_PRELOADED_TX = I2C.enum.mode.preloaded_tx;
   static ROLE_SDA = I2C.enum.role.sda;
   static ROLE_SCL = I2C.enum.role.scl;
+  static TAG_NS = I2C.tlv.read_rx_answer.ns;
+
+  /** @type {bigint | null} when the probe received the last frame readRx gave (its clock, ns), when it says */
+  lastNs = null;
 
   /** The plan's (fn, role, channel) assignments for core.planApply. @param {number} sda @param {number} scl
    * @returns {[number, number, number][]} */
@@ -201,11 +224,13 @@ export class I2cTarget extends Interface {
   /** @param {number} length */
   async armRx(length) { await this.call(I2cTarget.ARM_RX, new Writer().u16(length).done()); }
 
-  /** -> frames still queued after this one, and the oldest frame (none: empty). */
+  /** -> frames still queued after this one, the oldest frame (none: empty) and ns: when the probe received it (its
+   * clock; TLV ns, else null; also this.lastNs). The answer is pending(u8) count(u16) data [TLV]. */
   async readRx() {
     const rd = new m.Reader((await this.call(I2cTarget.READ_RX)).payload);
-    const pending = rd.u8(), count = rd.u16();
-    return { pending, data: rd.bytes(count) };
+    const pending = rd.u8(), data = rd.counted(2);
+    this.lastNs = nsOf(rd.tail(), I2cTarget.TAG_NS);
+    return { pending, data, ns: this.lastNs };
   }
 
   /** -> the slots preloaded so far (u8, wraps). @param {Uint8Array} data */
@@ -219,7 +244,7 @@ export class I2cTarget extends Interface {
   /** Lock-free. @returns {Promise<I2cStatus>} */
   async status() {
     const rd = new m.Reader((await this.call(I2cTarget.STATUS, new Uint8Array(), { locked: false })).payload);
-    const s = { state: rd.u8(), mode: rd.u8(), armed: rd.u8() !== 0, queued: rd.u8(), rxFrames: rd.u32(), txSlots: rd.u8(), errors: rd.u16() };
+    const s = { state: rd.u8(), mode: rd.u8(), armed: rd.u8() !== 0, queued: rd.u8(), rxFrames: rd.u32(), txSlots: rd.u8(), errors: rd.u32() };
     rd.tail();
     return s;
   }
@@ -251,6 +276,10 @@ export class SpiTarget extends Interface {
   static ROLE_CS = SPI.enum.role.cs;
   static MSB_FIRST = 0;
   static LSB_FIRST = 1;
+  static TAG_NS = SPI.tlv.read_rx_answer.ns;
+
+  /** @type {bigint | null} when the last transaction readRx gave ended on the probe's clock (TLV ns), when it says */
+  lastNs = null;
 
   /** @param {number} sck @param {number} mosi @param {number} miso @param {number} cs
    * @returns {[number, number, number][]} */
@@ -268,17 +297,19 @@ export class SpiTarget extends Interface {
     await this.call(SpiTarget.ARM, concat(new Writer().u16(length).u16(tx.length).done(), tx));
   }
 
-  /** -> transactions still queued, bits clocked, and the MOSI bytes of the oldest finished transaction. */
+  /** -> transactions still queued, bits clocked, the MOSI bytes of the oldest finished transaction and ns: when it
+   * ended on the probe's clock (TLV ns, else null; also this.lastNs). */
   async readRx() {
     const rd = new m.Reader((await this.call(SpiTarget.READ_RX)).payload);
-    const pending = rd.u8(), bits = rd.u32(), count = rd.u16();
-    return { pending, bits, data: rd.bytes(count) };
+    const pending = rd.u8(), bits = rd.u32(), data = rd.counted(2);
+    this.lastNs = nsOf(rd.tail(), SpiTarget.TAG_NS);
+    return { pending, bits, data, ns: this.lastNs };
   }
 
   /** Lock-free. @returns {Promise<SpiStatus>} */
   async status() {
     const rd = new m.Reader((await this.call(SpiTarget.STATUS, new Uint8Array(), { locked: false })).payload);
-    const s = { state: rd.u8(), mode: rd.u8(), bitOrder: rd.u8(), armed: rd.u8() !== 0, queued: rd.u8(), transactions: rd.u32(), errors: rd.u16() };
+    const s = { state: rd.u8(), mode: rd.u8(), bitOrder: rd.u8(), armed: rd.u8() !== 0, queued: rd.u8(), transactions: rd.u32(), errors: rd.u32() };
     rd.tail();
     return s;
   }

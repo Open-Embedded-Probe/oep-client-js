@@ -8,6 +8,7 @@ import { planApply, planRelease } from '../src/core.js';
 import { decodeI2c } from '../src/decode.js';
 import { Rejected, Unavailable, Unsupported } from '../src/errors.js';
 import { FixtureUart, FixtureUartIO, Gpio, GpioUnavailable, I2cTarget, SpiTarget } from '../src/fixture.js';
+import { PositionStream } from '../src/console.js';
 import { Host } from '../src/host.js';
 import * as m from '../src/message.js';
 import { openTcp } from '../src/node/index.js';
@@ -36,7 +37,7 @@ function scripted(handlers, maxFrame = 1024) {
     },
   };
   const hst = new Host(/** @type {any} */ (link));
-  hst.limits = { revision: 1, flags: 0, maxFrame, window: 4096, maxInflight: 4, tail: new m.Tail() };
+  hst.limits = { revision: 1, flags: 0, maxFrame, window: 4096, maxInflight: 4, bootId: 1, tail: new m.Tail() };
   hst.revision = 1;
   for (const [name, fn] of /** @type {[string, number][]} */ ([[FixtureUart.NAME, UART], [I2cTarget.NAME, I2C], [SpiTarget.NAME, SPI]])) {
     hst.fns.set(name, fn);
@@ -63,8 +64,8 @@ test('i2c-target request and answer shapes', async () => {
   const { hst, log } = scripted({
     [`${I2C}:${I2cTarget.CONFIGURE}`]: () => ok(),
     [`${I2C}:${I2cTarget.PRELOAD_TX}`]: () => ok(Uint8Array.of(2)),
-    [`${I2C}:${I2cTarget.READ_RX}`]: () => ok(concat(Uint8Array.of(1), new Writer().u16(3).done(), utf8('abc'))),
-    [`${I2C}:${I2cTarget.STATUS}`]: () => ok(new Writer().u8(1).u8(3).u8(0).u8(1).u32(5).u8(2).u16(0).done()),
+    [`${I2C}:${I2cTarget.READ_RX}`]: () => ok(concat(Uint8Array.of(1), new Writer().u16(3).done(), utf8('abc'), Uint8Array.of(1, 8), new Writer().u64(1234).done())),   // TLV ns
+    [`${I2C}:${I2cTarget.STATUS}`]: () => ok(new Writer().u8(1).u8(3).u8(0).u8(1).u32(5).u8(2).u32(0).done()),
     [`${I2C}:${I2cTarget.STRETCH}`]: () => ok(),
   });
   const t = await I2cTarget.open(hst);
@@ -75,6 +76,8 @@ test('i2c-target request and answer shapes', async () => {
   const rx = await t.readRx();
   assert.equal(rx.pending, 1);
   assert.equal(text(rx.data), 'abc');
+  assert.equal(rx.ns, 1234n);
+  assert.equal(t.lastNs, 1234n);
   assert.deepEqual(await t.status(), { state: 1, mode: 3, armed: false, queued: 1, rxFrames: 5, txSlots: 2, errors: 0 });
   await t.stretch(50);
   assert.deepEqual(log.at(-1)?.[2], new Writer().u32(50).done());
@@ -86,12 +89,12 @@ test('spi-target request and answer shapes', async () => {
   const { hst, log } = scripted({
     [`${SPI}:${SpiTarget.ARM}`]: () => ok(),
     [`${SPI}:${SpiTarget.READ_RX}`]: () => ok(concat(Uint8Array.of(0), new Writer().u32(32).u16(4).done(), fromHex('a55a0f01'))),
-    [`${SPI}:${SpiTarget.STATUS}`]: () => ok(new Writer().u8(1).u8(0).u8(1).u8(1).u8(0).u32(9).u16(1).done()),
+    [`${SPI}:${SpiTarget.STATUS}`]: () => ok(new Writer().u8(1).u8(0).u8(1).u8(1).u8(0).u32(9).u32(1).done()),
   });
   const t = await SpiTarget.open(hst);
   await t.arm(4, Uint8Array.of(1, 2));
   assert.deepEqual(log.at(-1)?.[2], Uint8Array.of(4, 0, 2, 0, 1, 2));
-  assert.deepEqual(await t.readRx(), { pending: 0, bits: 32, data: fromHex('a55a0f01') });
+  assert.deepEqual(await t.readRx(), { pending: 0, bits: 32, data: fromHex('a55a0f01'), ns: null });
   assert.deepEqual(await t.status(), { state: 1, mode: 0, bitOrder: 1, armed: true, queued: 0, transactions: 9, errors: 1 });
   assert.deepEqual(t.assignments(1, 2, 3, 4), [[SPI, 1, 1], [SPI, 2, 2], [SPI, 3, 3], [SPI, 4, 4]]);
 });
@@ -143,6 +146,9 @@ test('gpio set is a list in order, only planned channels', { skip: !haveFake }, 
     await g.set([[23, Gpio.OPEN_DRAIN_LOW], [5, Gpio.OUTPUT_HIGH], [23, Gpio.OPEN_DRAIN_RELEASE]]);
     assert.deepEqual(log.at(-1)?.[2], Uint8Array.of(3, 23, 0, 5, 5, 0, 4, 23, 0, 6));
     assert.deepEqual(await g.read([23, 5]), [1, 1]);
+    const raw = await hst.request(g.fn, Gpio.READ, Uint8Array.of(2, 23, 0, 5, 0), { locked: false });
+    assert.deepEqual([...raw.payload], [2, 1, 1]);                        // n(u8) n x level [TLV] (fixture §1)
+    await assert.rejects(g.set([[5, 8]]), (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);   // not a defined mode
     const e = await g.set([[5, Gpio.OUTPUT_LOW], [40, Gpio.OUTPUT_LOW]]).then(() => null, (x) => x);
     assert.ok(e instanceof GpioUnavailable && e instanceof Unavailable);
     assert.deepEqual(e.channels, [40]);
@@ -172,7 +178,10 @@ test('uart configure with a format, reads that do not consume, write, marks', { 
     assert.equal(await io.configure(115200, FixtureUart.formatByte(8, 'E', 2)), Math.floor(80_000_000 / Math.floor(80_000_000 / 115200)));
     assert.deepEqual(log.at(-2)?.[2].slice(4), Uint8Array.of(0x81, 1, 0b010100));   // format: a critical TLV
     assert.deepEqual(await io.read(), new Uint8Array());
-    await assert.rejects(io.uart.configure(9600, 0x80), (e) => e instanceof Unsupported && e.tag === 0x81);
+    await assert.rejects(io.uart.configure(9600, 0x01), (e) => e instanceof Unsupported && e.tag === 0x81);   // 7N1: defined, not declared
+    await assert.rejects(io.uart.configure(9600, 0x80), (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);   // an undefined bit
+    await assert.rejects(io.uart.configure(50_000_000), (e) => e instanceof Unsupported && e.tag === null);   // more than 5 % off
+    assert.deepEqual(await io.uart.status(), { configured: true, baud: io.baud, format: 0b010100 });
     assert.ok((await io.uart.write(utf8('abc'))) > 0);
     await io.uart.mark(7);
     assert.equal((await io.uart.marks()).at(-1)?.detail, 7);
@@ -202,7 +211,35 @@ test('uart from a saved plan: RX from the configure on, TX, 64-byte frames', { s
     assert.equal(writes.reduce((a, w) => a + w - 2, 0), 120);
     await new Promise((r) => setTimeout(r, 100));
     const got = await uart.read(512);
-    assert.ok(got.length > 0 && got.length <= frame - 14);
+    assert.ok(got.length > 0 && got.length <= frame - 16);               // 64 - 5 - start 8 - flags 1 - len 2
+    await hst.end();
+  } finally {
+    await hst.link.close();
+    fake.stop();
+  }
+});
+
+test('the uart stream is the plan\'s and its position never goes back (fixture §2, common §1.1)', { skip: !haveFake }, async () => {
+  const fake = await startFake();
+  const hst = await openTcp({ port: fake.port });
+  try {
+    await hst.open(5000);
+    const uart = await FixtureUart.open(hst);
+    await assert.rejects(uart.configure(115200), (e) => e instanceof Unavailable && e.cause === 'wrong_state');   // no plan: no stream
+    await assert.rejects(uart.read(), Unavailable);
+    assert.equal((await uart.status()).configured, false);
+    await planApply(hst, [[uart.fn, 1, 20]]);                              // RX only: the stream is there, 115200 8N1 by default
+    assert.deepEqual(await uart.status(), { configured: false, baud: 115200, format: 0 });
+    await uart.mark(1);
+    const before = (await uart.read(PositionStream.FROM_NOW, 0, 0)).start;
+    await planRelease(hst, [uart.fn]);
+    await assert.rejects(uart.read(), Unavailable);
+    await planApply(hst, [[uart.fn, 1, 20], [uart.fn, 2, 21]]);
+    const chunk = await uart.read(PositionStream.FROM_OLDEST);
+    assert.equal(chunk.start, before);                                     // from where it left off, nothing kept
+    assert.equal(chunk.data.length, 0);
+    await uart.mark(2);
+    assert.deepEqual((await uart.marks()).map((k) => k.serial), [1]);     // the serials go on too
     await hst.end();
   } finally {
     await hst.link.close();
