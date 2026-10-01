@@ -23,14 +23,15 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 - ページ: つなぐ、probe の宣言を読む、設定の編集と保存、GPIO と UART、port_speed、DFU での更新
 - port_speed（oep-core §3.5、使うときだけ）: `raiseSpeed(host, rates, opts)`（または `connect` / `openWebSerial` / `openSerial` の
   `portSpeed: [速さ]`）で、セッションの間 UART bridge を速くする。速さを順に試し、両方向に max_frame の大きさの link_source /
-  link_sink で確かめ（壊れたフレームを数え、向きごとの KB/s を測る）、決めるか、戻して起動時の速さで confirm し直す。結果は
+  link_sink で確かめ（壊れたフレームを数え、向きごとの KB/s を測る）、続けて両方向を同時に（交互に約 1 秒、`duplexKBs`）流し、決めるか、戻して起動時の速さで confirm し直す。結果は
   `host.link.speed` に残る。WebSerial は同じ口を閉じて開き直して速さを変え（すぐに DTR / RTS を放す。esptool-js と同じ）、Node の
   `serialport` は `update` で変える。`end` で link も起動時の速さに戻り、上げた速さで応答の来ない要求は起動時の速さに戻って
-  もう一度送る（oep-client-python と同じ手順）
+  もう一度送る（待つ 1 回は lease の 4 分の 1 まで）。5 秒の内に 3 回フレームが壊れるか送り直すと降りる（port_speed の戻す、
+  起動時の速さ、confirm）。どちらで離れた速さもそのセッションの間は使わない（`speed.steppedDown`、`downWhy`）（oep-client-python と同じ手順）
 
 wire は oep-spec の 2026-10-01 のゼロベース見直しの形です（応答はすべて長さを持つ、TLV の長い形、confirm の boot_id、`expired`、
 probe.config の `state` / `unset` / `uart`、attach の reset TLV、キャプチャの世代。変更履歴を参照）。oep-client-python の fake の
-probe（119 件の試験）と台本のデバイスで試しています。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
+probe（131 件の試験）と台本のデバイスで試しています。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
 
 v1 の凍結までは仕様が壊れることがあり、この package は probe の firmware
 （[OpenEmbeddedProbe](https://github.com/Open-Embedded-Probe/oep-probe-arduino)）と

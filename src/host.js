@@ -54,6 +54,11 @@ export class Host {
     if (link && 'keepaliveFrame' in link) {   // raised (port_speed): the link keeps the line alive in this session
       link.keepaliveFrame = () => new m.Request(this.nextCorr(), m.CORE_FN, m.OP.keepalive, new Uint8Array(), this.session).pack();
     }
+    if (link && 'sessionFrame' in link) {   // raised: the step down's revert in this session
+      link.sessionFrame = (/** @type {number} */ op, /** @type {Uint8Array} */ payload) => new m.Request(this.nextCorr(), m.CORE_FN, op, payload, this.session).pack();
+    }
+    if (link && 'lease' in link) link.lease = () => (this.session !== null ? this.leaseMs : null);   // raised: bounds each wait
+    if (link && 'sessionId' in link) link.sessionId = () => this.session;
   }
 
   nextCorr() { this.corr = (this.corr % 0xffff) + 1; return this.corr; }

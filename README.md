@@ -23,15 +23,18 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 - the page: connect, read what the probe declares, edit and save its settings, GPIO and UART, port_speed, a DFU update;
 - port_speed (oep-core §3.5, opt-in): `raiseSpeed(host, rates, opts)` (or `portSpeed: [rates]` on `connect` /
   `openWebSerial` / `openSerial`) runs a UART bridge faster for the session - each rate tried, verified both ways with
-  max_frame-sized link_source / link_sink frames (broken frames counted, KB/s measured each way), committed or reverted
+  max_frame-sized link_source / link_sink frames (broken frames counted, KB/s measured each way), then both ways at once
+  (the two interleaved, about 1 s, `duplexKBs`), committed or reverted
   and confirmed again at the boot speed; the report stays as `host.link.speed`. WebSerial changes the rate by closing and
   opening the same port again (DTR / RTS released at once, as esptool-js does), Node's `serialport` by `update`. An
   `end` takes the link back to the boot speed, and a request unanswered at a raised rate falls back to it and goes once
-  more (the same procedure as oep-client-python).
+  more, each wait at most a quarter of the lease; 3 broken frames or resends within 5 s step down (port_speed revert,
+  the boot speed, a confirm); a rate left either way stays unused for the session (`speed.steppedDown`, `downWhy`) (the
+  same procedure as oep-client-python).
 
 The wire is oep-spec's zero-base rewrite of 2026-10-01 (every answer carries its lengths, TLVs have a long form, confirm
 answers the boot_id, `expired`, probe.config's `state` / `unset` / `uart`, the attach reset TLV, capture generations; see
-the changelog). Tested against oep-client-python's fake probe (119 tests) and scripted devices; the browser transports,
+the changelog). Tested against oep-client-python's fake probe (131 tests) and scripted devices; the browser transports,
 DFU and the page are not yet checked on hardware.
 
 Until the v1 freeze the spec may break and this package follows it at once, with the probe firmware
