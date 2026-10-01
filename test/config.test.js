@@ -246,7 +246,8 @@ test('the uart item sets the UART when its plan comes; a session configure wins 
 // ---- the disable item (0x07, probe.config §1): a channel the probe never uses or touches ------------------------
 
 /** rejected unavailable with this cause and channel @param {string} cause @param {number} ch */
-const refused = (cause, ch) => (/** @type {any} */ e) => e instanceof Unavailable && e.cause === cause && e.channels.includes(ch);
+const refused = (cause, ch) => (/** @type {any} */ e) => e instanceof Unavailable && e.cause === cause && e.channels.includes(ch)
+  && (cause !== 'held_by_settings' || e.holderKind === 'disabled');   // holder_kind 6 next to the channel
 
 test('the disable item: its value, decode, removal and hash', () => {
   const d = new Disable({ channel: 40 });
@@ -273,7 +274,7 @@ test('a disabled channel is refused everywhere with cause 5 and its channel', { 
   await assert.rejects(wire.scan([[4, 5]]), refused('held_by_settings', 4));                       // scan pairs
   assert.deepEqual((await wire.scan()).map((f) => f.pins), [[2, 3], [6, 7]]);                       // count 0 skips it
   const gpio = await Gpio.open(hst);
-  await assert.rejects(gpio.set([[30, Gpio.OUTPUT_HIGH]]), (e) => e instanceof GpioUnavailable && e.cause === 'held_by_settings' && e.index === 0);
+  await assert.rejects(gpio.set([[30, Gpio.OUTPUT_HIGH]]), (e) => e instanceof GpioUnavailable && e.cause === 'held_by_settings' && e.holderKind === 'disabled' && e.index === 0);
   await assert.rejects(gpio.read([30]), refused('held_by_settings', 30));
   await cfg.unset([['disable', 30]]);                                                              // enabled again
   await planApply(hst, [[4, 1, 30]]);
@@ -290,6 +291,7 @@ test('disabling a channel in use is cause 1; idle and disable on one channel is 
   await assert.rejects(cfg.set([new Idle({ channel: 31 }), new Disable({ channel: 31 })]), (e) => e instanceof Rejected && e.result.detail === m.REJECT.malformed);
   await assert.rejects(cfg.set([new Idle({ channel: 30 })]), (e) => e instanceof Rejected && e.result.detail === m.REJECT.malformed);
   assert.deepEqual((await cfg.items()).filter((i) => i instanceof Idle), []);                      // nothing changed
+  await assert.rejects(cfg.set([new Disable({ channel: 24 })]), Unsupported);                      // not a channel it offers
   await hst.end();
 }));
 
