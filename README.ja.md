@@ -21,17 +21,36 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   （ネイティブの package は任意）
 - firmware の更新: USB の DFU（ESP32-P4）と、Release の firmware-<version>.json
 - ページ: つなぐ、probe の宣言を読む、設定の編集と保存、GPIO と UART、port_speed、DFU での更新
-- port_speed（oep-core §3.5、使うときだけ）: `raiseSpeed(host, rates, opts)`（または `connect` / `openWebSerial` / `openSerial` の
-  `portSpeed: [速さ]`）で、セッションの間 UART bridge を速くする。速さを順に試し、両方向に max_frame の大きさの link_source /
-  link_sink で確かめ（壊れたフレームを数え、向きごとの KB/s を測る）、続けて両方向を同時に（交互に約 1 秒、`duplexKBs`）流し、決めるか、戻して起動時の速さで confirm し直す。結果は
-  `host.link.speed` に残る。WebSerial は同じ口を閉じて開き直して速さを変え（すぐに DTR / RTS を放す。esptool-js と同じ）、Node の
-  `serialport` は `update` で変える。`end` で link も起動時の速さに戻り、上げた速さで応答の来ない要求は起動時の速さに戻って
-  もう一度送る（待つ 1 回は lease の 4 分の 1 まで）。5 秒の内に 3 回フレームが壊れるか送り直すと降りる（port_speed の戻す、
-  起動時の速さ、confirm）。どちらで離れた速さもそのセッションの間は使わない（`speed.steppedDown`、`downWhy`）（oep-client-python と同じ手順）
+- port_speed（oep-core §3.5 は握手だけ。手順は oep-spec の host 開発ガイド §7。使うときだけ）:
+  `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, idleMs, port, record })`（または
+  `connect` / `openWebSerial` / `openSerial` の `portSpeed: true | [候補]` と `flows` / `verify` / `record`）で、セッションの間
+  UART bridge を速くする。**最小の形**（既定、約 50 ms、計測なし）: 候補ごとに順に `試す`（今の速さで応答してから probe が
+  切り替える）→ host は要求した baud に切り替える（platform が断ったときだけ probe の応答の baud）→ 20 ms → `confirm`（100 ms、
+  3 回まで）→ `決める`。**完全な形**（`verify: true` か `flows` を渡す）: 起動時の速さの基準を流し方ごとに取り（このセッションの
+  フレーム、無ければ 60 フレーム）、候補ごとに使う流し方だけ流す。流し方 = `'in' | 'out' | 'duplex'` か `[流し方, n]`（in =
+  link_source probe → host、out = link_sink host → probe、duplex = 両方を交互。`n` は同時数、0 = link が出す最大）で、
+  max_frame − 16 のフレームを 16 個流し、壊れと失われを数え KB/s を測る。壊れ + 失われが 3 以上で割合が max(基準 × 2, 5 %) を
+  超えたら流し方は通らず、n = 1 で流し直し（通れば n = 1 が link の上限 `inflightCap`）、1 つでも通らなければ候補は通らない。
+  通らない候補は戻して（step 2）起動時の速さに戻り confirm し直す。最初に通った候補を使う。probe の UART が作れない速さは飛ばす。
+  結果（`host.link.speed`: `base`、`rate`、`chosen`、`baseline`、`flows` と `inKBs` / `outKBs` / `duplexKBs` を持つ `trials`、
+  `stepDowns`、`skipped`。`speedText(report)`）はキャプチャや書き込みの予算を立てるのに使う。WebSerial は同じ口を閉じて開き直して
+  速さを変え（すぐに DTR / RTS を放す。esptool-js と同じ）、Node の `serialport` は `update` で変える。`end` と戻すの応答で link は
+  すぐ起動時の速さに戻る。上げている間は `idleMs` の半分より短く（1 秒）黙れば keepalive を送り、長く黙る呼び出し側は
+  `host.link.keepAlive()` で同じことをする。上げた速さで応答の来ない要求は起動時の速さに戻って port_speed_idle_max_ms + 1 秒の内に
+  confirm し（通らなければ Error。上げた速さへは戻さない）、そこでもう一度送る（待つ 1 回は lease の 4 分の 1 まで）。使っている間は
+  直近 3 秒のフレーム（50 未満なら判定しない）を見て、max(基準 × 2, 10 %) を超えて壊れ・失われたら降りる（port_speed の戻す、
+  起動時の速さ、confirm）。離れた速さはそのセッションの間は使わない（`speed.steppedDown`、`downWhy`、`stepDowns`）。
+  `record: true`（既定は OFF。パスか `speedrecord.SpeedRecord` でもよい）は通った / 通らなかった速さを 30 日残す ― Node では
+  （口のパス、unit_id）ごとに `~/.cache/oep-client/link-speed.json`（`$XDG_CACHE_HOME`。oep-client-python と同じファイル）、
+  ブラウザでは localStorage に unit_id ごと ― 通った速さを先頭に、通らなかった速さを外す（`report.skipped`）。oep-client-python と
+  同じ手順
+- block の操作: riscv-dm / arm-adi の `readBlock` / `writeBlock` は probe が宣言した `max_length` で区切る（`RiscvDm` / `ArmAdi` の
+  `.maxLength` byte、`.maxWords`。oep-if-debug §4.5 / §6）。`MemAp` もそれで分け、block op を持つのに宣言しない probe は
+  `riscv.NoMaxLength`。max_frame からは何も計算しない
 
 wire は oep-spec の 2026-10-01 のゼロベース見直しの形です（応答はすべて長さを持つ、TLV の長い形、confirm の boot_id、`expired`、
 probe.config の `state` / `unset` / `uart`、attach の reset TLV、キャプチャの世代。変更履歴を参照）。oep-client-python の fake の
-probe（132 件の試験）と台本のデバイスで試しています。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
+probe（148 件の試験）と台本のデバイスで試しています。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
 
 v1 の凍結までは仕様が壊れることがあり、この package は probe の firmware
 （[OpenEmbeddedProbe](https://github.com/Open-Embedded-Probe/oep-probe-arduino)）と

@@ -11,20 +11,25 @@
 // A request whose answer does not come in time goes once more with the same corr: the probe keeps the lock holder's
 // recent results and answers the repeat from them, so a state-changing request does not run twice (§5.2).
 //
-// port_speed (oep-core §3.5, opt-in: speed.js raiseSpeed): on a serial port whose transport can change its rate
-// (`setBaudRate`), the link knows the boot speed (`baseBaud`) and the rate now (`baud`). A completed end or port_speed
-// revert puts the link back at the boot speed at once; a request unanswered (its resend too) while the rate is raised
-// takes the link back to the boot speed - the probe went back by itself -, confirms there and goes once more: the
-// link never wedges at a rate the probe left; while raised each wait is at most a quarter of the lease, so this ends
-// inside it. In use, STRIKE_MAX (3) broken frames or resends within STRIKE_WINDOW_MS (5 s) step down: port_speed
-// revert at the raised rate, the boot speed, a confirm. Either way the rate is not used again in that session
-// (`speed.steppedDown`, `speed.downWhy`). After a rate change the link waits SWITCH_SETTLE_MS before its first byte
-// (the probe switches once its answer is out; an FTDI lost the first frame sent at once). A raised rate that verified
-// only one request at a time keeps that cap (`inflightCap`) on the pipelined exchange until the link is back at the
-// boot speed. A committed rate also goes back after port_speed_idle_max_ms (3 s) with no good frame: while raised, the
-// link sends a keepalive before a request when it has been quiet for KEEPALIVE_MS (1 s), and `keepAlive()` does the
-// same for a caller that sits idle for long. Opening a serial port (open.js connect) retries its first confirm for
-// OPEN_RETRY_MS (that maximum and a second): a host that raised the speed and died leaves the probe at its rate until then.
+// port_speed (oep-core §3.5 is the handshake, the host guide §7 the procedure; opt-in: speed.js raiseSpeed): on a
+// serial port whose transport can change its rate (`setBaudRate`), the link knows the boot speed (`baseBaud`) and the
+// rate now (`baud`). A completed end or port_speed revert puts the link back at the boot speed at once (obligation 6);
+// a request unanswered (its resend too) while the rate is raised takes the link back to the boot speed - the probe
+// went back by itself -, confirms there (up to OPEN_RETRY_MS: port_speed_idle_max_ms + 1 s, obligation 5; none
+// answered = an Error, never back to the raised rate) and goes once more: the link never wedges at a rate the probe
+// left; while raised each wait is at most a quarter of the lease, so this ends inside it. In use the link counts the
+// frames it sees (good / broken / lost, host guide §7.3.2): at the boot speed into this session's baseline
+// (`baseCounts`), raised into the last IN_USE_WINDOW_MS (3 s) - IN_USE_MIN_FRAMES (50) or more of them with more than
+// max(2 x baseline, IN_USE_FLOOR 10 %) broken or lost step down at the next safe point: port_speed revert at the raised
+// rate, the boot speed, a confirm. Either way the rate is not used again in that session (`speed.steppedDown`,
+// `speed.downWhy`, `speed.stepDowns`). After a rate change the link waits SWITCH_SETTLE_MS before its first byte (the
+// probe switches once its answer is out; an FTDI lost the first frame sent at once). A raised rate that verified only
+// one request at a time keeps that cap (`inflightCap`) on the pipelined exchange until the link is back at the boot
+// speed. A committed rate also goes back after idle_ms (at most 3 s) with no good frame: while raised, the link sends a
+// keepalive before a request when it has been quiet for `keepaliveMs` (1 s, and under half of the committed idle_ms;
+// obligation 4), and `keepAlive()` does the same for a caller that sits idle for long. Opening a serial port (open.js
+// connect) retries its first confirm for OPEN_RETRY_MS: a host that raised the speed and died leaves the probe at its
+// rate until then (obligation 7).
 //
 // A serial port that a session holds carries no raw bytes from the probe (oep-core §3.4): a broken candidate there is
 // a broken frame, most likely the reply the oldest request waits for, so that request goes once more at once (the
@@ -43,15 +48,18 @@ const STALL_MS = reg.TIMING.probe_frame_gap_ms;   // a frame whose bytes stop th
 export const SWITCH_SETTLE_MS = 20;
 /** A committed rate goes back after this with no good frame on the port (core §3.5; idle_ms 0 and longer mean it). */
 export const IDLE_MAX_MS = reg.TIMING.port_speed_idle_max_ms;
-/** Raised: a keepalive once the link has been quiet this long (well inside IDLE_MAX_MS). */
+/** Raised: a keepalive once the link has been quiet this long (under half of idle_ms, core §3.5 obligation 4). */
 export const KEEPALIVE_MS = 1000;
-/** Opening a serial port: the first confirm retried this long (a raised rate a host that died left over). */
+/** port_speed_idle_max_ms + 1 s: the confirm bound at the boot speed (core §3.5 obligations 5 and 7). */
 export const OPEN_RETRY_MS = IDLE_MAX_MS + 1000;
 /** Each of those confirms waits this long (at most the link's timeout). */
 export const OPEN_TRY_MS = 500;
-/** Raised, in use: this many broken frames / resends within STRIKE_WINDOW_MS step the link down (core §3.5 item 7). */
-export const STRIKE_MAX = 3;
-export const STRIKE_WINDOW_MS = 5000;
+/** Raised, in use: the frames of the last 3 s are judged (host guide §7.3.2 item 4) ... */
+export const IN_USE_WINDOW_MS = 3000;
+/** ... none under this many in the window ... */
+export const IN_USE_MIN_FRAMES = 50;
+/** ... broken + lost over max(2 x baseline, this) steps down for the rest of the session. */
+export const IN_USE_FLOOR = 0.10;
 /** The step down's revert (step 2) at the raised rate waits this long, never sent again. */
 export const STEP_DOWN_WAIT_MS = 200;
 /** Raised, in use: each wait for an answer is a quarter of the lease, at least this. */
@@ -71,6 +79,7 @@ export const EXPECT_MARGIN_MS = 500;
  * @property {number} [maxWrite]          the most one write takes (HID: a report's room); longer writes are split
  * @property {number} [baudRate]          a serial port's rate now (what it was opened with, then set)
  * @property {(rate: number) => Promise<void>} [setBaudRate]   a serial port this host opened: change its rate
+ * @property {string} [path]              a serial port's OS device path (the port_speed record's key, with the unit_id)
  */
 
 /** @typedef {{ resolve: (b: Uint8Array) => void, reject: (e: unknown) => void, timer: any, message: Uint8Array, attempt: number, arm: () => void }} Pending */
@@ -103,8 +112,15 @@ export class Link {
     /** @type {import('./speed.js').SpeedReport | null} the last raiseSpeed's report */ this.speed = null;
     this.speedLost = 0;                      // times a raised rate was found gone (back to the boot speed)
     this.fallback = true;                    // a raised rate in use (not raiseSpeed's own trial): fall back / step down
-    /** @type {number[]} raised, in use: when frames broke / requests went again (STRIKE_WINDOW_MS) */ this.strikes = [];
+    /** @type {[number, boolean][]} raised, in use: (when, bad) per frame of the last IN_USE_WINDOW_MS */ this.window = [];
+    this.baselineRatio = 0;                  // raised, in use: the boot speed's ratio the threshold doubles
+    /** this session's frames at the boot speed (the baseline: host guide §7.3.2 item 2) */
+    this.baseCounts = { good: 0, broken: 0, lost: 0 };
+    this.keepaliveMs = KEEPALIVE_MS;         // raised: a keepalive once quiet this long (set from idle_ms at a commit)
     this.stepDue = '';                       // raised, in use: why the link steps down at the next safe point
+    /** @type {number | null} ... the window's ratio that decided it */ this.stepRatio = null;
+    /** @type {import('./speedrecord.js').SpeedRecord | null} the record raiseSpeed used, if any */ this.record = null;
+    /** @type {[string | null, string] | null} its key: the port's path (null in a browser) and the unit_id */ this.recordKey = null;
     /** @type {number | null} the transport index the raised rate is on (the revert names it) */ this.speedPort = null;
     /** @type {Map<number, string>} rates stepped down from in this session -> why (raiseSpeed skips them) */ this.unusable = new Map();
     /** @type {number | null} the session `unusable` belongs to */ this.unusableSession = null;
@@ -176,9 +192,13 @@ export class Link {
         message = cobs.unframe(raw);
       } catch {
         this.stats.noise += raw.length;     // the port's raw bytes, or a broken frame: noise, no resend
-        if (this.held()) this.resendNow();  // ... unless a session holds the port: then it was a broken frame
+        if (this.held()) {                  // ... unless a session holds the port: then it was a broken frame (§5.2)
+          this.count('broken');
+          this.resendNow();
+        }
         continue;
       }
+      this.count('good');                   // a result or a notification that decoded (host guide §7.3.2)
       this.deliver(message);
     }
   }
@@ -228,7 +248,6 @@ export class Link {
     if (first.done) return;
     const [corr, p] = first.value;
     this.stats.corrupt++;
-    this.strike('a broken frame');
     if (p.attempt !== 0) {
       clearTimeout(p.timer);
       this.pending.delete(corr);
@@ -282,8 +301,12 @@ export class Link {
       reply = await this.sendOnce(message, { timeoutMs: this.waitMs(expectMs) });   // once more at the boot speed (the probe answers a repeat from what it kept)
     }
     if (this.baseBaud !== null && this.baud !== this.baseBaud && reverts(message, reply)) {
-      await this.setBaud(this.baseBaud);    // the probe went back right after this answer (core §3.5)
+      await this.setBaud(this.baseBaud);    // the probe went back right after this answer (core §3.5 obligation 6)
       if (this.speed) { this.speed.rate = this.baseBaud; this.speed.chosen = null; }
+    }
+    if (coreCompleted(message, reply) === OP.open) {
+      this.baseCounts = { good: 0, broken: 0, lost: 0 };   // a new session: its baseline starts here
+      this.window = [];
     }
     await this.stepDownIfDue();
     return reply;
@@ -302,7 +325,7 @@ export class Link {
       const p = { resolve, reject, timer: null, message, attempt: resend ? 0 : 1, arm: () => {} };
       const arm = () => {
         p.timer = setTimeout(() => {
-          this.strike('no answer');
+          this.count('lost');               // no good answer within the wait (host guide §7.3.2)
           if (p.attempt === 0) {
             p.attempt = 1;
             this.stats.retries++;
@@ -323,28 +346,47 @@ export class Link {
 
   // ---- port_speed (core §3.5) -------------------------------------------------------------------------------
 
-  /** The host side of the serial port to `rate`, settled (SWITCH_SETTLE_MS); what was gathered so far dropped. Back
-   * at the boot speed, the in-flight cap a raised rate had is gone. @param {number} rate */
-  async setBaud(rate) {
+  /**
+   * The host side of the serial port to `rate`, settled (SWITCH_SETTLE_MS); what was gathered so far dropped. The host
+   * switches to the baud it asked for; `fallback` (the probe's answer, the rate it really makes) is set only when the
+   * platform refuses `rate` (core §3.5 obligation 2). Back at the boot speed, the in-flight cap a raised rate had is
+   * gone. -> the rate set.
+   * @param {number} rate @param {number | null} [fallback]
+   */
+  async setBaud(rate, fallback = null) {
     if (!this.transport.setBaudRate) throw new Error('this transport cannot change its rate');
-    await this.transport.setBaudRate(rate);
+    try {
+      await this.transport.setBaudRate(rate);
+    } catch (e) {
+      if (fallback === null || fallback === rate) throw e;
+      await this.transport.setBaudRate(fallback);
+      rate = fallback;
+    }
     this.baud = rate;
     if (rate === this.baseBaud) this.inflightCap = 0;
     if (this.framing === 'cobs') await new Promise((r) => setTimeout(r, SWITCH_SETTLE_MS));   // the probe switches once its answer is out
     this.buf = new Uint8Array(0);
+    return rate;
   }
 
-  /** A confirm straight on the link: true when its answer came (unbroken) within timeoutMs. @param {number} timeoutMs */
+  /** A confirm straight on the link: true when its answer came (unbroken) within timeoutMs. On a held serial port a
+   * broken frame is normally the awaited answer (§5.2), but a confirm sent to re-sync a measurement reads past the
+   * broken leftovers of the lost frames it follows: it keeps asking until its own answer or the deadline, not giving
+   * up on the first broken one. @param {number} timeoutMs */
   async confirmRaw(timeoutMs) {
     const confirm = new Uint8Array(CONFIRM_REQUEST.length + 2);
     confirm.set(CONFIRM_REQUEST);
     confirm[CONFIRM_REQUEST.length + 1] = 0xff;   // revisions 0..255
-    try {
-      await this.sendOnce(new Request(this.corrSource(), CORE_FN, OP.confirm, confirm).pack(), { timeoutMs, resend: false });
-      return true;
-    } catch (e) {
-      if (e instanceof Timeout || e instanceof cobs.CorruptFrame) return false;
-      throw e;
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      try {
+        await this.sendOnce(new Request(this.corrSource(), CORE_FN, OP.confirm, confirm).pack(), { timeoutMs: Math.max(1, deadline - Date.now()), resend: false });
+        return true;
+      } catch (e) {
+        if (e instanceof cobs.CorruptFrame && Date.now() < deadline) continue;   // a leftover read past: ask again
+        if (e instanceof Timeout || e instanceof cobs.CorruptFrame) return false;
+        throw e;
+      }
     }
   }
 
@@ -358,9 +400,10 @@ export class Link {
     }
   }
 
-  /** At the boot speed again, the probe confirmed there: a confirm every 250 ms up to waitMs (a probe still trying
-   * waits out its verify_ms; one committed reverts at the broken candidates these make). @param {number} waitMs */
-  async backToBase(waitMs = 3000) {
+  /** At the boot speed again, the probe confirmed there: a confirm every 250 ms up to waitMs (default
+   * port_speed_idle_max_ms + 1 s, core §3.5 obligation 5; a probe still trying waits out its verify_ms, one committed
+   * reverts at the broken candidates these make - 3 in a row). @param {number} waitMs */
+  async backToBase(waitMs = OPEN_RETRY_MS) {
     this.inflightCap = 0;
     if (this.baseBaud === null) return false;
     await this.setBaud(this.baseBaud);
@@ -380,12 +423,13 @@ export class Link {
   raised() { return this.baseBaud !== null && this.baud !== this.baseBaud; }
 
   /** While a raised rate is in force and a session holds the port: a keepalive when the link has been quiet for
-   * KEEPALIVE_MS (1 s). The probe goes back to the boot speed after port_speed_idle_max_ms (3 s) with no good frame
-   * (core §3.5); every request already does this before it goes out, so only a caller that sits idle for long (waiting
-   * on a person, a sleep between requests) calls it - often is fine, it sends nothing otherwise. true when one went out. */
+   * `keepaliveMs` (1 s, and under half of the committed idle_ms: core §3.5 obligation 4). The probe goes back to the
+   * boot speed after idle_ms (at most 3 s) with no good frame; every request already does this before it goes out, so
+   * only a caller that sits idle for long (waiting on a person, a sleep between requests) calls it - often is fine, it
+   * sends nothing otherwise. true when one went out. */
   async keepAlive() {
     if (!this.raised() || !this.keepaliveFrame || !this.held()) return false;
-    if (Date.now() - this.lastTx < KEEPALIVE_MS) return false;
+    if (Date.now() - this.lastTx < this.keepaliveMs) return false;
     this.lastTx = Date.now();                // before sending: send() asks again and must not recurse
     await this.send(this.keepaliveFrame());
     return true;
@@ -415,14 +459,28 @@ export class Link {
     return expectMs > 0 ? Math.max(wait, expectMs + EXPECT_MARGIN_MS) : wait;
   }
 
-  /** Raised and in use: a frame broke or a request goes again. STRIKE_MAX within STRIKE_WINDOW_MS: the link steps
-   * down at the next safe point (core §3.5 item 7). @param {string} what */
-  strike(what) {
+  /**
+   * One frame the host side saw while a session holds the port: `kind` good / broken / lost (host guide §7.3.2: good =
+   * a result or notification that decoded, broken = a candidate that did not, lost = a request with no good answer
+   * within its wait). At the boot speed it goes into this session's baseline (`baseCounts`); raised and in use into the
+   * 3 s window, judged on every bad one: IN_USE_MIN_FRAMES or more in the window and a ratio over max(2 x baseline,
+   * IN_USE_FLOOR) make the link step down at the next safe point.
+   * @param {'good' | 'broken' | 'lost'} kind
+   */
+  count(kind) {
+    if (this.baseBaud === null || !this.held()) return;
+    if (this.baud === this.baseBaud) { this.baseCounts[kind]++; return; }
     if (!this.inUse()) return;
     const now = Date.now();
-    this.strikes = [...this.strikes.filter((t) => now - t < STRIKE_WINDOW_MS), now];
-    if (this.strikes.length >= STRIKE_MAX && !this.stepDue) {
-      this.stepDue = `${this.strikes.length} broken frames / resends within ${STRIKE_WINDOW_MS / 1000} s at ${this.baud} (the last: ${what})`;
+    this.window.push([now, kind !== 'good']);
+    while (this.window.length && now - this.window[0][0] > IN_USE_WINDOW_MS) this.window.shift();
+    if (kind === 'good' || this.stepDue || this.window.length < IN_USE_MIN_FRAMES) return;
+    const bad = this.window.filter(([, b]) => b).length;
+    const ratio = bad / this.window.length, threshold = Math.max(2 * this.baselineRatio, IN_USE_FLOOR);
+    if (ratio > threshold) {
+      this.stepRatio = ratio;
+      this.stepDue = `${bad} of ${this.window.length} frames broken or lost within ${IN_USE_WINDOW_MS / 1000} s at ${this.baud} `
+        + `(${(ratio * 100).toFixed(1)}%, over ${Math.round(threshold * 100)}%)`;
     }
   }
 
@@ -441,7 +499,7 @@ export class Link {
     if (this.falling) return this.falling;
     const from = /** @type {number} */ (this.baud);
     this.stepDue = '';
-    this.strikes = [];
+    this.window = [];
     this.falling = (async () => {
       try {
         if (revert && this.sessionFrame && this.speedPort !== null) {
@@ -465,7 +523,10 @@ export class Link {
           if (!revert) this.speed.lost = true;
           this.speed.steppedDown = true;
           this.speed.downWhy = why;
+          this.speed.stepDowns.push({ at: Date.now(), rate: from, why, ratio: this.stepRatio });
         }
+        this.stepRatio = null;
+        if (this.record && this.recordKey) this.record.note(this.recordKey[0], this.recordKey[1], from, false);
         return true;
       } finally {
         this.falling = null;
@@ -492,18 +553,25 @@ export class Link {
   }
 
   /**
+   * How many requests this link keeps in flight: the probe's max_inflight, a raised rate's inflightCap, and on a
+   * serial port the answer-burst bound. A serial port on an OS CDC driver loses answers that burst past what the driver
+   * buffers (Linux cdc_acm, HS: 8 KiB; oep-spec docs/link-measurements.ja.md §1.1): on COBS links the answer bytes
+   * expected in flight stay under answerBurst.
+   * @param {{ maxInflight: number, maxFrame?: number }} limits
+   */
+  inflightFor({ maxInflight, maxFrame = 0 }) {
+    let n = Math.min(maxInflight, this.inflightCap || 255);
+    if (this.framing === 'cobs' && this.answerBurst && maxFrame) n = Math.min(n, Math.floor(this.answerBurst / cobs.frameMax(maxFrame)));
+    return Math.max(1, n);
+  }
+
+  /**
    * Pipelined: up to maxInflight requests (and no more than a raised rate's inflightCap) and window bytes
    * outstanding; answers in order.
-   * @param {Uint8Array[]} messages @param {{ maxInflight: number, window: number }} limits
+   * @param {Uint8Array[]} messages @param {{ maxInflight: number, window: number, maxFrame?: number }} limits
    */
   async exchange(messages, { maxInflight: probeMax, window, maxFrame = 0 }) {
-    let maxInflight = Math.min(probeMax, this.inflightCap || 255);
-    // A serial port on an OS CDC driver loses answers that burst past what the driver buffers (Linux cdc_acm, HS: 8 KiB;
-    // oep-spec docs/link-measurements.ja.md §1.1): on COBS links the answer bytes expected in flight stay under answerBurst.
-    if (this.framing === 'cobs' && this.answerBurst && maxFrame) {
-      maxInflight = Math.min(maxInflight, Math.floor(this.answerBurst / cobs.frameMax(maxFrame)));
-    }
-    maxInflight = Math.max(1, maxInflight);
+    const maxInflight = this.inflightFor({ maxInflight: probeMax, maxFrame });
     /** @type {Promise<Uint8Array>[]} */
     const answers = [];
     /** @type {{ size: number, done: Promise<unknown> }[]} */
@@ -558,11 +626,18 @@ export class Link {
   }
 }
 
+/** The op of a core request whose answer is completed (any outcome); null for anything else.
+ * @param {Uint8Array} message @param {Uint8Array} reply */
+function coreCompleted(message, reply) {
+  if (message.length < 6 || reply.length < 4 || reply[3] !== COMPLETED || (message[3] | (message[4] << 8)) !== CORE_FN) return null;
+  return message[5];
+}
+
 /** A completed end, or port_speed's revert: the probe is back at its boot speed once this answer is out.
  * @param {Uint8Array} message @param {Uint8Array} reply */
 function reverts(message, reply) {
-  if (message.length < 6 || reply.length < 4 || reply[3] !== COMPLETED || (message[3] | (message[4] << 8)) !== CORE_FN) return false;
-  if (message[5] === OP.end) return true;
+  const op = coreCompleted(message, reply);
+  if (op === OP.end) return true;
   const at = 6 + (message[0] & ROLE_SESSION ? 4 : 0) + 5;   // port(u8) baud(u32) step(u8)
-  return message[5] === OP.port_speed && message.length > at && message[at] === reg.CORE.enum.port_speed_step.revert;
+  return op === OP.port_speed && message.length > at && message[at] === reg.CORE.enum.port_speed_step.revert;
 }

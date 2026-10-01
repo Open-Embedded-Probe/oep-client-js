@@ -1,48 +1,129 @@
 // @ts-check
-// port_speed (oep-core §3.5, optional, opt-in): a faster UART bridge for one session. `raiseSpeed` tries the host's
-// rates in order on the serial port this host opened: try (answered at the speed now, then the probe switches) -> the
-// host switches (WebSerial: close and open the port again at the new rate; Node: serialport's update), waits
-// SWITCH_SETTLE_MS and finds the new rate with a confirm (up to 3, 200 ms each: the switch-over may cost the first
-// frame) -> a verify both ways with max_frame-sized frames (link_source / link_sink) for verifyBytes or verifySeconds,
-// pipelined at the probe's max_inflight and, when frames break there (a line that loses bytes while both ways are busy:
-// an M5Stack ATOM's FTDI at 500 kbaud and up), once more one request at a time, counting broken frames and measuring
-// KB/s each way -> both ways at once at the in-flight that passed (link_source and link_sink interleaved, about 1 s and
-// at least 64 frames; a broken frame fails the rate) -> commit when nothing broke, the in-flight count that passed kept as the link's cap (`inflightCap`); else revert, back to the boot speed and
-// confirmed there (a lost revert: the probe's verify_ms waited out), and the next rate. The report stays on the link
-// (`host.link.speed`), for budgeting a capture or a write. The same procedure as oep-client-python's link.raise_speed.
+// port_speed (oep-core §3.5 is the handshake; the host's procedure is oep-spec docs/host-development-guide.ja.md §7,
+// followed here): a faster UART bridge for one session, opt-in. `raiseSpeed` asks a probe that declares it for a
+// faster rate on the serial port this host opened.
+//
+// The minimal form (§7.2, the default): try a candidate -> switch to the requested baud (the probe's answered baud
+// only when the platform refuses it: WebSerial `open({ baudRate })`, serialport `update`) -> settle 20 ms -> confirm
+// (100 ms, up to 3) -> commit. About 50 ms, no measurement. The full form (`verify: true`, or `flows` given; §7.3): a
+// baseline at the boot speed per flow (this session's frames when 60 or more and under 10 %, else 60 measured per flow
+// at its n; over 10 % once more at n = 1), then per candidate every flow the caller will use (in = link_source, out =
+// link_sink, duplex = both interleaved, each with its in-flight n) for 16 frames at max_frame - 16, a flow failing on
+// broken + lost >= 3 and a ratio over max(2 x baseline, 5 %), run once more at n = 1 before giving up on it (then n = 1
+// is the link's cap), one failed flow failing the candidate; commit when every flow passed. A failed candidate: revert
+// (step 2, at the new rate), the boot speed, confirms up to port_speed_idle_max_ms + 1 s. The report (`host.link.speed`)
+// records the baseline, every candidate's flows and the step downs - for budgeting a capture or a write. In use the
+// link judges the frames of the last 3 s (none under 50) over max(2 x baseline, 10 %) and steps down for the rest of
+// the session (link.js). `record: true` keeps passed / failed rates per (port, unit_id) for 30 days (speedrecord.js)
+// and puts passed rates first, failed ones out. The same procedure as oep-client-python's link.raise_speed.
 
 import * as reg from './registry.js';
 import * as m from './message.js';
 import * as core from './core.js';
-import { getU32 } from './bytes.js';
+import * as cobs from './cobs.js';
+import { getU32, text } from './bytes.js';
 import { Rejected, Timeout } from './errors.js';
-import { IDLE_MAX_MS } from './link.js';
+import { IDLE_MAX_MS, KEEPALIVE_MS, OPEN_RETRY_MS } from './link.js';
+import { SpeedRecord, defaultStore, fileStore } from './speedrecord.js';
 
 const OP_PORT_SPEED = reg.CORE.op.port_speed;
 const STEP = reg.CORE.enum.port_speed_step;
 const PORT_SPEED_TAG = reg.CORE.tlv.describe.port_speed;
+const UNIT_ID_TAG = reg.CORE.tlv.describe.unit_id;
 const UART_BRIDGE = reg.CORE.enum.transport_kind.uart_bridge;
 
+/** Host guide §7.2: one candidate that passed the measured bridges in small duplex use. */
+export const DEFAULT_CANDIDATES = Object.freeze([500000]);
+/** probe -> host (link_source), host -> probe (link_sink), both interleaved. */
+export const FLOWS = /** @type {const} */ (['in', 'out', 'duplex']);
+/** The probe waits this long for the commit (guide §7.2 / §7.3.2: 2000). */
+export const VERIFY_MS = 2000;
+/** After the switch: confirm, 100 ms each, up to 3 (core §3.5 obligation 2). */
+export const CONFIRM_TRIES = 3, CONFIRM_WAIT_MS = 100;
+/** Full form: at least this many frames per flow (guide §7.3.2 item 3-3) ... */
+export const FLOW_FRAMES = 16;
+/** ... a flow fails only on broken + lost of at least this ... */
+export const FLOW_FAIL_MIN = 3;
+/** ... and a ratio over max(2 x baseline, this) (item 3-4). */
+export const VERIFY_FLOOR = 0.05;
+/** The boot speed's ratio: this session's frames, or this many measured per flow (item 2). */
+export const BASELINE_FRAMES = 60;
+/** A flow whose baseline is over this is measured again at n = 1; still over: not raised. */
+export const BASELINE_MAX = 0.10;
+
+/** @typedef {'in' | 'out' | 'duplex'} Flow */
+/** @typedef {Flow | [Flow, number?]} FlowSpec  a flow at the most this link keeps in flight, or (flow, n); n 0 = that most */
+
 /**
- * One rate tried: what the probe said it runs at, the verify's bytes, KB/s (1000 B/s) and broken frames each way
- * (in = probe to host, link_source; out = host to probe, link_sink; duplex = both at once, interleaved, at the
- * in-flight that passed), whether it was committed (why not), and the requests kept in flight the verify passed with
- * (`inflight`, 0: none passed).
- * @typedef {{ rate: number, actual: number | null, inBytes: number, outBytes: number, inKBs: number | null,
- *   outKBs: number | null, brokenIn: number, brokenOut: number, duplexBytes: number, duplexKBs: number | null,
- *   brokenDuplex: number, committed: boolean, why: string, inflight: number }} SpeedTrial
+ * One flow run at one rate (guide §7.5 record): the flow, its in-flight n, frames, broken (an answer came but its
+ * content is wrong), lost (no answer within the wait; a broken COBS frame on the held port is read as one), KB/s
+ * (1000 B/s), whether it passed, `gone` (the probe stopped answering at this rate: it went back), `ratio` = (broken +
+ * lost) / frames, `name` = "flow@n".
+ * @typedef {{ flow: Flow, n: number, frames: number, broken: number, lost: number, kbS: number, passed: boolean,
+ *   gone: boolean, readonly ratio: number, readonly name: string }} FlowResult
  */
+
+/**
+ * One candidate: what the probe said it runs at (`actual`), the rate the host switched to (`switched`), the flows
+ * verified (full form; a flow run again at n = 1 appears twice), whether it was committed and why not, `nCap` (the
+ * in-flight cap the rate passed with: 1 when a flow needed n = 1, 0 none), and the last run's KB/s per flow (null
+ * without a measurement).
+ * @typedef {{ rate: number, actual: number | null, switched: number | null, flows: FlowResult[], committed: boolean,
+ *   why: string, nCap: number, readonly inKBs: number | null, readonly outKBs: number | null,
+ *   readonly duplexKBs: number | null, flow: (name: Flow) => FlowResult | null }} SpeedTrial
+ */
+
+/** A step down in use (guide §7.3.2 item 5): when (ms since the epoch), from which rate, why, the window's ratio if that decided it.
+ * @typedef {{ at: number, rate: number, why: string, ratio: number | null }} StepDown */
 
 /**
  * raiseSpeed's answer (also `link.speed`): the boot speed, the rate in force now (`rate`), the committed one (`chosen`,
- * null: the boot speed), every trial in order, why nothing was tried (`supported` false), `lost` (a raised rate was
- * later found gone), `steppedDown` (in use, the link left the raised rate for the rest of the session: frames kept
- * breaking, or no answer came; `downWhy` says why), and the chosen rate's measured KB/s (`inKBs` / `outKBs` /
- * `duplexKBs`, null at the boot speed).
+ * null: the boot speed), every candidate in order, why nothing was tried (`supported` false). `verified`: the full
+ * form ran; `baseline`: flow -> the boot speed's ratio (from this session's `baselineFrames` frames, or measured:
+ * `baselineFlows`). `lost`: a raised rate was later found gone (the link went back to the boot speed). `steppedDown`:
+ * in use, the link left the raised rate for the rest of the session (`downWhy`; every one in `stepDowns`). `skipped`:
+ * candidates the record left out as failed. inKBs / outKBs / duplexKBs: the chosen rate's measured throughput (null
+ * without a measurement) - for budgeting a transfer.
  * @typedef {{ base: number, supported: boolean, rate: number, chosen: number | null, trials: SpeedTrial[], why: string,
- *   lost: boolean, steppedDown: boolean, downWhy: string, inKBs: number | null, outKBs: number | null,
- *   duplexKBs: number | null }} SpeedReport
+ *   lost: boolean, steppedDown: boolean, downWhy: string, verified: boolean, baseline: Record<string, number>,
+ *   baselineFrames: number, baselineFlows: FlowResult[], stepDowns: StepDown[], skipped: number[],
+ *   readonly inKBs: number | null, readonly outKBs: number | null, readonly duplexKBs: number | null }} SpeedReport
  */
+
+/** @param {Flow} flow @param {number} n @returns {FlowResult} */
+export function flowResult(flow, n) {
+  return {
+    flow, n, frames: 0, broken: 0, lost: 0, kbS: 0, passed: false, gone: false,
+    get ratio() { return this.frames ? (this.broken + this.lost) / this.frames : 0; },
+    get name() { return `${this.flow}@${this.n}`; },
+  };
+}
+
+/** @param {number} rate @returns {SpeedTrial} */
+function speedTrial(rate) {
+  /** @type {SpeedTrial} */
+  const t = {
+    rate, actual: null, switched: null, flows: [], committed: false, why: '', nCap: 0,
+    flow(name) { return [...this.flows].reverse().find((f) => f.flow === name) ?? null; },
+    get inKBs() { const f = this.flow('in'); return f && f.frames ? f.kbS : null; },
+    get outKBs() { const f = this.flow('out'); return f && f.frames ? f.kbS : null; },
+    get duplexKBs() { const f = this.flow('duplex'); return f && f.frames ? f.kbS : null; },
+  };
+  return t;
+}
+
+/** @param {number} base @param {number} rate @returns {SpeedReport} */
+function speedReport(base, rate) {
+  /** @type {SpeedReport} */
+  const r = {
+    base, supported: false, rate, chosen: null, trials: [], why: '', lost: false, steppedDown: false, downWhy: '',
+    verified: false, baseline: {}, baselineFrames: 0, baselineFlows: [], stepDowns: [], skipped: [],
+    get inKBs() { return this.chosen ? this.trials.find((t) => t.committed)?.inKBs ?? null : null; },
+    get outKBs() { return this.chosen ? this.trials.find((t) => t.committed)?.outKBs ?? null : null; },
+    get duplexKBs() { return this.chosen ? this.trials.find((t) => t.committed)?.duplexKBs ?? null : null; },
+  };
+  return r;
+}
 
 /** @param {number} port @param {number} baud @param {number} step @param {number} verifyMs @param {number} idleMs */
 function request(port, baud, step, verifyMs, idleMs) {
@@ -65,96 +146,210 @@ async function speedPort(hst) {
   return bridge ? [bridge.index, ''] : [null, 'the probe has no UART bridge'];
 }
 
+/** The probe's unit_id (core §7.5, mandatory) - the record's key with the port. @param {import('./host.js').Host} hst */
+export async function unitId(hst) {
+  for (const [tag, v] of await core.describe(hst, 0)) if ((tag & 0x7f) === UNIT_ID_TAG && v.length) return text(v);
+  return '?';
+}
+
+/** @param {unknown} e */
+const linkError = (e) => e instanceof Timeout || e instanceof cobs.CorruptFrame;
+/** @param {number} ms */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** How long one answer of a flow is waited for: four frames' worth on the line per request in flight, at least 300 ms.
+ * @param {number} size @param {number} rate @param {number} n */
+export function answerWaitMs(size, rate, n) { return Math.max(300, 4 * (size + 24) * 10 / rate * n * 1000 + 100); }
+
+/** A confirm at the rate now, up to CONFIRM_TRIES of CONFIRM_WAIT_MS: true when one came back. @param {import('./link.js').Link} link */
+async function confirmAgain(link) {
+  for (let i = 0; i < CONFIRM_TRIES; i++) if (await link.confirmRaw(CONFIRM_WAIT_MS)) return true;
+  return false;
+}
+
+/** A keepalive at the rate in force (no resend) so the lease outlasts a flow; a failure is the flow's to find.
+ * @param {import('./host.js').Host} hst @param {import('./link.js').Link} link */
+async function keep(hst, link) {
+  if (hst.session === null || !link.keepaliveFrame) return;
+  try { await link.sendOnce(link.keepaliveFrame(), { resend: false }); } catch (e) { if (!linkError(e)) throw e; }
+}
+
 /**
- * Max_frame-sized frames, `inflight` at a time (default: as the probe allows), for each of `ways`: 'in' (link_source)
- * and 'out' (link_sink) up to half of verifyBytes or verifySeconds each; 'duplex' both interleaved (link_source,
- * link_sink, ...) for duplexSeconds and at least duplexFrames, so frames go both ways at once. Stops at the first frame
- * that breaks (lost, or its content wrong).
- * @param {import('./host.js').Host} hst @param {number} rate @param {SpeedTrial} trial
- * @param {{ verifyBytes: number, verifySeconds: number, duplexSeconds: number, duplexFrames: number }} sizes
- * @param {number} [inflightAsked] @param {('in' | 'out' | 'duplex')[]} [ways]
+ * `frames` of one flow at the rate in force, `n` in flight, `size` bytes each, counted as the guide counts (§7.3.2):
+ * broken = an answer came but its content is wrong, lost = no answer within the wait (a broken COBS frame on the held
+ * port is read as one: the link drops the request at once). After lost frames the link is put in step again with a
+ * confirm; when none is answered the probe is not at this rate any more (it went back) and the flow stops there, the
+ * frames not sent counted lost (`gone`).
+ * @param {import('./host.js').Host} hst @param {import('./link.js').Link} link
+ * @param {Flow} flow @param {number} n @param {number} size @param {number} frames @param {number} rate
  */
-async function verify(hst, rate, trial, sizes, inflightAsked, ways = ['in', 'out']) {
-  const link = hst.link;
+export async function flowRun(hst, link, flow, n, size, frames, rate) {
+  const res = flowResult(flow, n);
   const limits = await hst.confirmed();
-  const inflight = Math.max(1, inflightAsked || limits.maxInflight);
-  const nIn = limits.maxFrame - m.RESULT_HEADER;    // link_source: a whole result frame
-  const nOut = limits.maxFrame - m.REQUEST_HEADER;  // link_sink: a whole request frame (no session)
-  const timeoutMs = Math.max(300, 4000 * ((limits.maxFrame + 8) * 10 / rate) * inflight + 100);
-  const sink = Uint8Array.from({ length: nOut }, (_, k) => (k * 7) & 0xff);
-  const sourceBody = Uint8Array.of(nIn & 0xff, nIn >> 8, 0, 0);
-  for (const way of ways) {
-    let moved = 0, frames = 0, broken = 0;
-    const t0 = performance.now();
-    const more = () => (way === 'duplex'
-      ? performance.now() - t0 < sizes.duplexSeconds * 1000 || frames < sizes.duplexFrames
-      : moved < sizes.verifyBytes / 2 && performance.now() - t0 < sizes.verifySeconds * 500);
-    while (more()) {
-      const sources = Array.from({ length: inflight * 2 }, (_, k) => way === 'in' || (way === 'duplex' && k % 2 === 0));
-      const batch = sources.map((src) => new m.Request(hst.nextCorr(), m.CORE_FN, src ? m.OP.link_source : m.OP.link_sink,
-        src ? sourceBody : sink).pack());
-      /** @type {Promise<Uint8Array>[]} */
-      const answers = [];
-      for (let i = 0; i < batch.length; i++) {
-        if (i >= inflight) await answers[i - inflight].catch(() => {});
-        answers.push(link.sendOnce(batch[i], { timeoutMs, resend: false }));
-      }
-      const settled = await Promise.allSettled(answers);
-      let good = 0;
-      for (const [i, st] of settled.entries()) {
-        if (st.status !== 'fulfilled') break;
-        const r = m.Result.unpack(st.value);
-        const ok = r.succeeded && (sources[i]
-          ? r.payload.length === nIn && r.payload.every((b, k) => b === (k & 0xff))
-          : r.payload.length >= 4 && getU32(r.payload) === nOut);
-        if (!ok) break;
-        good++;
-        moved += sources[i] ? nIn : nOut;
-      }
-      frames += good;
-      if (good < batch.length) { broken = batch.length - good; break; }
+  const inflight = Math.max(1, Math.min(n, Math.floor(limits.window / (size + 24))));   // the probe's window too
+  const data = Uint8Array.from({ length: size }, (_, k) => k & 0xff);
+  const sizeBody = Uint8Array.of(size & 0xff, (size >> 8) & 0xff, (size >> 16) & 0xff, (size >>> 24) & 0xff);
+  const timeoutMs = answerWaitMs(size, rate, n);
+  await keep(hst, link);
+  let moved = 0;
+  const t0 = performance.now();
+  while (res.frames < frames) {
+    const batch = Math.min(2 * n, frames - res.frames);
+    /** @type {('in' | 'out')[]} */
+    const kinds = Array.from({ length: batch }, (_, k) => (flow !== 'duplex' ? flow : ((res.frames + k) % 2 === 0 ? 'in' : 'out')));
+    const msgs = kinds.map((k) => new m.Request(hst.nextCorr(), m.CORE_FN, k === 'in' ? m.OP.link_source : m.OP.link_sink,
+      k === 'in' ? sizeBody : data).pack());
+    /** @type {Promise<Uint8Array>[]} */
+    const answers = [];
+    for (let i = 0; i < msgs.length; i++) {
+      if (i >= inflight) await answers[i - inflight].catch(() => {});
+      answers.push(link.sendOnce(msgs[i], { timeoutMs, resend: false }));
     }
-    const kbs = moved / Math.max((performance.now() - t0) / 1000, 1e-6) / 1000;
-    if (way === 'in') { trial.inBytes = moved; trial.inKBs = kbs; trial.brokenIn = broken; }
-    else if (way === 'out') { trial.outBytes = moved; trial.outKBs = kbs; trial.brokenOut = broken; }
-    else { trial.duplexBytes = moved; trial.duplexKBs = kbs; trial.brokenDuplex = broken; }
-    if (broken) return false;
+    const settled = await Promise.allSettled(answers);
+    let lost = 0;
+    settled.forEach((st, i) => {
+      if (st.status !== 'fulfilled') {
+        if (!linkError(st.reason)) throw st.reason;   // the link itself failed (closed): not a frame
+        lost++;
+        return;
+      }
+      const r = m.Result.unpack(st.value);
+      const good = r.succeeded && (kinds[i] === 'in'
+        ? r.payload.length === size && r.payload.every((b, k) => b === (k & 0xff))
+        : r.payload.length >= 4 && getU32(r.payload) === size);
+      if (good) moved += size; else res.broken++;
+    });
+    res.lost += lost;
+    res.frames += msgs.length;
+    if (lost && !(await confirmAgain(link))) {
+      res.lost += frames - res.frames;
+      res.frames = frames;
+      res.gone = true;
+      break;
+    }
+  }
+  const seconds = (performance.now() - t0) / 1000;
+  res.kbS = seconds > 0 ? moved / seconds / 1000 : 0;
+  return res;
+}
+
+/**
+ * The caller's flows as [flow, n]: n 0 / missing = the most this link keeps in flight (`nMax`), more is capped there;
+ * null = every flow at nMax (in, out, duplex).
+ * @param {FlowSpec[] | null | undefined} flows @param {number} nMax @returns {[Flow, number][]}
+ */
+export function resolveFlows(flows, nMax) {
+  if (flows == null) return FLOWS.map((f) => [f, nMax]);
+  return flows.map((item) => {
+    const [flow, n] = typeof item === 'string' ? [item, 0] : [item[0], item[1] ?? 0];
+    if (!FLOWS.includes(flow)) throw new RangeError(`flow ${JSON.stringify(flow)}: one of ${FLOWS.join(', ')}`);
+    return [flow, Math.max(1, Math.min(Math.trunc(Number(n)) || nMax, nMax))];
+  });
+}
+
+/**
+ * The boot speed's ratio per flow (guide §7.3.2 item 2): `given`, or this session's frames at the boot speed when
+ * BASELINE_FRAMES or more were exchanged and under BASELINE_MAX, else BASELINE_FRAMES measured per flow at its n (over
+ * BASELINE_MAX: again at n = 1, which then caps that flow). -> '' or why the port is not raised at all.
+ * @param {import('./host.js').Host} hst @param {import('./link.js').Link} link @param {SpeedReport} report
+ * @param {[Flow, number][]} flows @param {number | null} given @param {number} size
+ */
+async function baselineOf(hst, link, report, flows, given, size) {
+  if (given !== null) {
+    report.baseline = Object.fromEntries(flows.map(([flow]) => [flow, Number(given)]));
+    return '';
+  }
+  const c = link.baseCounts;
+  const total = c.good + c.broken + c.lost;
+  const base = /** @type {number} */ (link.baseBaud);
+  if (total >= BASELINE_FRAMES && (c.broken + c.lost) / total <= BASELINE_MAX) {
+    report.baselineFrames = total;
+    report.baseline = Object.fromEntries(flows.map(([flow]) => [flow, (c.broken + c.lost) / total]));
+    return '';
+  }
+  for (let i = 0; i < flows.length; i++) {
+    const [flow, n] = flows[i];
+    let res = await flowRun(hst, link, flow, n, size, BASELINE_FRAMES, base);
+    report.baselineFlows.push(res);
+    if (res.ratio > BASELINE_MAX && n > 1) {
+      res = await flowRun(hst, link, flow, 1, size, BASELINE_FRAMES, base);
+      report.baselineFlows.push(res);
+      if (res.ratio <= BASELINE_MAX) flows[i] = [flow, 1];
+    }
+    if (res.ratio > BASELINE_MAX) {
+      return `the boot speed ${base} itself loses ${Math.round(res.ratio * 100)}% of ${res.name} frames (over ${Math.round(BASELINE_MAX * 100)}%): not raised`;
+    }
+    report.baseline[flow] = res.ratio;
+  }
+  return '';
+}
+
+/**
+ * Every flow at the new rate (guide §7.3.2 items 3-3 / 3-4): `frames` or more, failing on broken + lost of
+ * FLOW_FAIL_MIN or more and a ratio over max(2 x baseline, VERIFY_FLOOR); a failed flow at n > 1 runs again at n = 1
+ * (then the trial's nCap is 1). One failed flow fails the candidate (trial.why says which).
+ * @param {import('./host.js').Host} hst @param {import('./link.js').Link} link @param {number} rate
+ * @param {SpeedTrial} trial @param {[Flow, number][]} flows @param {Record<string, number>} baseline
+ * @param {number} frames @param {number} size
+ */
+async function verifyFlows(hst, link, rate, trial, flows, baseline, frames, size) {
+  for (const [flow, n] of flows) {
+    const threshold = Math.max(2 * (baseline[flow] ?? 0), VERIFY_FLOOR);
+    let res = flowResult(flow, n), k = n;
+    for (k of (n > 1 ? [n, 1] : [n])) {
+      res = await flowRun(hst, link, flow, k, size, frames, rate);
+      res.passed = !res.gone && !(res.broken + res.lost >= FLOW_FAIL_MIN && res.ratio > threshold);
+      trial.flows.push(res);
+      if (res.passed || res.gone) break;
+    }
+    if (res.gone) {
+      trial.why = `${res.name}: no answer at ${rate} any more (the probe went back)`;
+      return false;
+    }
+    if (!res.passed) {
+      trial.why = `${res.name}: ${res.broken + res.lost} of ${res.frames} frames broken or lost (${Math.round(res.ratio * 100)}%, over ${Math.round(threshold * 100)}%)`;
+      return false;
+    }
+    if (k < n) trial.nCap = 1;
   }
   return true;
 }
 
 /**
- * port_speed (oep-core §3.5), opt-in: try `rates` in order on the UART bridge this host opened, and commit the first
- * that passes; a rate the probe's UART cannot make is skipped. The session must be open (the rate lasts as long as it
- * does). verifyMs: how long the probe waits for the commit (default verifySeconds + 1.5 s, at most 65535). idleMs: once
- * committed, the probe reverts after this long with no good frame (default and at most port_speed_idle_max_ms, 3000;
- * 0 and anything longer mean that maximum; the link keeps the line alive meanwhile, Link.keepAlive). After the in /
- * out verify, both ways at once at the in-flight that passed (link_source and link_sink interleaved, duplexSeconds
- * and at least duplexFrames): a broken frame fails the rate ("broke both ways at once"). In use, the link steps down
- * to the boot speed for the rest of the session when frames break or requests go again STRIKE_MAX times within
- * STRIKE_WINDOW_MS, or an answer does not come at all (`report.steppedDown`); such a rate is not tried again in this
- * session. port:
- * the transport index (default: the probe's first UART bridge). A link that cannot change its rate (USB, a broker's
- * TCP) and a probe without the feature are reported not supported and stay at their speed.
- * @param {import('./host.js').Host} hst @param {number[]} rates
- * @param {{ verifyBytes?: number, verifySeconds?: number, verifyMs?: number, idleMs?: number, port?: number,
- *   duplexSeconds?: number, duplexFrames?: number }} [opts]
+ * port_speed (oep-core §3.5) on the UART bridge this host opened, by the host guide's §7 procedure: try `candidates`
+ * in order and commit the first that passes. The session must be open (the rate lasts as long as it does).
+ *
+ * The minimal form (§7.2, the default; about 50 ms, no measurement): try -> switch to the requested baud (the probe's
+ * answer only when the platform refuses it) -> 20 ms -> confirm (100 ms, up to 3) -> commit. The full form (`verify:
+ * true`, or `flows` given; §7.3): first the boot speed's baseline per flow (`baseline` given, this session's frames at
+ * the boot speed when 60 or more, else 60 frames measured per flow at its n - over 10 % again at n = 1, still over: not
+ * raised), then per candidate every flow for `frames` (16) frames of max_frame - 16 bytes; a flow fails on broken +
+ * lost >= 3 and a ratio over max(2 x baseline, 5 %), runs again at n = 1 first (then n = 1 is the link's cap), and one
+ * failed flow fails the candidate. `flows`: 'in' | 'out' | 'duplex' or [flow, n] (n 0 = the most this link keeps in
+ * flight; default: all three at that n) - verify only what the session will use (§7.3.1).
+ *
+ * A failed candidate: revert (step 2, at the new rate; its answer need not come), the boot speed, confirms up to
+ * port_speed_idle_max_ms + 1 s (an Error when none is answered). verifyMs: how long the probe waits for the commit
+ * (default VERIFY_MS 2000, kept a second under the lease). idleMs: once committed, the probe reverts after this long
+ * with no good frame (default and at most 3000; 0 and more mean that); the link's keepalive interval is set under half
+ * of it. In use the link judges the last 3 s (none under 50 frames): over max(2 x baseline, 10 %) broken or lost ->
+ * revert and the boot speed for the rest of the session; a missed answer -> the boot speed, confirmed within the same
+ * bound. A rate stepped down from is not tried again in the session. `record`: true = this environment's default store
+ * (Node: `~/.cache/oep-client/link-speed.json`; a browser: localStorage), or a file path (Node), or a SpeedRecord -
+ * passed rates go first, failed ones are skipped (`report.skipped`), and this run's outcomes are written (off by
+ * default). port: the transport index (default: the probe's first UART bridge). A link that cannot change its rate
+ * (USB, a broker's TCP) and a probe without the feature are reported not supported and stay at their speed.
+ * -> the report, also kept as `host.link.speed`.
+ * @param {import('./host.js').Host} hst @param {readonly number[]} [candidates]
+ * @param {{ flows?: FlowSpec[] | null, verify?: boolean | null, baseline?: number | null, frames?: number,
+ *   verifyMs?: number, idleMs?: number, port?: number, record?: boolean | string | SpeedRecord }} [opts]
  * @returns {Promise<SpeedReport>}
  */
-export async function raiseSpeed(hst, rates, { verifyBytes = 32768, verifySeconds = 1, verifyMs, idleMs = IDLE_MAX_MS, port,
-  duplexSeconds = 1, duplexFrames = 64 } = {}) {
-  const sizes = { verifyBytes, verifySeconds, duplexSeconds, duplexFrames };
-  idleMs = idleMs > 0 && idleMs <= IDLE_MAX_MS ? idleMs : IDLE_MAX_MS;
+export async function raiseSpeed(hst, candidates = DEFAULT_CANDIDATES, { flows = null, verify = null, baseline = null,
+  frames = FLOW_FRAMES, verifyMs, idleMs = IDLE_MAX_MS, port, record = false } = {}) {
   const link = hst.link;
   const base = link.baseBaud;
-  /** @type {SpeedReport} */
-  const report = {
-    base: base ?? 0, supported: false, rate: link.baud ?? 0, chosen: null, trials: [], why: '', lost: false,
-    steppedDown: false, downWhy: '',
-    get inKBs() { return this.chosen ? this.trials.find((t) => t.committed)?.inKBs ?? null : null; },
-    get outKBs() { return this.chosen ? this.trials.find((t) => t.committed)?.outKBs ?? null : null; },
-    get duplexKBs() { return this.chosen ? this.trials.find((t) => t.committed)?.duplexKBs ?? null : null; },
-  };
+  const report = speedReport(base ?? 0, link.baud ?? 0);
   link.speed = report;
   if (base === null || link.framing !== 'cobs') {
     report.why = 'the link is not a serial port this host opened';
@@ -165,101 +360,166 @@ export async function raiseSpeed(hst, rates, { verifyBytes = 32768, verifySecond
   if (hst.session === null) throw new m.OepError('raiseSpeed needs an open session (the rate lasts as long as the session)');
   const at = port ?? where;
   report.supported = true;
-  const wait = verifyMs ?? Math.min(65535, Math.round((verifySeconds + duplexSeconds) * 1000) + 1500);
+  const full = verify ?? flows !== null;
+  report.verified = full;
+  const leaseMs = hst.leaseMs ?? 0;
+  const wait = Math.min(65535, verifyMs ?? Math.min(VERIFY_MS, leaseMs ? Math.max(500, leaseMs - 1000) : VERIFY_MS));
+  idleMs = idleMs > 0 && idleMs <= IDLE_MAX_MS ? idleMs : IDLE_MAX_MS;
   if (link.unusableSession !== hst.session) { link.unusable = new Map(); link.unusableSession = hst.session; }
+  /** @type {SpeedRecord | null} */
+  let rec = null;
+  if (record) {
+    rec = record instanceof SpeedRecord ? record : new SpeedRecord(typeof record === 'string' ? await fileStore(record) : await defaultStore());
+    link.record = rec;
+    link.recordKey = [link.transport.path ?? (typeof process !== 'undefined' && process.versions?.node ? '<stream>' : null), await unitId(hst)];
+  }
   link.fallback = false;   // every failure here is handled here
   try {
-    for (const rate of rates) {
-      /** @type {SpeedTrial} */
-      const trial = { rate, actual: null, inBytes: 0, outBytes: 0, inKBs: null, outKBs: null, brokenIn: 0, brokenOut: 0,
-        duplexBytes: 0, duplexKBs: null, brokenDuplex: 0, committed: false, why: '', inflight: 0 };
-      report.trials.push(trial);
-      if (link.unusable.has(rate)) { trial.why = `stepped down from earlier in this session (${link.unusable.get(rate)})`; continue; }
-      let answer;
-      try {
-        answer = await hst.call(m.CORE_FN, OP_PORT_SPEED, request(at, rate, STEP.try, wait, 0));
-      } catch (e) {
-        if (e instanceof Timeout) {
-          trial.why = 'no answer to the try';   // it may have switched: wait it out at the boot speed
-          if (!(await link.backToBase(wait + 1500))) throw new Error(`after trying ${rate}: no answer at the boot speed ${base}`);
-          continue;
-        }
-        if (!(e instanceof Rejected)) throw e;
-        if (e.result.detail === m.REJECT.unknown_operation) {
-          report.supported = false;
-          report.why = 'the probe does not take port_speed (unknown_operation)';
-          report.trials.pop();
-          return report;
-        }
-        trial.why = e.result.detail === m.REJECT.unsupported ? "unsupported: the probe's UART cannot make it" : e.message;
-        if (e.result.detail !== m.REJECT.unsupported) break;   // wrong port, locked, ...: nothing else will do better
-        continue;
-      }
-      trial.actual = getU32(answer.payload);
-      await link.setBaud(rate);   // settled (SWITCH_SETTLE_MS) before the first byte
-      // the switch-over itself may cost the first frame (bytes in flight while both ends change): a confirm, sent again a
-      // couple of times, finds the new rate before anything is measured (core §3.5)
-      const heard = await confirmAgain(link);
-      let ok = heard;
-      // pipelined first (what the host will use); a line that loses bytes while both ways carry at once gets a second
-      // verify one request at a time
-      const full = Math.max(1, (await hst.confirmed()).maxInflight);
-      let broke = 'frames broke';
-      for (const n of heard ? (full === 1 ? [1] : [full, 1]) : []) {
-        ok = await verify(hst, rate, trial, sizes, n);
-        if (ok) { trial.inflight = n; break; }
-        await confirmAgain(link);   // the broken frames' leftovers read past
-      }
-      if (ok) {
-        // both ways at once at the in-flight that passed: a line that carries each way alone can still break under
-        // sustained duplex use (a CH340 at 921600 broke a frame every ~0.5 s, 2026-10-01)
-        ok = await verify(hst, rate, trial, sizes, trial.inflight, ['duplex']);
-        if (!ok) { broke = 'broke both ways at once'; trial.inflight = 0; await confirmAgain(link); }
-      }
-      if (ok) {
-        try {
-          await hst.call(m.CORE_FN, OP_PORT_SPEED, request(at, rate, STEP.commit, 0, idleMs));
-          trial.committed = true;
-          report.rate = rate;
-          report.chosen = rate;
-          link.inflightCap = trial.inflight < full ? trial.inflight : 0;
-          link.speedPort = at;
-          link.strikes = [];
-          link.stepDue = '';
-          return report;
-        } catch (e) {
-          trial.why = `the commit failed: ${e instanceof Error ? e.message : e}`;
-        }
-      } else {
-        trial.why = heard ? broke : 'no confirm at the new rate';
-        const revert = new m.Request(hst.nextCorr(), m.CORE_FN, OP_PORT_SPEED, request(at, rate, STEP.revert, 0, 0), hst.session).pack();
-        await link.sendOnce(revert, { timeoutMs: 300, resend: false }).catch(() => {});   // lost: the probe goes back by itself
-      }
-      if (!(await link.backToBase(wait + 1500))) throw new Error(`after trying ${rate}: no answer at the boot speed ${base}`);
-      report.rate = base;
-    }
-    return report;
+    return await raise(hst, link, report, [...candidates], flows, full, baseline, frames, wait, idleMs, at, rec);
   } finally {
     link.fallback = true;
   }
 }
 
-/** A confirm at the rate now, up to 3 tries of 200 ms: true when one came back. @param {import('./link.js').Link} link */
-async function confirmAgain(link) {
-  for (let i = 0; i < 3; i++) if (await link.confirmRaw(200)) return true;
-  return false;
+/**
+ * @param {import('./host.js').Host} hst @param {import('./link.js').Link} link @param {SpeedReport} report
+ * @param {number[]} candidates @param {FlowSpec[] | null} flowSpecs @param {boolean} verify @param {number | null} baseline
+ * @param {number} frames @param {number} wait @param {number} idleMs @param {number} at @param {SpeedRecord | null} rec
+ */
+async function raise(hst, link, report, candidates, flowSpecs, verify, baseline, frames, wait, idleMs, at, rec) {
+  const base = /** @type {number} */ (link.baseBaud);
+  const limits = await hst.confirmed();
+  const size = limits.maxFrame - 16;
+  const nMax = link.inflightFor(limits);
+  const key = link.recordKey;
+  if (rec && key) {
+    const { passed, failed } = rec.lookup(key[0], key[1]);
+    report.skipped = candidates.filter((r) => failed.includes(r));
+    candidates = [...candidates.filter((r) => passed.includes(r)), ...candidates.filter((r) => !passed.includes(r) && !failed.includes(r))];
+  }
+  /** @type {[Flow, number][]} */
+  let flows = [];
+  if (verify) {
+    flows = resolveFlows(flowSpecs, nMax);
+    report.why = await baselineOf(hst, link, report, flows, baseline, size);
+    if (report.why) return report;
+  }
+  /** @param {number} rate @param {boolean} passed */
+  const note = (rate, passed) => { if (rec && key) rec.note(key[0], key[1], rate, passed); };
+  /** A candidate that did not pass: revert at the rate now (its answer need not come), the boot speed, confirmed within
+   * port_speed_idle_max_ms + 1 s (or verify_ms and a second when that is longer). @param {number} rate @param {boolean} revert */
+  const back = async (rate, revert) => {
+    if (revert) {
+      const msg = new m.Request(hst.nextCorr(), m.CORE_FN, OP_PORT_SPEED, request(at, rate, STEP.revert, 0, 0), hst.session).pack();
+      await link.sendOnce(msg, { timeoutMs: 300, resend: false }).catch(() => {});   // lost at that rate, or the probe is back already
+    }
+    if (!(await link.backToBase(Math.max(OPEN_RETRY_MS, wait + 1000)))) throw new Error(`after trying ${rate}: no answer at the boot speed ${base}`);
+    report.rate = base;
+  };
+
+  for (const rate of candidates) {
+    const trial = speedTrial(rate);
+    report.trials.push(trial);
+    if (link.unusable.has(rate)) { trial.why = `stepped down from earlier in this session (${link.unusable.get(rate)})`; continue; }
+    let answer;
+    try {
+      answer = await hst.call(m.CORE_FN, OP_PORT_SPEED, request(at, rate, STEP.try, wait, idleMs));
+    } catch (e) {
+      if (e instanceof Timeout) {
+        trial.why = 'no answer to the try';   // it may have switched: wait it out at the boot speed
+        await back(rate, false);
+        continue;
+      }
+      if (!(e instanceof Rejected)) throw e;
+      if (e.result.detail === m.REJECT.unknown_operation) {
+        report.supported = false;
+        report.why = 'the probe does not take port_speed (unknown_operation)';
+        report.trials.pop();
+        return report;
+      }
+      if (e.result.detail !== m.REJECT.unsupported) {
+        trial.why = e.message;
+        break;   // wrong port, locked, ...: nothing else will do better
+      }
+      trial.why = "unsupported: the probe's UART cannot make it";
+      note(rate, false);
+      continue;
+    }
+    trial.actual = getU32(answer.payload);
+    try {
+      trial.switched = await link.setBaud(rate, trial.actual);   // the requested baud; the probe's only if the platform refuses
+    } catch (e) {
+      trial.why = `the platform refuses ${rate} and ${trial.actual}: ${e instanceof Error ? e.message : e}`;
+      link.baud = rate;                                           // wait the probe out (verify_ms), then the boot speed
+      await sleep(wait);
+      await back(rate, false);
+      note(rate, false);
+      continue;
+    }
+    if (!(await confirmAgain(link))) {
+      trial.why = 'no confirm at the new rate';
+      await back(rate, true);
+      note(rate, false);
+      continue;
+    }
+    if (verify && !(await verifyFlows(hst, link, rate, trial, flows, report.baseline, frames, size))) {
+      await back(rate, true);
+      note(rate, false);
+      continue;
+    }
+    try {
+      await hst.call(m.CORE_FN, OP_PORT_SPEED, request(at, rate, STEP.commit, 0, idleMs));
+    } catch (e) {
+      if (!(e instanceof Timeout || e instanceof Rejected)) throw e;
+      trial.why = `the commit failed: ${e.message}`;
+      await back(rate, false);
+      continue;
+    }
+    trial.committed = true;
+    report.rate = rate;
+    report.chosen = rate;
+    link.inflightCap = trial.nCap;
+    link.speedPort = at;
+    link.baselineRatio = Math.max(0, ...Object.values(report.baseline));
+    link.keepaliveMs = Math.min(KEEPALIVE_MS, idleMs / 2.5);   // under half of idle_ms (core §3.5 obligation 4)
+    link.window = [];
+    link.stepDue = '';
+    note(rate, true);
+    return report;
+  }
+  return report;
 }
 
-/** The report as text: a line per rate tried, then the rate in force. @param {SpeedReport} report */
+/** @param {number} v @param {number} digits */
+const pct = (v, digits = 1) => `${(v * 100).toFixed(digits)}%`;
+
+/** The report as text: the baseline, a line per flow of every candidate, the step downs, the rate in force.
+ * @param {SpeedReport} report */
 export function speedText(report) {
   if (!report.supported) return `port_speed not supported: ${report.why} (stays at ${report.rate})\n`;
-  /** @param {number | null} v @param {number} [w] */
-  const kb = (v, w = 8) => (v === null ? '-' : v.toFixed(1)).padStart(w);
-  const lines = [`${'rate'.padStart(9)} ${'actual'.padStart(9)} ${'in KB/s'.padStart(8)} ${'out KB/s'.padStart(8)} ${'duplex KB/s'.padStart(11)} ${'broken in/out/duplex'.padStart(20)}  result`];
-  for (const t of report.trials) {
-    lines.push(`${String(t.rate).padStart(9)} ${String(t.actual ?? '-').padStart(9)} ${kb(t.inKBs)} ${kb(t.outKBs)} ${kb(t.duplexKBs, 11)} ${`${t.brokenIn}/${t.brokenOut}/${t.brokenDuplex}`.padStart(20)}  ${t.committed ? `committed (in flight ${t.inflight})` : t.why}`);
+  const lines = [];
+  if (report.verified) {
+    const where = report.baselineFrames ? `from ${report.baselineFrames} frames of this session` : `measured, ${BASELINE_FRAMES} frames per flow`;
+    const entries = Object.entries(report.baseline);
+    lines.push(entries.length ? `baseline at ${report.base} (${where}): ${entries.map(([k, v]) => `${k} ${pct(v)}`).join(', ')}` : `baseline at ${report.base}: none`);
   }
-  if (report.steppedDown) lines.push(`stepped down: ${report.downWhy} - the boot speed for the rest of the session`);
+  if (report.skipped.length) lines.push(`skipped (the record says failed): ${report.skipped.join(', ')}`);
+  lines.push(`${'rate'.padStart(9)} ${'actual'.padStart(9)}  ${'flow'.padEnd(9)} ${'frames'.padStart(6)} ${'broken'.padStart(6)} ${'lost'.padStart(5)} ${'ratio'.padStart(6)} ${'KB/s'.padStart(7)}  result`);
+  for (const t of report.trials) {
+    const head = `${String(t.rate).padStart(9)} ${String(t.actual ?? '-').padStart(9)}  `;
+    const result = t.committed ? `committed${t.nCap ? ` (in flight ${t.nCap})` : ''}` : t.why;
+    if (!t.flows.length) {
+      lines.push(head + `${'-'.padEnd(9)} ${'-'.padStart(6)} ${'-'.padStart(6)} ${'-'.padStart(5)} ${'-'.padStart(6)} ${'-'.padStart(7)}  ${result}`);
+      continue;
+    }
+    t.flows.forEach((f, i) => {
+      lines.push((i === 0 ? head : ' '.repeat(head.length)) + `${f.name.padEnd(9)} ${String(f.frames).padStart(6)} ${String(f.broken).padStart(6)} `
+        + `${String(f.lost).padStart(5)} ${pct(f.ratio).padStart(6)} ${f.kbS.toFixed(1).padStart(7)}  ${f.passed ? 'passed' : 'failed'}`);
+    });
+    lines.push(' '.repeat(head.length) + `-> ${result}`);
+  }
+  for (const s of report.stepDowns) lines.push(`stepped down from ${s.rate}: ${s.why}`);
+  if (report.steppedDown) lines.push('the boot speed for the rest of the session');
   lines.push(`in force: ${report.rate}${report.chosen ? ' (raised)' : ' (the boot speed)'}`);
   return lines.join('\n') + '\n';
 }

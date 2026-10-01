@@ -41,4 +41,5 @@ export * as capture from './capture.js';
 export * as decode from './decode.js';
 export * as dfu from './dfu.js';
 export * as speed from './speed.js';
+export * as speedrecord from './speedrecord.js';
 export * as firmware from './firmware.js';

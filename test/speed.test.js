@@ -1,23 +1,29 @@
 // @ts-check
-// port_speed (oep-core §3.5, src/speed.js) against oep-client-python's fake probe (esp32-v003 has it; --broken-rate
-// models the line, by the probe's rate alone over TCP), and the link's fall back to the boot speed on a scripted
-// transport (where the probe's rate and the host's can differ). Mirrors oep-client-python's tests/test_port_speed.py.
+// port_speed (oep-core §3.5 the handshake, host guide §7 the procedure; src/speed.js) against oep-client-python's fake
+// probe (esp32-v003 has it; --broken-rate models the line, by the probe's rate alone over TCP), behind a line model
+// of the host's side (withLine: frames garbled or dropped as the host would see them), and the link's fall back to
+// the boot speed on a scripted transport. Mirrors oep-client-python's tests/test_port_speed.py.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as m from '../src/message.js';
 import { Rejected, Timeout, Unavailable } from '../src/errors.js';
-import { Link, SWITCH_SETTLE_MS, IDLE_MAX_MS, KEEPALIVE_MS, OPEN_RETRY_MS } from '../src/link.js';
-import { getU32 } from '../src/bytes.js';
+import { Link, SWITCH_SETTLE_MS, IDLE_MAX_MS, KEEPALIVE_MS, OPEN_RETRY_MS, IN_USE_WINDOW_MS } from '../src/link.js';
+import { getU16, getU32 } from '../src/bytes.js';
 import { Host } from '../src/host.js';
 import { connect } from '../src/open.js';
 import * as cobs from '../src/cobs.js';
-import { raiseSpeed, speedText } from '../src/speed.js';
+import { DEFAULT_CANDIDATES, VERIFY_MS, raiseSpeed, resolveFlows, speedText } from '../src/speed.js';
+import { SpeedRecord, fileStore, localStorageStore, memoryStore } from '../src/speedrecord.js';
 import { RiscvDm, Wire } from '../src/riscv.js';
 import { take } from '../src/core.js';
 import { openTcp, tcpTransport } from '../src/node/index.js';
 import { haveFake, startFake } from './fake.js';
 
-const FAST = { verifyBytes: 2048, verifySeconds: 0.3, verifyMs: 900, duplexSeconds: 0.2, duplexFrames: 16 };
+const FAST = { verifyMs: 900 };   // the probe's try state ends soon: a failed candidate costs under a second
+const UNIT = '0070070d9394';      // the fake esp32-v003's unit_id
 
 /** @param {string[]} args @param {(hst: import('../src/host.js').Host) => Promise<void>} body @param {object} [opts] */
 async function withSpeedFake(args, body, opts = {}) {
@@ -32,43 +38,72 @@ async function withSpeedFake(args, body, opts = {}) {
   }
 }
 
-test('commit at a good rate, with the report; the end takes the link back', { skip: !haveFake }, () => withSpeedFake([], async (hst) => {
-  const report = await raiseSpeed(hst, [1500000], FAST);
-  assert.equal(report.supported, true);
-  assert.equal(report.base, 115200);
-  assert.equal(report.chosen, 1500000);
-  assert.equal(report.rate, 1500000);
-  const [t] = report.trials;
-  assert.equal(t.committed, true);
-  assert.equal(t.actual, 1500000);
-  assert.equal(t.brokenIn + t.brokenOut, 0);
-  assert.ok(t.inBytes > 0 && t.outBytes > 0 && (t.inKBs ?? 0) > 0 && (t.outKBs ?? 0) > 0);
-  assert.equal(report.inKBs, t.inKBs);
-  assert.equal(hst.link.speed, report);
-  assert.equal(hst.link.baud, 1500000);
+test('the minimal form tries, confirms and commits without a measurement; the end takes the link back', { skip: !haveFake }, async () => {
+  // host guide §7.2: one candidate, switch, 20 ms, a confirm, commit - no flows, no baseline
+  /** @type {[number, number | null][]} */ const ops = [];
+  await withLine([], {
+    onWrite(msg) {
+      const req = m.Request.unpack(msg);
+      if (req.fn === m.CORE_FN) ops.push([req.op, req.op === m.OP.port_speed ? req.payload[5] : null]);
+      return true;
+    },
+  }, async (hst) => {
+    ops.length = 0;
+    const report = await raiseSpeed(hst, [1500000], FAST);
+    assert.equal(report.supported, true);
+    assert.equal(report.base, 115200);
+    assert.equal(report.chosen, 1500000);
+    assert.equal(report.rate, 1500000);
+    assert.equal(report.verified, false);
+    assert.deepEqual(report.baseline, {});
+    assert.deepEqual(report.baselineFlows, []);
+    const [t] = report.trials;
+    assert.equal(t.committed, true);
+    assert.equal(t.actual, 1500000);
+    assert.equal(t.switched, 1500000);
+    assert.deepEqual(t.flows, []);
+    assert.equal(t.nCap, 0);
+    assert.equal(report.inKBs, null);
+    assert.equal(t.inKBs, null);
+    assert.deepEqual(ops.filter(([op]) => op !== m.OP.describe), [[m.OP.port_speed, 0], [m.OP.confirm, null], [m.OP.port_speed, 1]]);
+    assert.equal(hst.link.speed, report);
+    assert.equal(hst.link.baud, 1500000);
+    assert.equal(hst.link.keepaliveMs, KEEPALIVE_MS);
+    assert.equal(hst.link.inflightCap, 0);
+    await hst.keepalive();
+    const text = speedText(report);
+    assert.match(text, /committed/);
+    assert.match(text, /in force: 1500000 \(raised\)/);
+    await hst.end();
+    assert.equal(hst.link.baud, 115200);
+    assert.equal(report.rate, 115200);
+    assert.equal(report.chosen, null);
+  });
+});
+
+test('the default candidate is 500000', { skip: !haveFake }, () => withSpeedFake([], async (hst) => {
+  const report = await raiseSpeed(hst, undefined, FAST);
+  assert.deepEqual([...DEFAULT_CANDIDATES], [500000]);
+  assert.equal(report.chosen, 500000);
+  assert.equal(hst.link.baud, 500000);
   await hst.keepalive();
-  assert.equal(t.inflight, 4);                       // the fake's max_inflight: pipelined passed, no cap
-  assert.equal(hst.link.inflightCap, 0);
-  assert.match(speedText(report), /committed \(in flight 4\)/);
-  await hst.end();
-  assert.equal(hst.link.baud, 115200);
-  assert.equal(report.rate, 115200);
-  assert.equal(report.chosen, null);
 }));
 
-test('a broken rate reverts, an unmakeable one is skipped, the next is committed', { skip: !haveFake },
-  () => withSpeedFake(['--broken-rate', '230400:40', '--broken-rate', '1000000:in'], async (hst) => {
-    const report = await raiseSpeed(hst, [230400, 1000000, 9000000, 500000], FAST);
-    const [a, b, c, d] = report.trials;
+test('the minimal form falls back when the confirm does not come, skips an unmakeable rate, and goes on', { skip: !haveFake },
+  () => withSpeedFake(['--broken-rate', '1000000:in'], async (hst) => {   // probe -> host only: the probe sees nothing wrong
+    const t0 = performance.now();
+    const report = await raiseSpeed(hst, [1000000, 9000000, 500000], FAST);
+    const [a, b, c] = report.trials;
     assert.equal(a.committed, false);
-    assert.equal(a.why, 'frames broke');
-    assert.ok(a.brokenIn > 0);
-    assert.equal(b.committed, false);
-    assert.equal(b.why, 'no confirm at the new rate');   // its answers to the confirm never arrive
-    assert.match(c.why, /^unsupported/);
-    assert.equal(d.committed, true);
+    assert.equal(a.why, 'no confirm at the new rate');   // its answers to the confirm never arrive
+    assert.equal(a.actual, 1000000);
+    assert.match(b.why, /^unsupported/);
+    assert.equal(b.actual, null);
+    assert.equal(c.committed, true);
     assert.equal(report.chosen, 500000);
     assert.equal(hst.link.baud, 500000);
+    assert.ok(performance.now() - t0 < 3000);
+    assert.match(speedText(report), /no confirm/);
     await hst.keepalive();
   }));
 
@@ -107,10 +142,18 @@ test('connect with portSpeed takes the lock and raises the speed', { skip: !have
   () => withSpeedFake(['--broken-rate', '230400'], async (hst) => {
     const report = /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
     assert.deepEqual(report.trials.map((t) => t.committed), [false, true]);
+    assert.equal(report.trials[0].why, 'no confirm at the new rate');
+    assert.equal(report.verified, false);
     assert.equal(report.chosen, 500000);
     assert.notEqual(hst.session, null);
     await hst.keepalive();
   }, { portSpeed: [230400, 500000], leaseMs: 10000 }));
+
+test('connect with portSpeed true takes the default candidate', { skip: !haveFake }, () => withSpeedFake([], async (hst) => {
+  const report = /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
+  assert.equal(report.chosen, 500000);
+  await hst.keepalive();
+}, { portSpeed: true, leaseMs: 10000 }));
 
 test('a request unanswered at a raised rate goes back to the boot speed and once more', async () => {
   // a scripted probe that answers only while the host's rate is the probe's (115200 after its own revert)
@@ -265,28 +308,155 @@ test('after the switch: settled before the first byte, a lost first frame found 
   });
 });
 
-test('pipelined frames break, one at a time passes: committed in flight 1, the cap honoured until the boot speed', { skip: !haveFake }, async () => {
+test('full form: pipelined frames break, one at a time passes: committed in flight 1, the cap honoured until the boot speed', { skip: !haveFake }, async () => {
   /** @type {() => number | null} */ let rateNow = () => 115200;
   await withLine([], {
     garble: (line) => rateNow() !== 115200 && line.outstanding > 1,   // both ways busy at a raised rate: the reply breaks
   }, async (hst, line) => {
     rateNow = () => hst.link.baud;
-    const report = await raiseSpeed(hst, [1500000], FAST);
+    const report = await raiseSpeed(hst, [1500000], { flows: [['in', 0]], verifyMs: 5000 });
+    assert.equal(report.verified, true);
     const [t] = report.trials;
     assert.equal(t.committed, true);
-    assert.equal(t.inflight, 1);
-    assert.equal(t.brokenIn + t.brokenOut, 0);          // the one-at-a-time verify's count
-    assert.ok(line.garbled > 0);                        // the pipelined one broke
+    assert.deepEqual(t.flows.map((f) => f.name), ['in@4', 'in@1']);
+    assert.deepEqual(t.flows.map((f) => f.passed), [false, true]);
+    assert.ok(t.flows[0].broken + t.flows[0].lost >= 3);
+    assert.equal(t.flows[1].broken + t.flows[1].lost, 0);   // the one-at-a-time run's count
+    assert.ok(line.garbled > 0);                            // the pipelined one broke
+    assert.equal(t.nCap, 1);
     assert.equal(hst.link.inflightCap, 1);
     assert.match(speedText(report), /committed \(in flight 1\)/);
+    assert.deepEqual(report.baselineFlows.map((f) => f.name), ['in@4']);
     line.peak = 0;
     const results = await hst.pipeline(Array.from({ length: 8 }, () => [m.CORE_FN, m.OP.link_source, Uint8Array.of(32, 0, 0, 0)]), { locked: false });
     assert.equal(results.length, 8);
     assert.ok(results.every((r) => r.succeeded && r.payload.length === 32));
-    assert.equal(line.peak, 1);                         // one request at a time
+    assert.equal(line.peak, 1);                             // one request at a time
     await hst.end();
     assert.equal(hst.link.baud, 115200);
     assert.equal(hst.link.inflightCap, 0);
+  });
+});
+
+test('full form: every flow measured at the boot speed and at each candidate; a rate whose frames break fails', { skip: !haveFake },
+  () => withSpeedFake(['--broken-rate', '230400:40:in'], async (hst) => {   // the confirm passes, full answers break
+    // host guide §7.3.2: a baseline per flow at the boot speed, then 16 frames per flow at each candidate; a flow fails
+    // on broken + lost >= 3 over max(2 x baseline, 5 %), and one failed flow fails the candidate
+    const report = await raiseSpeed(hst, [230400, 500000], { verify: true, verifyMs: 5000 });   // the try state outlasts the measurement
+    assert.equal(report.verified, true);
+    assert.deepEqual(Object.keys(report.baseline).sort(), ['duplex', 'in', 'out']);
+    assert.ok(Object.values(report.baseline).every((v) => v === 0));
+    assert.deepEqual(report.baselineFlows.map((f) => f.name), ['in@4', 'out@4', 'duplex@4']);   // measured: 60 frames each
+    assert.ok(report.baselineFlows.every((f) => f.frames === 60));
+    assert.equal(report.baselineFrames, 0);
+    const [a, b] = report.trials;
+    assert.equal(a.committed, false);
+    assert.match(a.why, /^in@.* over 5%/);
+    assert.deepEqual(a.flows.map((f) => f.name), ['in@4', 'in@1']);
+    assert.ok(a.flows.every((f) => !f.passed));
+    assert.ok(a.flows[0].broken + a.flows[0].lost >= 3 && a.flows[0].frames >= 16);
+    assert.equal(b.committed, true);
+    assert.deepEqual(b.flows.map((f) => f.name), ['in@4', 'out@4', 'duplex@4']);
+    assert.ok(b.flows.every((f) => f.passed && f.frames >= 16 && f.broken === 0 && f.lost === 0 && f.kbS > 0));
+    assert.equal(report.inKBs, b.inKBs);
+    assert.ok((report.inKBs ?? 0) > 0 && (report.outKBs ?? 0) > 0 && (report.duplexKBs ?? 0) > 0);
+    assert.equal(b.nCap, 0);
+    assert.equal(report.chosen, 500000);
+    assert.equal(hst.link.baud, 500000);
+    assert.equal(hst.link.inflightCap, 0);
+    const text = speedText(report);
+    assert.match(text, /baseline at 115200 \(measured, 60 frames per flow\)/);
+    assert.match(text, /failed/);
+    assert.match(text, /committed/);
+    await hst.keepalive();
+  }));
+
+test('full form: only the flows asked are verified; a flow that needs n = 1 caps the link there', { skip: !haveFake }, async () => {
+  /** @type {() => number | null} */ let rateNow = () => 115200;
+  await withLine([], {
+    // a link_source answer (probe -> host) arriving while a link_sink (host -> probe) is still out: both ways busy
+    garble: (line) => rateNow() === 921600 && line.ops[0] === m.OP.link_source && line.ops.slice(1).includes(m.OP.link_sink),
+  }, async (hst) => {
+    rateNow = () => hst.link.baud;
+    const report = await raiseSpeed(hst, [921600], { flows: [['in', 2], ['duplex', 0]], verifyMs: 5000 });
+    assert.equal(report.verified, true);
+    const [t] = report.trials;
+    assert.equal(t.committed, true);
+    assert.deepEqual(t.flows.map((f) => f.name), ['in@2', 'duplex@4', 'duplex@1']);
+    assert.deepEqual(t.flows.map((f) => f.passed), [true, false, true]);
+    assert.ok(t.flows[1].broken + t.flows[1].lost >= 3);
+    assert.equal(t.nCap, 1);
+    assert.equal(hst.link.inflightCap, 1);
+    assert.equal(hst.link.inflightFor(/** @type {any} */ (hst.limits)), 1);
+    assert.match(speedText(report), /committed \(in flight 1\)/);
+    assert.deepEqual(report.baselineFlows.map((f) => f.name), ['in@2', 'duplex@4']);
+    assert.deepEqual(resolveFlows(['out', ['in', 9]], 4), [['out', 4], ['in', 4]]);
+    assert.throws(() => resolveFlows([/** @type {any} */ (['sideways', 1])], 4), RangeError);
+    await hst.keepalive();
+  });
+});
+
+test('the baseline comes from the session\'s frames when there are enough, or is given', { skip: !haveFake }, () => withSpeedFake([], async (hst) => {
+  for (let i = 0; i < 70; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
+  assert.ok(hst.link.baseCounts.good >= 70);
+  assert.equal(hst.link.baseCounts.broken + hst.link.baseCounts.lost, 0);
+  let report = await raiseSpeed(hst, [500000], { flows: [['duplex', 1]], ...FAST });
+  assert.ok(report.baselineFrames >= 70);
+  assert.deepEqual(report.baseline, { duplex: 0 });
+  assert.deepEqual(report.baselineFlows, []);
+  assert.equal(report.chosen, 500000);
+  assert.match(speedText(report), /frames of this session/);
+  await hst.end();
+  await take(hst, 10000);                                       // a new session: its own count
+  assert.ok(hst.link.baseCounts.good <= 2);
+  report = await raiseSpeed(hst, [500000], { flows: [['in', 1]], baseline: 0.02, ...FAST });   // given: nothing measured
+  assert.deepEqual(report.baseline, { in: 0.02 });
+  assert.deepEqual(report.baselineFlows, []);
+  assert.equal(report.baselineFrames, 0);
+  assert.equal(hst.link.baselineRatio, 0.02);
+  await hst.keepalive();
+}));
+
+test('a boot speed that loses too much is not raised', { skip: !haveFake },
+  () => withSpeedFake(['--broken-rate', '115200:40:in:every4'], async (hst) => {   // 25 % of full answers
+    const report = await raiseSpeed(hst, [500000], { flows: [['in', 2]], ...FAST });
+    assert.equal(report.supported, true);
+    assert.deepEqual(report.trials, []);
+    assert.match(report.why, /not raised/);
+    assert.match(report.why, /in@1/);
+    assert.deepEqual(report.baselineFlows.map((f) => f.name), ['in@2', 'in@1']);   // over 10 %: once more at n = 1
+    assert.ok(report.baselineFlows.every((f) => f.ratio > 0.1));
+    assert.equal(hst.link.baud, 115200);
+  }));
+
+test('a broken frame towards the probe reverts it and the flow is lost', { skip: !haveFake }, async () => {
+  // the fake breaks requests of 40 bytes and more at 230400 (the probe then goes back: condition 2); the line model adds
+  // what TCP cannot show - a host whose rate is not the probe's is not heard
+  /** @type {() => number | null} */ let rateNow = () => 115200;
+  let probeRate = 115200;
+  await withLine(['--broken-rate', '230400:40:out'], {
+    onWrite(msg) {
+      if (rateNow() !== probeRate) return false;                        // garbage at the probe: no answer
+      const req = m.Request.unpack(msg);
+      if (req.fn === m.CORE_FN && req.op === m.OP.port_speed) {
+        if (req.payload[5] === 0) probeRate = getU32(req.payload, 1);   // try: the probe switches once its answer is out
+        else if (req.payload[5] === 2) probeRate = 115200;              // revert
+      } else if (rateNow() === 230400 && msg.length >= 32) probeRate = 115200;   // broken at the probe: it goes back
+      return true;
+    },
+  }, async (hst) => {
+    rateNow = () => hst.link.baud;
+    const t0 = performance.now();
+    const report = await raiseSpeed(hst, [230400, 500000], { flows: ['out'], ...FAST });
+    const [a, b] = report.trials;
+    assert.equal(a.committed, false);
+    assert.ok(a.flows[0].lost > 0);
+    assert.equal(a.flows[0].gone, true);
+    assert.equal(a.why, 'out@4: no answer at 230400 any more (the probe went back)');
+    assert.equal(b.committed, true);
+    assert.equal(hst.link.baud, 500000);
+    assert.ok(performance.now() - t0 < 6000);
+    await hst.keepalive();
   });
 });
 
@@ -369,6 +539,30 @@ test('raiseSpeed commits the idle maximum by default, and for 0', { skip: !haveF
   });
   assert.equal(IDLE_MAX_MS, 3000);
   assert.deepEqual(idles, [3000, 3000, 3000, 1500]);
+});
+
+test('the keepalive interval stays under half of idle_ms; verify_ms stays a second under the lease', { skip: !haveFake }, async () => {
+  /** @type {number[]} */ const verifies = [];
+  const model = {
+    /** @param {Uint8Array} msg */
+    onWrite(msg) {
+      const req = m.Request.unpack(msg);
+      if (req.op === m.OP.port_speed && req.payload[5] === 0) verifies.push(getU16(req.payload, 6));   // step try
+      return true;
+    },
+  };
+  await withLine([], model, async (hst) => {
+    await raiseSpeed(hst, [750000], { idleMs: 200 });
+    assert.equal(hst.link.keepaliveMs, 80);                       // under half of idle_ms (core §3.5 obligation 4)
+    await hst.end();
+    await take(hst, 10000);
+    await raiseSpeed(hst, [750000]);
+    assert.equal(hst.link.keepaliveMs, KEEPALIVE_MS);
+  });
+  assert.deepEqual(verifies, [VERIFY_MS, VERIFY_MS]);           // a 10 s lease: the default 2000
+  verifies.length = 0;
+  await withLine([], model, async (hst) => { await raiseSpeed(hst, [750000]); }, 2400);
+  assert.deepEqual(verifies, [1400]);
 });
 
 // ---- the fake probe's port_speed handshake (core §3.5), driven straight from the link -----------------------------
@@ -529,56 +723,41 @@ test('connect on a serial port gives up after about 4 s; other transports keep t
   }
 });
 
-test('a rate that breaks only both ways at once fails the duplex phase', { skip: !haveFake }, async () => {
-  /** @type {() => number | null} */ let rateNow = () => 115200;
-  await withLine([], {
-    // a link_source answer (probe -> host) arriving while a link_sink (host -> probe) is still out: both ways busy
-    garble: (line) => rateNow() === 921600 && line.ops[0] === m.OP.link_source && line.ops.slice(1).includes(m.OP.link_sink),
-  }, async (hst) => {
-    rateNow = () => hst.link.baud;
-    const report = await raiseSpeed(hst, [921600, 500000], FAST);
-    const [a, b] = report.trials;
-    assert.equal(a.committed, false);
-    assert.equal(a.why, 'broke both ways at once');
-    assert.ok(a.brokenDuplex > 0);
-    assert.equal(a.brokenIn + a.brokenOut, 0);           // each way alone passed
-    assert.ok((a.inKBs ?? 0) > 0 && (a.outKBs ?? 0) > 0);
-    assert.equal(b.committed, true);
-    assert.ok((b.duplexKBs ?? 0) > 0 && b.duplexBytes > 0);
-    assert.equal(report.duplexKBs, b.duplexKBs);
-    assert.equal(report.chosen, 500000);
-    assert.match(speedText(report), /duplex KB\/s/);
-    assert.match(speedText(report), /broke both ways at once/);
-    await hst.keepalive();
-  });
-});
-
-/** A link raised to 921600, then every `every`th frame from the probe broken while `line.breaking`.
- * @param {number} every @param {(hst: import('../src/host.js').Host, line: any) => Promise<void>} body */
-async function raisedInUse(every, body) {
+/** A link raised to 921600, then every `every`th frame from the probe broken while `line.breaking` (`line.every`
+ * changes it). @param {number} every @param {(hst: import('../src/host.js').Host, line: any) => Promise<void>} body
+ * @param {object} [opts] raiseSpeed options */
+async function raisedInUse(every, body, opts = {}) {
   /** @type {() => number | null} */ let rateNow = () => 115200;
   let n = 0;
   await withLine([], {
-    garble: (line) => rateNow() === 921600 && line.breaking && ++n % every === 0,
+    garble: (line) => rateNow() === 921600 && line.breaking && ++n % line.every === 0,
   }, async (hst, line) => {
     rateNow = () => hst.link.baud;
-    const report = await raiseSpeed(hst, [921600], FAST);
+    line.every = every;
+    const report = await raiseSpeed(hst, [921600], { ...FAST, ...opts });
     assert.equal(report.chosen, 921600);
     line.breaking = true;
     await body(hst, line);
   });
 }
 
-test('in use: 3 broken frames within 5 s step down for the session, which goes on at base', { skip: !haveFake }, () => raisedInUse(4, async (hst) => {
+test('in use: the 3 s window over 10 % steps down for the session, which goes on at base', { skip: !haveFake }, () => raisedInUse(4, async (hst) => {
+  // host guide §7.3.2 item 4: the last 3 s judged once 50 frames are in them; over max(2 x baseline, 10 %) broken or
+  // lost -> revert, the boot speed, never raised again in this session
   const session = hst.session;
-  for (let i = 0; i < 16; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
+  for (let i = 0; i < 60; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());   // every one answered (a resend at once)
   const report = /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
   assert.equal(hst.link.baud, 115200);
   assert.equal(report.steppedDown, true);
-  assert.match(report.downWhy, /3 broken frames/);
+  assert.match(report.downWhy, /frames broken or lost within 3 s/);
   assert.equal(report.chosen, null);
+  const [s] = report.stepDowns;
+  assert.equal(report.stepDowns.length, 1);
+  assert.equal(s.rate, 921600);
+  assert.ok(s.ratio !== null && s.ratio > 0.10);
+  assert.equal(s.why, report.downWhy);
   assert.equal(report.rate, 115200);
-  assert.match(speedText(report), /stepped down/);
+  assert.match(speedText(report), /stepped down from 921600/);
   assert.equal(hst.session, session);
   await hst.keepalive();                                  // the lease held: the session goes on
   const again = await raiseSpeed(hst, [921600], FAST);
@@ -587,16 +766,35 @@ test('in use: 3 broken frames within 5 s step down for the session, which goes o
   assert.equal(hst.link.baud, 115200);
 }));
 
-test('in use: a single broken frame does not step down', { skip: !haveFake }, () => raisedInUse(4, async (hst, line) => {
-  for (let i = 0; i < 4; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
-  line.breaking = false;
-  for (let i = 0; i < 10; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
+test('in use: no judgement under 50 frames or under the floor', { skip: !haveFake }, () => raisedInUse(2, async (hst, line) => {
+  for (let i = 0; i < 12; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());   // 12 and their resends: under 50 frames
   const report = /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
   assert.equal(hst.link.baud, 921600);
   assert.equal(report.steppedDown, false);
-  assert.equal(line.garbled, 1);
-  assert.equal(hst.link.strikes.length, 1);
+  assert.ok(hst.link.stats.retries >= 6);
+  assert.ok(hst.link.window.length < 50);
+  assert.ok(hst.link.window.filter(([, bad]) => bad).length / hst.link.window.length > 0.10);   // over the floor, yet not judged
+  hst.link.window = [];
+  line.every = 20;
+  for (let i = 0; i < 100; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());   // about 5 %: under the floor
+  assert.equal(hst.link.baud, 921600);
+  assert.equal(report.steppedDown, false);
+  assert.ok(hst.link.window.length >= 100);
+  assert.ok(hst.link.window.every(([t]) => t - hst.link.window[0][0] <= IN_USE_WINDOW_MS));
 }));
+
+test('in use: the threshold doubles a measured baseline', { skip: !haveFake }, () => raisedInUse(8, async (hst, line) => {
+  assert.equal(hst.link.baselineRatio, 0.08);                                                       // threshold 16 %
+  for (let i = 0; i < 80; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());   // 1 in 9 frames: 11 %
+  const report = /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
+  assert.equal(hst.link.baud, 921600);
+  assert.equal(report.steppedDown, false);
+  line.every = 3;                                                                                   // 25 %
+  for (let i = 0; i < 80; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
+  assert.equal(hst.link.baud, 115200);
+  assert.equal(report.steppedDown, true);
+  assert.match(report.downWhy, /over 16%/);
+}, { flows: [['in', 1]], baseline: 0.08 }));
 
 test('in use: no answer at a raised rate falls back well inside the lease and the request goes on', { skip: !haveFake }, async () => {
   let deaf = false;
@@ -618,10 +816,30 @@ test('in use: no answer at a raised rate falls back well inside the lease and th
     assert.equal(report.lost, true);
     assert.equal(report.steppedDown, true);
     assert.match(report.downWhy, /no answer/);
+    assert.equal(report.stepDowns[0].ratio, null);
     await hst.keepalive();
     const again = await raiseSpeed(hst, [921600], FAST);
     assert.match(again.trials[0].why, /^stepped down/);
   }, 3000);
+});
+
+test('in use: no answer at the raised rate and no confirm at the boot speed is a link error, never the raised rate again', { skip: !haveFake }, async () => {
+  let deaf = false;
+  await withLine([], {
+    onWrite: () => !deaf,                                 // the probe hears nothing more at any rate
+  }, async (hst) => {
+    const report = await raiseSpeed(hst, [921600], FAST);
+    assert.equal(report.chosen, 921600);
+    hst.link.timeoutMs = 300;
+    deaf = true;
+    const t0 = performance.now();
+    await assert.rejects(hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array()),
+      (e) => e instanceof Error && /neither at 921600 nor at the boot speed 115200/.test(e.message));
+    const took = performance.now() - t0;
+    assert.ok(took > OPEN_RETRY_MS - 500 && took < OPEN_RETRY_MS + 2500, `took ${took}`);   // idle max + 1 s of confirms
+    assert.equal(hst.link.baud, 115200);                 // never back to the raised rate
+    deaf = false;
+  });
 });
 
 test('a long run at a raised rate waits its timeoutMs, no step down; the keepalive goes before its corr', { skip: !haveFake }, async () => {
@@ -648,10 +866,100 @@ test('a long run at a raised rate waits its timeoutMs, no step down; the keepali
     assert.equal(hst.link.baud, 921600);
     assert.equal(report.steppedDown, false);
     assert.equal(hst.link.stats.retries, 0);
-    assert.equal(hst.link.strikes.length, 0);
+    assert.ok(hst.link.window.every(([, bad]) => !bad));
     sent.length = 0;
     await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());   // after 1.9 s of quiet: a keepalive first
     assert.equal(sent.length, 2);
     assert.ok(sent[0] < sent[1], `corrs ${sent}`);
   }, 3000);
+});
+
+test('setBaud switches to the requested rate, and to the answer only when the platform refuses', async () => {
+  /** @type {number[]} */ const set = [];
+  /** @type {import('../src/link.js').Transport} */
+  const transport = {
+    framing: 'cobs', kind: 'serial', baudRate: 115200,
+    async setBaudRate(rate) { if (rate === 1500000) throw new Error('Not a valid baudrate: 1500000'); set.push(rate); transport.baudRate = rate; },
+    async write() {}, start() {}, async close() {},
+  };
+  const link = new Link(transport);
+  assert.equal(await link.setBaud(921600, 922190), 921600);
+  assert.equal(link.baud, 921600);
+  assert.equal(await link.setBaud(1500000, 1499250), 1499250);   // the platform refused: the answer
+  assert.equal(link.baud, 1499250);
+  await assert.rejects(link.setBaud(1500000), /Not a valid baudrate/);   // no fallback given
+  await assert.rejects(link.setBaud(1500000, 1500000), /Not a valid baudrate/);
+  assert.deepEqual(set, [921600, 1499250]);
+});
+
+// ---- the record (host guide §7.4) ---------------------------------------------------------------------------------
+
+test('the record puts passed rates first, skips failed ones, notes a step down, and expires', { skip: !haveFake }, async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'oep-speed-')), 'link-speed.json');
+  const rec = new SpeedRecord(await fileStore(path));
+  /** @type {() => number | null} */ let rateNow = () => 115200;
+  let n = 0, breaking = false;
+  await withLine(['--broken-rate', '230400:in'], {                       // no confirm there
+    garble: (line) => rateNow() === 500000 && breaking && ++n % 3 === 0,
+  }, async (hst) => {
+    rateNow = () => hst.link.baud;
+    let report = await raiseSpeed(hst, [230400, 500000], { record: rec, ...FAST });
+    assert.equal(report.chosen, 500000);
+    assert.deepEqual(report.skipped, []);
+    assert.deepEqual(rec.lookup('<stream>', UNIT), { passed: [500000], failed: [230400] });
+    assert.deepEqual(hst.link.recordKey, ['<stream>', UNIT]);
+    let saved = JSON.parse(readFileSync(path, 'utf8'));
+    assert.equal(saved[`<stream>|${UNIT}`].rates['500000'].passed, true);
+    assert.equal(saved[`<stream>|${UNIT}`].rates['230400'].passed, false);
+    assert.equal(saved[`<stream>|${UNIT}`].port, '<stream>');
+    await hst.end();
+    await take(hst, 10000);
+    report = await raiseSpeed(hst, [921600, 230400, 500000], { record: path, ...FAST });   // a path: the same file
+    assert.deepEqual(report.skipped, [230400]);
+    assert.deepEqual(report.trials.map((t) => t.rate), [500000]);     // passed first, failed out
+    assert.equal(report.chosen, 500000);
+    assert.match(speedText(report), /skipped \(the record says failed\): 230400/);
+    breaking = true;                                                   // in use it breaks: the step down is noted
+    for (let i = 0; i < 60; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
+    assert.equal(report.steppedDown, true);
+    assert.deepEqual(new SpeedRecord(await fileStore(path)).lookup('<stream>', UNIT), { passed: [], failed: [500000, 230400] });
+    saved = JSON.parse(readFileSync(path, 'utf8'));
+    saved[`<stream>|${UNIT}`].rates['230400'].at = '2026-08-01T00:00:00+00:00';   // older than 30 days
+    writeFileSync(path, JSON.stringify(saved));
+    const rec2 = new SpeedRecord(await fileStore(path));
+    assert.deepEqual(rec2.lookup('<stream>', UNIT), { passed: [], failed: [500000] });
+    assert.equal(rec2.save(), true);
+    assert.doesNotMatch(readFileSync(path, 'utf8'), /230400/);
+    assert.deepEqual(new SpeedRecord(await fileStore(path)).lookup('/dev/other', UNIT), { passed: [], failed: [] });   // another port: nothing known
+  });
+});
+
+test('the record is a cache: an unreadable or unwritable store is not an error; localStorage keys by unit_id', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'oep-speed-'));
+  const broken = join(dir, 'broken.json');
+  writeFileSync(broken, '{not json');
+  let rec = new SpeedRecord(await fileStore(broken));
+  assert.ok(rec.error);
+  assert.deepEqual(rec.lookup('p', 'u'), { passed: [], failed: [] });
+  rec.note('p', 'u', 500000, true);
+  assert.deepEqual(new SpeedRecord(await fileStore(broken)).lookup('p', 'u'), { passed: [500000], failed: [] });
+  const unwritable = new SpeedRecord({ name: 'nope', load: () => null, save: () => { throw new Error('read-only'); } });
+  assert.equal(unwritable.note('p', 'u', 1, true), false);
+  assert.match(/** @type {string} */ (unwritable.error), /nope: read-only/);
+  // a browser: localStorage, the key the unit_id alone (WebSerial names no port)
+  /** @type {Map<string, string>} */ const items = new Map();
+  const storage = { getItem: (/** @type {string} */ k) => items.get(k) ?? null, setItem: (/** @type {string} */ k, /** @type {string} */ v) => { items.set(k, v); } };
+  rec = new SpeedRecord(localStorageStore(storage));
+  rec.note(null, UNIT, 921600, true);
+  rec.note(null, UNIT, 1500000, false);
+  assert.deepEqual(new SpeedRecord(localStorageStore(storage)).lookup(null, UNIT), { passed: [921600], failed: [1500000] });
+  assert.deepEqual(Object.keys(JSON.parse(/** @type {string} */ (items.get('oep-client.link-speed')))), [UNIT]);
+  // time moves: the expiry
+  let now = Date.parse('2026-10-02T00:00:00Z');
+  rec = new SpeedRecord(memoryStore(), { now: () => now });
+  rec.note('p', 'u', 500000, true);
+  now += 31 * 86400_000;
+  assert.deepEqual(rec.lookup('p', 'u'), { passed: [], failed: [] });
+  rec.note('p', 'u', 921600, false);
+  assert.deepEqual(Object.keys(rec.data['p|u'].rates), ['921600']);
 });

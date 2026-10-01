@@ -36,6 +36,7 @@ export async function serialTransport({ path, baudRate = 115200 }) {
   const transport = {
     framing: 'cobs',
     kind: 'serial',
+    path,
     baudRate,
     // port_speed (oep-core §3.5): the rate changed in place (serialport's update)
     setBaudRate: (rate) => new Promise((resolve, reject) => port.update({ baudRate: rate }, (/** @type {Error | null} */ e) => {

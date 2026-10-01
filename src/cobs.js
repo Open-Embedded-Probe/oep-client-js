@@ -73,7 +73,8 @@ export function unframe(raw) {
   return body.slice();
 }
 
-/** The longest frame a message of this length makes: CRC16, a COBS code per 254 bytes and one more, the delimiter. */
+/** The longest frame a message of this length makes: CRC16, a COBS code per 254 bytes and one more, the delimiter.
+ * @param {number} messageLen */
 export function frameMax(messageLen) {
   const n = messageLen + 2;
   return n + Math.floor((n + 253) / 254) + 1 + 1;
