@@ -26,6 +26,11 @@ export class NotV1 extends OepError {}
 export class Timeout extends OepError {}
 /** The lock is held by someone who keeps it going. */
 export class InUse extends OepError {}
+/** A device or port this host had not identified gave no valid confirm answer (core §3.3 probing rule): it was closed
+ * and nothing else was sent to it. */
+export class NotOepProbe extends OepError {}
+/** The device opened by its named unit id (its USB serial) says another unit_id in describe (core §3.3): closed. */
+export class UnitIdMismatch extends OepError {}
 
 const OWNER = reg.CORE.tlv.locked_payload.owner;
 

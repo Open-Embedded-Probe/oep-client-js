@@ -1,7 +1,7 @@
 // @ts-check
 // USB through the optional `usb` package's WebUSB class (the same shape as a browser's WebUSB): the vendor bulk
 // interface (src/usbvendor.js, shared with the browser), and the P4's DFU for firmware updates (src/dfu.js).
-import { isOepDevice, usbUnitId, vendorTransport } from '../usbvendor.js';
+import { usbCandidate, usbUnitId, vendorTransport } from '../usbvendor.js';
 import { dfuUpdate, findDfuInterface, openDfu } from '../dfu.js';
 
 /** @typedef {import('../usbtypes.js').UsbDevice} UsbDevice */
@@ -32,29 +32,33 @@ export async function usbDevices() {
 function matches(d, { unitId, vendorId, productId }) {
   if (vendorId != null && d.vendorId !== vendorId) return false;
   if (productId != null && d.productId !== productId) return false;
-  // a VID:PID given names the device; otherwise it must show itself as OEP (core §3.3)
-  if (vendorId == null && !isOepDevice(d.vendorId, d.productId, d.productName)) return false;
-  if (unitId && (usbUnitId(d) ?? '').toLowerCase() !== unitId.toLowerCase()) return false;
+  // a unit id names the device by its serial alone (core §3.3: checked by describe after confirm, open.js connect)
+  if (unitId) return (usbUnitId(d) ?? '').toLowerCase() === unitId.toLowerCase();
+  // a VID:PID given names the device; otherwise a candidate: the project's VID:PID, or a temporary clue (host guide
+  // §1.7) - probed by confirm before anything else either way
+  if (vendorId == null && !usbCandidate(d)) return false;
   return true;
 }
 
 /**
- * The OEP probes on USB (an iProduct starting "OEP", core §3.3), with their unit id (the USB serial).
+ * The USB devices that may be OEP probes, with their unit id (the USB serial): the project's VID:PID (none listed yet,
+ * core §3.3) or, until it exists, a temporary clue (host guide §1.7: iProduct "OEP...", the vendor interface 0xFF /
+ * 0x4F / 0x45). Candidates only: nothing is sent here; opening one (openUsb) probes it with a confirm first.
  * @returns {Promise<{ unitId: string | null, vendorId: number, productId: number, product: string | null, device: UsbDevice }[]>}
  */
 export async function findUsbProbes() {
   return (await usbDevices())
-    .filter((d) => isOepDevice(d.vendorId, d.productId, d.productName))
+    .filter((d) => usbCandidate(d))
     .map((d) => ({ unitId: usbUnitId(d), vendorId: d.vendorId, productId: d.productId, product: d.productName ?? null, device: d }));
 }
 
 /**
- * The one device matching `want` (the only OEP probe when nothing is given).
+ * The one device matching `want` (the only candidate when nothing is given; by its serial alone for a unitId).
  * @param {{ unitId?: string, vendorId?: number, productId?: number }} want
  */
 async function pick(want) {
   const found = (await usbDevices()).filter((d) => matches(d, want));
-  const what = [want.vendorId != null ? `${hex(want.vendorId)}:${want.productId != null ? hex(want.productId) : '*'}` : 'OEP probe',
+  const what = [want.unitId ? 'device' : want.vendorId != null ? `${hex(want.vendorId)}:${want.productId != null ? hex(want.productId) : '*'}` : 'OEP probe candidate',
     want.unitId ? `unit id ${want.unitId}` : ''].filter(Boolean).join(' ');
   if (!found.length) throw new Error(`no USB ${what}`);
   if (found.length > 1 && !want.unitId) throw new Error(`${found.length} USB devices match (${what}): give the unitId`);

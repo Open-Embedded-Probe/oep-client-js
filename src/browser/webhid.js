@@ -4,7 +4,6 @@
 // report ID, when the descriptor declares one, is WebHID's business: sendReport takes it apart, an inputreport gives
 // it apart.
 import * as reg from '../registry.js';
-import { isOepDevice } from '../usbvendor.js';
 
 /** The OEP HID collection: usage page 0xFF4F ('O' in the vendor pages), usage 0x45 ('E'). */
 export const OEP_USAGE_PAGE = reg.USB.hid_usage_page;
@@ -101,8 +100,10 @@ const hidApi = () => {
 };
 
 /**
- * Ask the user for an OEP probe's HID interface (usage page 0xFF4F, usage 0x45; the one picked must be an OEP device).
- * WebHID may give several HIDDevice objects for one USB device: the one with the OEP collection is taken.
+ * Ask the user for a probe's HID interface. The default chooser filter (usage page 0xFF4F, usage 0x45) is a temporary
+ * clue (host guide §1.7, not normative) until the project's VID:PID exists; the device picked is one the user chose
+ * (core §3.3): connect (openWebHid) probes it with a confirm first and closes it when no valid answer comes. No
+ * iProduct check. WebHID may give several HIDDevice objects for one USB device: the one with the OEP collection is taken.
  * @param {{ filters?: object[] }} [opts]
  * @returns {Promise<HidDeviceLike>}
  */
@@ -113,7 +114,6 @@ export async function requestHidProbe({ filters } = {}) {
   });
   const device = devices.find((d) => findVendorReports(d.collections));
   if (!device) throw new Error(devices.length ? 'the device has no OEP HID collection (usage page 0xFF4F, usage 0x45)' : 'no device chosen');
-  if (!isOepDevice(device.vendorId, device.productId, device.productName)) throw new Error(`not an OEP probe: ${device.productName ?? 'no product name'}`);
   return device;
 }
 
