@@ -8,9 +8,6 @@ import * as reg from './registry.js';
 
 /** @typedef {import('./usbtypes.js').UsbDevice} UsbDevice */
 
-/** The reference firmware's VID:PID (registry usb): never the way to tell a probe - its iProduct is (core §3.3). */
-export const REFERENCE_VENDOR_ID = reg.USB.reference_vid;
-export const REFERENCE_PRODUCT_ID = reg.USB.reference_pid;
 /** The OEP vendor interface: bInterfaceClass 0xFF, bInterfaceSubClass 0x4F, bInterfaceProtocol 0x45 (core §3.3). */
 export const VENDOR_CLASS = reg.USB.vendor_bulk_class;
 export const VENDOR_SUBCLASS = reg.USB.vendor_bulk_subclass;

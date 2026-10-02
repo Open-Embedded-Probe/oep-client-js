@@ -7,7 +7,7 @@ import { requestSerialPort, webSerialTransport } from './webserial.js';
 import { requestUsbProbe, webUsbTransport } from './webusb.js';
 import { requestHidProbe, webHidTransport } from './webhid.js';
 
-export { webSerialTransport, requestSerialPort, getSerialPorts, OEP_SERIAL_FILTERS } from './webserial.js';
+export { webSerialTransport, requestSerialPort, getSerialPorts } from './webserial.js';
 export { webUsbTransport, requestUsbProbe, getUsbProbes, usbUnitId, isOepDevice } from './webusb.js';
 export { webHidTransport, requestHidProbe, packHidReports, unpackHidReport, findVendorReports } from './webhid.js';
 export { requestDfuDevice, getDfuDevices, updateFirmware } from './dfu.js';
@@ -20,10 +20,10 @@ export { connect } from '../open.js';
  * @param {import('./webserial.js').SerialPortLike} [port]
  * portSpeed: the candidates to try once connected (port_speed, oep-core §3.5; true = the default 500000; the lock is
  * taken and kept, see connect), `flows` / `verify` for the full form, `record` (localStorage, by unit_id).
- * @param {import('../open.js').SpeedOptions & { baudRate?: number, oepOnly?: boolean, timeoutMs?: number, leaseMs?: number, owner?: string }} [opts]
+ * @param {import('../open.js').SpeedOptions & { baudRate?: number, filters?: import('./webserial.js').SerialPortFilter[], timeoutMs?: number, leaseMs?: number, owner?: string }} [opts]
  */
 export async function openWebSerial(port, opts = {}) {
-  const p = port ?? await requestSerialPort({ oepOnly: opts.oepOnly });
+  const p = port ?? await requestSerialPort({ filters: opts.filters });
   return connect(await webSerialTransport(p, opts), opts);
 }
 
