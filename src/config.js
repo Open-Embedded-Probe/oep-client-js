@@ -35,7 +35,7 @@ export const MODE = dashed(CFG.enum.bind_mode);                     // last-rese
 export const STREAM = { slot: CFG.enum.bind_stream.slot_console, uart: CFG.enum.bind_stream.fixture_uart };
 /** @type {Record<string, number>} */
 export const MECHANISM = { ...reg.TARGET_CONSOLE.enum.mechanism };  // sdi, dmdata, dmseq, none (0xFF: no console)
-export const IDLE = dashed(CFG.enum.idle_mode);                     // hi-z, pull-up, pull-down
+export const IDLE = dashed(CFG.enum.idle_mode);                     // hi-z, pull-up, pull-down, output-low, output-high
 /** @type {Record<string, number>} */
 export const IDLE_CLOCK = { ...reg.WIRE_RVSWD.enum.idle_clock };    // a slot's idle_clock (oep-if-debug §3)
 export const SLOT_STATE = byValue(CFG.enum.slot_state);
@@ -77,10 +77,16 @@ export class Label {
   value() { return new Writer().u16(this.channel).raw(utf8(this.text)).done(); }
 }
 
+/**
+ * The state of a channel no plan or connection uses (probe.config §1): at boot and after every release. An output mode
+ * keeps driving that level while the channel is free (a target's power switch kept on), and a gpio plan that takes the
+ * channel keeps it until its first set (fixture §1); a probe that cannot drive the channel refuses it unsupported.
+ */
 export class Idle {
   static TAG = ITEM.idle;
-  /** @param {{ channel: number, mode?: string }} o  mode: hi-z, pull-up (default), pull-down */
-  constructor({ channel, mode = 'pull-up' }) { this.channel = channel; this.mode = mode; }
+  /** @param {{ channel: number, mode?: string }} o  mode: hi-z, pull-up (default), pull-down, output-low, output-high
+   *   (output_low / output_high too: underscores become hyphens) */
+  constructor({ channel, mode = 'pull-up' }) { this.channel = channel; this.mode = mode.replace(/_/g, '-'); }
   key() { return [this.channel]; }
   value() { return new Writer().u16(this.channel).u8(valueOf(IDLE, this.mode, 'idle mode')).done(); }
 }
@@ -454,4 +460,56 @@ export class ProbeConfig extends Interface {
       firstBind += nBinds;
     }
   }
+}
+
+/** The label names of a target's power and reset lines (host-development-guide §8.1): `nrst` its reset, `power_hi`
+ * high powers it, `power_lo` low powers it. On a probe with several slots they are `<slot name>.<name>`. */
+export const LINE_NAMES = Object.freeze(['nrst', 'power_hi', 'power_lo']);
+
+/** findLine could not tell which channel is meant; `candidates` holds [label text, channel]. */
+export class AmbiguousLine extends Error {
+  /** @param {string} message @param {[string, number][]} candidates */
+  constructor(message, candidates) { super(message); this.name = 'AmbiguousLine'; this.candidates = candidates; }
+}
+
+/**
+ * The channel labelled for `name` (nrst, power_hi, power_lo: host-development-guide §8.1), or null when there is none.
+ * hstOrItems: a Host (its settings are read: ProbeConfig items, no lock) or the decoded items. slot: the slot's name or
+ * number; omitted, the probe's one slot.
+ *
+ * `<slot>.<name>` first, then the bare `name` - the bare name only while the settings hold at most one slot (a bare name
+ * is for a one-slot probe). With several slots and no slot, or two channels with the same label, it throws
+ * AmbiguousLine listing the candidates.
+ * @param {import('./host.js').Host | (Item | { tag: number, value: Uint8Array })[]} hstOrItems
+ * @param {string} name @param {number | string | null} [slot]
+ * @returns {Promise<number | null>}
+ */
+export async function findLine(hstOrItems, name, slot = null) {
+  const items = Array.isArray(hstOrItems) ? hstOrItems : await (await ProbeConfig.open(hstOrItems)).items();
+  /** @type {[string, number][]} */
+  const labels = items.filter((i) => i instanceof Label).map((i) => [/** @type {Label} */ (i).text, /** @type {Label} */ (i).channel]);
+  const slots = /** @type {Slot[]} */ (items.filter((i) => i instanceof Slot));
+  if (typeof slot === 'number') {
+    const named = slots.find((s) => s.slot === slot);
+    if (!named) throw new RangeError(`no slot ${slot} in the probe's settings`);
+    slot = named.name;
+  }
+  /** @param {[string, number]} a @param {[string, number]} b */
+  const order = (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1]);
+  if (slot == null && slots.length > 1) {
+    const candidates = labels.filter(([t]) => t === name || t.endsWith(`.${name}`)).sort(order);
+    if (candidates.length) {
+      const listed = candidates.map(([t, c]) => `${t} (channel ${c})`).join(', ');
+      throw new AmbiguousLine(`${name}: ${slots.length} slots and no slot given; candidates: ${listed}`, candidates);
+    }
+    return null;
+  }
+  if (slot == null && slots.length) slot = slots[0].name;
+  const texts = [...(slot != null ? [`${slot}.${name}`] : []), ...(slots.length <= 1 ? [name] : [])];
+  for (const t of texts) {
+    const found = labels.filter(([x]) => x === t).map(([, c]) => c).sort((a, b) => a - b);
+    if (found.length > 1) throw new AmbiguousLine(`${t}: on ${found.length} channels`, found.map((c) => [t, c]));
+    if (found.length) return found[0];
+  }
+  return null;
 }
