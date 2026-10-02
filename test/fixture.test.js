@@ -162,7 +162,7 @@ test('gpio set is a list in order, only planned channels', { skip: !haveFake }, 
     assert.deepEqual(log.at(-1)?.[2], Uint8Array.of(3, 23, 0, 5, 5, 0, 4, 23, 0, 6));
     assert.deepEqual(await g.read([23, 5]), [1, 1]);
     const raw = await hst.request(g.fn, Gpio.READ, Uint8Array.of(2, 23, 0, 5, 0), { locked: false });
-    assert.deepEqual([...raw.payload], [2, 1, 1]);                        // n(u8) n x level [TLV] (fixture §1)
+    assert.deepEqual([...raw.payload], [2, 1, 1, 0x01, 2, 0xff, 2]);      // n(u8) n x level, TLV drive (fixture §1 / §1.1)
     await assert.rejects(g.set([[5, 8]]), (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);   // not a defined mode
     const e = await g.set([[5, Gpio.OUTPUT_LOW], [40, Gpio.OUTPUT_LOW]]).then(() => null, (x) => x);
     assert.ok(e instanceof GpioUnavailable && e instanceof Unavailable);

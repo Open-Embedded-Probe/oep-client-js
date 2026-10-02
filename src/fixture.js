@@ -6,7 +6,7 @@
 // 3 = MISO, 4 = CS. Only channels the plan assigned can be used.
 
 import * as reg from './registry.js';
-import { Writer, concat, getU32, getU64 } from './bytes.js';
+import { Writer, concat, getU16, getU32, getU64 } from './bytes.js';
 import * as m from './message.js';
 import { Unavailable } from './errors.js';
 import { Interface, describe } from './core.js';
@@ -16,6 +16,10 @@ import { PositionStream, StreamIO } from './console.js';
 const GPIO = reg.FIXTURE_GPIO, UART = reg.FIXTURE_UART, I2C = reg.FIXTURE_I2C_TARGET, SPI = reg.FIXTURE_SPI_TARGET;
 const MODE = GPIO.enum.mode;
 const TAG_INDEX = GPIO.tlv.unavailable_payload.index;   // 0x40: the list position of what was refused
+/** drive_kind (fixture §1.1): 0 level (a number of the probe's drive_levels), 1 max_ma (an mA ceiling) */
+export const DRIVE_KIND = /** @type {{ level: number, max_ma: number }} */ (GPIO.enum.drive_kind);
+/** read's drive TLV for a channel not driven in mode 3 / 4 */
+export const NOT_DRIVEN = GPIO.enum.drive_read.not_driven;
 
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -30,16 +34,79 @@ export class GpioUnavailable extends Unavailable {
 }
 
 /**
+ * An output strength (oep-if-fixture §1.1), for gpio set and the settings' idle: a level number of the probe's
+ * drive_levels (kind 0), or an mA ceiling (kind 1: the strongest level of about that many mA or less, level 0 when every
+ * level is stronger). A ceiling carries over between probes; a level number is one probe's list.
+ */
+export class Drive {
+  /** @param {number} kind  DRIVE_KIND.level / DRIVE_KIND.max_ma @param {number} value  u16 */
+  constructor(kind, value) { this.kind = kind; this.value = value; Object.freeze(this); }
+
+  /** A level number of the probe's drive_levels. @param {number} n */
+  static level(n) { return new Drive(DRIVE_KIND.level, n); }
+
+  /** An mA ceiling. @param {number} ma */
+  static maxMa(ma) { return new Drive(DRIVE_KIND.max_ma, ma); }
+
+  /** A Drive as it is, a number as a level number. @param {Drive | number} drive */
+  static of(drive) { return drive instanceof Drive ? drive : Drive.level(Number(drive)); }
+
+  /** kind(u8) value(u16), the form both places use. */
+  pack() {
+    if (!Object.values(DRIVE_KIND).includes(this.kind) || !Number.isInteger(this.value) || this.value < 0 || this.value > 0xffff) {
+      throw new RangeError(`drive kind ${this.kind} value ${this.value}: kind 0 (level) or 1 (max_ma), value u16`);
+    }
+    return new Writer().u8(this.kind).u16(this.value).done();
+  }
+
+  /** @param {Uint8Array} data  kind(u8) value(u16) */
+  static unpack(data) { return new Drive(data[0], getU16(data, 1)); }
+
+  toString() { return this.kind === DRIVE_KIND.level ? `level ${this.value}` : `<= ${this.value} mA`; }
+}
+
+/**
+ * describe drive_levels (fixture §1.1): the strengths the probe selects - approximate mA per level in ascending order
+ * (a level's number is its position) - and the default level.
+ */
+export class DriveLevels {
+  /** @param {number} defaultLevel @param {number[]} ma */
+  constructor(defaultLevel, ma) { this.defaultLevel = defaultLevel; this.ma = Object.freeze([...ma]); Object.freeze(this); }
+
+  /** The level a Drive selects here (null: a level number past the list - the probe ignores that drive).
+   * @param {Drive | number} drive @returns {number | null} */
+  pick(drive) {
+    const d = Drive.of(drive);
+    if (d.kind === DRIVE_KIND.level) return d.value < this.ma.length ? d.value : null;
+    let best = 0;
+    this.ma.forEach((x, i) => { if (x <= d.value) best = i; });
+    return best;
+  }
+}
+
+/** read's answer: a level (0 / 1) per channel, and - from a probe that declares drive_levels - the level each channel is
+ * driven at in mode 3 / 4 (null when it is not driven so); `drive` is null from a probe without them.
+ * @typedef {{ levels: number[], drive: (number | null)[] | null }} GpioRead */
+
+/** One gpio set element: [channel, mode] or [channel, mode, drive] (drive: a Drive, a level number, or null: none).
+ * @typedef {[number, number] | [number, number, Drive | number | null | undefined]} GpioElement */
+
+/**
  * oep.fixture.gpio. `set` applies [channel, mode] pairs in order in one request (pull NRST, then release it); a
  * channel the plan did not assign or a mode the probe lacks rejects the whole list as unavailable (GpioUnavailable:
  * .channels, and its position .index, TLV 0x40). The open-drain modes never drive a line high: the way to move a
- * target's reset line.
+ * target's reset line. An output element (mode 3 / 4) may carry a strength (`Drive`, or a level number) on a probe
+ * that declares drive_levels (`driveLevels()`); without one it is driven at the idle item's strength, else the default.
  */
 export class Gpio extends Interface {
   static NAME = 'oep.fixture.gpio';
   static REVISION = 1;
   static SET = GPIO.op.set;
   static READ = GPIO.op.read;
+  static TAG_DRIVE = GPIO.tlv.set.drive;                     // set's drive TLV (non-critical, one per element)
+  static TAG_READ_DRIVE = GPIO.tlv.read_answer.drive;
+  static TAG_MODES = GPIO.tlv.describe.modes;
+  static TAG_DRIVE_LEVELS = GPIO.tlv.describe.drive_levels;
   static INPUT = MODE.input;
   static INPUT_PULLUP = MODE.input_pullup;
   static INPUT_PULLDOWN = MODE.input_pulldown;
@@ -49,35 +116,70 @@ export class Gpio extends Interface {
   static OPEN_DRAIN_RELEASE = MODE.open_drain_release;
   static INPUT_PULLUP_PULLDOWN = MODE.input_pullup_pulldown;   // both pulls: a weak mid level
 
-  /** @param {[number, number][]} pairs */
-  static setBody(pairs) {
-    const w = new Writer().u8(pairs.length);
-    for (const [ch, mode] of pairs) w.u16(ch).u8(mode);
-    return w.done();
+  /** n(u8) n x (channel(u16) mode(u8)), then a drive TLV (index kind value, non-critical) for each element that carries
+   * a third item (a Drive or a level number; null / undefined: none). @param {GpioElement[]} elements */
+  static setBody(elements) {
+    const w = new Writer().u8(elements.length);
+    for (const [ch, mode] of elements) w.u16(ch).u8(mode);
+    /** @type {Uint8Array[]} */
+    const tlvs = [];
+    elements.forEach((e, i) => {
+      const drive = e[2];
+      if (drive !== undefined && drive !== null) tlvs.push(m.tlv(Gpio.TAG_DRIVE, concat(Uint8Array.of(i), Drive.of(drive).pack())));
+    });
+    return concat(w.done(), ...tlvs);
   }
 
-  /** [channel, mode] pairs, applied in order. @param {[number, number][]} pairs */
-  async set(pairs) {
+  /** [channel, mode] or [channel, mode, drive] elements, applied in order; drive only on mode 3 / 4 (anything else is
+   * rejected malformed). -> the answer's ignored list (core §2.3): one TAG_DRIVE per drive the probe did not apply (a
+   * level number past its list, or a probe without drive_levels). `readState` shows the level in force.
+   * @param {GpioElement[]} elements @returns {Promise<number[]>} */
+  async set(elements) {
     try {
-      await this.call(Gpio.SET, Gpio.setBody(pairs));
+      const r = await this.call(Gpio.SET, Gpio.setBody(elements));
+      return new m.Reader(r.payload).tail().ignored;
     } catch (e) {
       if (e instanceof Unavailable && !(e instanceof GpioUnavailable)) throw new GpioUnavailable(e.result);
       throw e;
     }
   }
 
+  /** describe drive_levels (fixture §1.1): null when the probe cannot switch the output strength.
+   * @returns {Promise<DriveLevels | null>} */
+  async driveLevels() {
+    for (const [tag, v] of await describe(this.host, this.fn)) {
+      if ((tag & ~CRITICAL) === Gpio.TAG_DRIVE_LEVELS && v.length >= 2 && v.length >= 2 + 2 * v[1]) {
+        return new DriveLevels(v[0], Array.from({ length: v[1] }, (_, i) => getU16(v, 2 + 2 * i)));
+      }
+    }
+    return null;
+  }
+
+  /** describe modes: a u32 bit set, bit n = mode n (0xFF when not declared). @returns {Promise<number>} */
+  async modes() {
+    for (const [tag, v] of await describe(this.host, this.fn)) {
+      if ((tag & ~CRITICAL) === Gpio.TAG_MODES && v.length >= 4) return getU32(v);
+    }
+    return 0xff;
+  }
+
   /** @param {number} channel @param {number} mode */
   configure(channel, mode) { return this.set([[channel, mode]]); }
 
   /** -> one level (0 / 1) per channel. Lock-free. The answer is n(u8) n x level [TLV] (fixture §1).
-   * @param {number[]} channels */
-  async read(channels) {
+   * @param {number[]} channels @returns {Promise<number[]>} */
+  async read(channels) { return (await this.readState(channels)).levels; }
+
+  /** -> the levels and, from a probe that declares drive_levels, the level each channel is driven at in mode 3 / 4
+   * (read's answer TLV drive, fixture §1.1; the level's mA is in `driveLevels()`). Lock-free.
+   * @param {number[]} channels @returns {Promise<GpioRead>} */
+  async readState(channels) {
     const w = new Writer().u8(channels.length);
     for (const c of channels) w.u16(c);
     const rd = new m.Reader((await this.call(Gpio.READ, w.done(), { locked: false })).payload);
     const levels = Array.from(rd.counted(1));
-    rd.tail();
-    return levels;
+    const raw = rd.tail().all(Gpio.TAG_READ_DRIVE)[0];
+    return { levels, drive: raw === undefined ? null : Array.from(raw, (b) => (b === NOT_DRIVEN ? null : b)) };
   }
 
   /** @param {number} channel */
