@@ -6,10 +6,11 @@
 // 3 = MISO, 4 = CS. Only channels the plan assigned can be used.
 
 import * as reg from './registry.js';
-import { Writer, concat, getU64 } from './bytes.js';
+import { Writer, concat, getU32, getU64 } from './bytes.js';
 import * as m from './message.js';
 import { Unavailable } from './errors.js';
-import { Interface } from './core.js';
+import { Interface, describe } from './core.js';
+import { CRITICAL, decodeDescription } from './catalog.js';
 import { PositionStream, StreamIO } from './console.js';
 
 const GPIO = reg.FIXTURE_GPIO, UART = reg.FIXTURE_UART, I2C = reg.FIXTURE_I2C_TARGET, SPI = reg.FIXTURE_SPI_TARGET;
@@ -192,6 +193,29 @@ export class FixtureUartIO extends StreamIO {
  * waiting for readRx; rxFrames: received so far; txSlots: preloaded and not yet read (mode 3); errors: overflows,
  * receive errors and unarmed writes dropped (u32). */
 
+/** @typedef {{ maxLength: number | null, maxClockHz: number | null, features: number, queueDepth: number | null }} TargetDeclarations
+ * A fixture target's describe (fixture §3 / §4): maxLength (bytes a frame / transfer), maxClockHz (the verified bus
+ * clock limit), features (bits; 0 when not declared), queueDepth (tag 0x40: frames / transfers the queue holds; i2c
+ * mode 3 also the most unread preload slots). null: not declared. */
+/** @typedef {TargetDeclarations & { maxStretchUs: number | null }} I2cTargetDeclarations
+ * maxStretchUs (tag 0x41, u32): the largest stretchUs stretch() accepts; null when not declared (a probe declares it
+ * exactly when features has bit1). */
+
+/** The describe of fixture target `iface` decoded (cached on the host like every describe).
+ * @param {Interface} iface @returns {Promise<{ d: import('./catalog.js').Description, own: Map<number, Uint8Array> }>} */
+async function targetDescribe(iface) {
+  const tlvs = await describe(iface.host, iface.fn);
+  /** @type {Map<number, Uint8Array>} */
+  const own = new Map();
+  for (const [tag, v] of tlvs) if (!own.has(tag & ~CRITICAL)) own.set(tag & ~CRITICAL, v);
+  return { d: decodeDescription(tlvs), own };
+}
+
+/** @param {Map<number, Uint8Array>} own @param {number} tag */
+const ownU8 = (own, tag) => { const v = own.get(tag); return v && v.length >= 1 ? v[0] : null; };
+/** @param {Map<number, Uint8Array>} own @param {number} tag */
+const ownU32 = (own, tag) => { const v = own.get(tag); return v && v.length >= 4 ? getU32(v) : null; };
+
 /** @param {m.Tail} tail @param {number} tag */
 const nsOf = (tail, tag) => { const v = tail.get(tag); return v && v.length >= 8 ? getU64(v) : null; };
 
@@ -215,6 +239,18 @@ export class I2cTarget extends Interface {
   static ROLE_SDA = I2C.enum.role.sda;
   static ROLE_SCL = I2C.enum.role.scl;
   static TAG_NS = I2C.tlv.read_rx_answer.ns;
+  static TAG_QUEUE_DEPTH = I2C.tlv.describe.queue_depth;
+  static TAG_MAX_STRETCH_US = I2C.tlv.describe.max_stretch_us;
+  static FEATURE_PRELOADED_TX = I2C.enum.features.preloaded_tx;
+  static FEATURE_STRETCH = I2C.enum.features.stretch;
+
+  /** What the probe declares for this target (describe): maxLength, maxClockHz, features, queueDepth, maxStretchUs.
+   * @returns {Promise<I2cTargetDeclarations>} */
+  async declarations() {
+    const { d, own } = await targetDescribe(this);
+    return { maxLength: d.maxLength, maxClockHz: d.maxClockHz, features: d.features ?? 0,
+      queueDepth: ownU8(own, I2cTarget.TAG_QUEUE_DEPTH), maxStretchUs: ownU32(own, I2cTarget.TAG_MAX_STRETCH_US) };
+  }
 
   /** @type {bigint | null} when the probe received the last frame readRx gave (its clock, ns), when it says */
   lastNs = null;
@@ -256,7 +292,8 @@ export class I2cTarget extends Interface {
 
   async reset() { await this.call(I2cTarget.RESET); }
 
-  /** Hold SCL low for stretchUs after each received byte (0 = off); probes declaring features bit1 only.
+  /** Hold SCL low for stretchUs after each received byte (0 = off); probes declaring features bit1 only. Above the
+   * declared maxStretchUs: Unsupported. Accepted in any state; configure and reset keep it, the plan's release clears it.
    * @param {number} stretchUs */
   async stretch(stretchUs) { await this.call(I2cTarget.STRETCH, new Writer().u32(stretchUs).done()); }
 }
@@ -282,6 +319,16 @@ export class SpiTarget extends Interface {
   static MSB_FIRST = 0;
   static LSB_FIRST = 1;
   static TAG_NS = SPI.tlv.read_rx_answer.ns;
+  static TAG_QUEUE_DEPTH = SPI.tlv.describe.queue_depth;
+  static FEATURE_LSB_FIRST = SPI.enum.features.lsb_first;
+
+  /** What the probe declares for this target (describe): maxLength, maxClockHz, features, queueDepth.
+   * @returns {Promise<TargetDeclarations>} */
+  async declarations() {
+    const { d, own } = await targetDescribe(this);
+    return { maxLength: d.maxLength, maxClockHz: d.maxClockHz, features: d.features ?? 0,
+      queueDepth: ownU8(own, SpiTarget.TAG_QUEUE_DEPTH) };
+  }
 
   /** @type {bigint | null} when the last transaction readRx gave ended on the probe's clock (TLV ns), when it says */
   lastNs = null;
