@@ -4,9 +4,15 @@
 //
 // Framing follows the kind of transport. A serial port (USB CDC, USB-Serial/JTAG, a UART bridge) carries COBS + CRC
 // frames 0x00 <COBS> 0x00 and the probe's raw bytes on the same line: every span between 0x00s is a candidate, and one
-// that does not decode is noise (§3.1, §3.4). Vendor bulk, HID and TCP carry length(u16) message; a length that
-// cannot be right, or a frame that stops half way, drops what was gathered (the requests waiting then time out and go
-// once more).
+// that does not decode is noise (§3.1, §3.4). Vendor bulk, HID and TCP carry length(u16) message, with no CRC: a
+// result for no request waiting, a length that cannot be right (over max_frame), a frame that stops half way, or a
+// request with no answer in time loses the boundaries, and the link finds them again as oep-core §5.1 says (`resync`):
+// it reads and discards until the input has been quiet for 50 ms, sends a confirm and waits for the result with its
+// corr (up to 3 tries; other results meanwhile are read past), then the requests still waiting go once more with the
+// same corr (§5.2; one already sent twice fails with FramingLost). When pushes keep the input from going quiet for
+// 1 s, the host's unsubscribe and end go out once, blind (both harmless twice); the session requests waiting then are
+// not sent again (the session ended). New requests wait for the resync. While the transport is being probed (core
+// §3.3) there is no resync: its confirms would be more than the probing rule allows.
 //
 // A request whose answer does not come in time goes once more with the same corr: the probe keeps the lock holder's
 // recent results and answers the repeat from them, so a state-changing request does not run twice (§5.2).
@@ -43,11 +49,20 @@
 import * as reg from './registry.js';
 import * as cobs from './cobs.js';
 import { COMPLETED, CORE_FN, OP, ROLE_DATA, ROLE_EVENT, ROLE_RESULT, ROLE_SESSION, Request, CONFIRM_REQUEST } from './message.js';
-import { Timeout } from './errors.js';
+import { FramingLost, Timeout } from './errors.js';
+import { MAX_REVISION, MIN_REVISION } from './host.js';
 
 /** a serial port's answer bytes in flight at most (Linux cdc_acm lost 8 x 1008 B answer bursts; 7 passed) */
 const ANSWER_BURST_MAX = 6144;
 const STALL_MS = reg.TIMING.probe_frame_gap_ms;   // a frame whose bytes stop this long is not coming
+/** Length-prefixed links: the resync reads and discards until the input has been quiet this long (core §5.1). */
+export const RESYNC_QUIET_MS = reg.TIMING.resync_quiet_ms;
+/** ... and when it is still not quiet after this, sends the blind stops (unsubscribe, end). */
+export const RESYNC_NOISY_MS = 1000;
+/** ... confirms (each after a quiet input) before the resync gives up. */
+export const RESYNC_TRIES = 3;
+/** The link's own confirms (the resync, confirmRaw) ask for the revisions this client handles (core §7.1). */
+const OWN_CONFIRM = Uint8Array.from([...CONFIRM_REQUEST, MIN_REVISION, MAX_REVISION]);
 /** After a baud change, before the first byte at the new rate (an M5Stack ATOM's FTDI lost it at once, core §3.5). */
 export const SWITCH_SETTLE_MS = 20;
 /** A committed rate goes back after this with no good frame on the port (core §3.5; idle_ms 0 and longer mean it). */
@@ -162,6 +177,12 @@ export class Link {
     /** @type {Promise<boolean> | null} */ this.falling = null;
     /** @type {(() => Uint8Array) | null} a keepalive in the session (bound by Host) */ this.keepaliveFrame = null;
     this.lastTx = Date.now();                // when the link last wrote (raised: quiet for KEEPALIVE_MS = a keepalive)
+    /** @type {Promise<void> | null} length-prefixed: the §5.1 resync under way (new requests wait for it) */ this.resyncing = null;
+    this.discarding = false;                 // ... reading and discarding until the input is quiet
+    /** @type {{ corr: number, done: (ok: boolean) => void } | null} ... its confirm, waiting */ this.resyncWaiter = null;
+    /** @type {() => Uint8Array[]} the host's blind stops (unsubscribe every subscription, end; bound by Host) */ this.blind = () => [];
+    this.endedBlind = false;                 // the last resync sent the blind end: the session is over
+    this.probing = false;                    // the probing rule runs (open.js): no resync
   }
 
   /** Begin reading (once). */
@@ -193,11 +214,13 @@ export class Link {
   /** @param {Uint8Array} chunk */
   onData(chunk) {
     const now = Date.now();
-    if (this.framing === 'length' && this.buf.length && now - this.lastRx > STALL_MS) {
-      this.buf = new Uint8Array(0);   // a frame that stopped half way: its rest is not coming
-      this.stats.resyncs++;
-    }
+    const stalled = this.framing === 'length' && this.buf.length && now - this.lastRx > STALL_MS;
     this.lastRx = now;
+    if (this.discarding) return;             // the resync reads and discards until the input is quiet (§5.1)
+    if (stalled) {                           // a frame that stopped half way: its rest is not coming
+      this.framingLost();
+      if (this.discarding) return;           // the resync began: this chunk is discarded too
+    }
     const joined = new Uint8Array(this.buf.length + chunk.length);
     joined.set(this.buf);
     joined.set(chunk, this.buf.length);
@@ -235,9 +258,8 @@ export class Link {
       if (this.buf.length < 2) return;
       const length = this.buf[0] | (this.buf[1] << 8);
       if (length === 0) { this.buf = this.buf.slice(2); continue; }   // the reserved keepalive
-      if (length > this.maxFrame) {           // the boundaries are lost: start again from what comes next
-        this.buf = new Uint8Array(0);
-        this.stats.resyncs++;
+      if (length > this.maxFrame) {           // the boundaries are lost (§5.1)
+        this.framingLost();
         return;
       }
       if (this.buf.length < 2 + length) return;
@@ -252,8 +274,17 @@ export class Link {
     const role = frame[0];
     if (role === ROLE_RESULT && frame.length >= 3) {
       const corr = frame[1] | (frame[2] << 8);
+      if (this.resyncWaiter) {                  // the resync's confirm: any result with its corr proves the boundaries
+        if (corr === this.resyncWaiter.corr) this.resyncWaiter.done(true);
+        else this.stats.stale++;                // read past until then
+        return;
+      }
       const p = this.pending.get(corr);
-      if (!p) { this.stats.stale++; return; }   // a late answer to a request already answered, or someone else's
+      if (!p) {                                 // a late answer to a request already answered, or someone else's
+        this.stats.stale++;
+        if (this.framing === 'length') this.framingLost(false);   // no CRC here: the boundaries may be off (§5.1)
+        return;
+      }
       this.pending.delete(corr);
       clearTimeout(p.timer);
       p.resolve(frame);
@@ -346,6 +377,7 @@ export class Link {
    * @returns {Promise<Uint8Array>}
    */
   sendOnce(message, { timeoutMs = this.waitMs(), resend = this.resend } = {}) {
+    if (this.resyncing) return this.resyncing.then(() => this.sendOnce(message, { timeoutMs, resend }));
     if (this.closed) return Promise.reject(this.closeError instanceof Error ? this.closeError : new Error('the link is closed'));
     const corr = message[1] | (message[2] << 8);
     return new Promise((resolve, reject) => {
@@ -354,6 +386,15 @@ export class Link {
       const arm = () => {
         p.timer = setTimeout(() => {
           this.count('lost');               // no good answer within the wait (host guide §7.3.2)
+          if (this.framing === 'length' && !this.probing) {
+            // length-prefixed: resync first (§5.1), then it goes once more (§5.2) - or, sent twice already, it fails
+            if (p.attempt !== 0) {
+              this.pending.delete(corr);
+              reject(new Timeout(`no result from the probe (corr ${corr})`));
+            }
+            this.startResync();
+            return;
+          }
           if (p.attempt === 0) {
             p.attempt = 1;
             this.stats.retries++;
@@ -370,6 +411,124 @@ export class Link {
       arm();
       this.write(this.framed(message)).catch((e) => { clearTimeout(p.timer); this.pending.delete(corr); reject(e); });
     });
+  }
+
+  // ---- the resync of length-prefixed frames (core §5.1) ------------------------------------------------------
+
+  /** The boundaries are lost: what was gathered is dropped. During the resync's confirm that try fails (the next one
+   * reads and discards again); otherwise a resync starts (length-prefixed, not while probing).
+   * @param {boolean} [drop] drop the buffer (false: a stray result, the rest is still framed as it was) */
+  framingLost(drop = true) {
+    if (drop) this.buf = new Uint8Array(0);
+    if (this.resyncWaiter) { this.buf = new Uint8Array(0); this.resyncWaiter.done(false); return; }
+    if (this.framing === 'length' && !this.probing) this.startResync();
+  }
+
+  /** Begin the §5.1 resync (once: a second call while it runs joins it). The waits of the requests in flight stop
+   * until it is over. */
+  startResync() {
+    if (this.resyncing) return this.resyncing;
+    this.stats.resyncs++;
+    for (const p of this.pending.values()) clearTimeout(p.timer);
+    const run = this.resync().finally(() => { this.resyncing = null; });
+    this.resyncing = run;
+    return run;
+  }
+
+  /** core §5.1: read and discard until the input is quiet for RESYNC_QUIET_MS, then a confirm (a read, safe to send)
+   * whose answer, by its corr, proves the boundaries; RESYNC_TRIES of them. Not quiet in RESYNC_NOISY_MS (pushes keep
+   * coming): the host's unsubscribe and end go out once, blind. Then the requests still waiting go once more with
+   * the same corr; none back: every one fails with FramingLost. Never rejects. */
+  async resync() {
+    this.endedBlind = false;
+    let blindSent = false;
+    try {
+      for (let i = 0; i < RESYNC_TRIES; i++) {
+        this.discarding = true;
+        this.buf = new Uint8Array(0);
+        while (!(await this.quiet(RESYNC_QUIET_MS, RESYNC_NOISY_MS))) {
+          if (blindSent || this.closed) {
+            this.failPending(new FramingLost('resync: the input never went quiet, even after unsubscribe and end'));
+            return;
+          }
+          blindSent = true;
+          const stops = this.blind();
+          if (stops.length) {
+            await this.writeAll(stops);
+            this.endedBlind = true;          // the session ended: a session request sent again would meet no_session
+          }
+        }
+        this.discarding = false;
+        this.buf = new Uint8Array(0);
+        if (this.closed) break;
+        if (await this.resyncConfirm()) {
+          await this.resendPending();
+          return;
+        }
+      }
+      this.failPending(new FramingLost(`resync: no confirm came back in ${RESYNC_TRIES} tries`));
+    } catch (e) {
+      this.failPending(e);
+    } finally {
+      this.discarding = false;
+      this.resyncWaiter = null;
+    }
+  }
+
+  /** true once nothing has arrived for quietMs; false when limitMs passed first. @param {number} quietMs @param {number} limitMs */
+  async quiet(quietMs, limitMs) {
+    const start = Date.now();
+    for (;;) {
+      const now = Date.now();
+      if (now - Math.max(start, this.lastRx) >= quietMs) return true;
+      if (now - start >= limitMs || this.closed) return false;
+      await new Promise((r) => setTimeout(r, Math.min(10, quietMs)));
+    }
+  }
+
+  /** The resync's confirm: true when a result with its corr came within the link's wait. */
+  resyncConfirm() {
+    const corr = this.corrSource();
+    return new Promise((resolve) => {
+      /** @param {boolean} ok */
+      const done = (ok) => { clearTimeout(timer); this.resyncWaiter = null; resolve(ok); };
+      const timer = setTimeout(() => done(false), this.waitMs());
+      this.resyncWaiter = { corr, done };
+      this.write(this.framed(new Request(corr, CORE_FN, OP.confirm, OWN_CONFIRM).pack())).catch(() => done(false));
+    });
+  }
+
+  /** After the resync: every request still waiting goes once more with the same corr (§5.2; the probe answers a repeat
+   * from what it kept), in the order sent. One sent twice already, and a session request after the blind end, fail. */
+  async resendPending() {
+    /** @type {Uint8Array[]} */ const again = [];
+    for (const [corr, p] of [...this.pending]) {
+      if (p.attempt !== 0 || (this.endedBlind && p.message[0] & ROLE_SESSION)) {
+        this.pending.delete(corr);
+        p.reject(new FramingLost(p.attempt !== 0 ? `the frame boundaries were lost again (corr ${corr}, already sent twice)`
+          : `the resync ended the session blind (corr ${corr} not sent again)`));
+        continue;
+      }
+      p.attempt = 1;
+      this.stats.retries++;
+      p.arm();
+      again.push(p.message);
+    }
+    if (again.length) await this.writeAll(again);
+  }
+
+  /** Each message in one write (one frame each, core §3.2), in order. @param {Uint8Array[]} messages */
+  async writeAll(messages) {
+    for (const msg of messages) await this.write(this.framed(msg));
+  }
+
+  /** @param {unknown} error */
+  failPending(error) {
+    for (const [corr, p] of [...this.pending]) {
+      clearTimeout(p.timer);
+      this.pending.delete(corr);
+      p.reject(error);
+    }
   }
 
   // ---- port_speed (core §3.5) -------------------------------------------------------------------------------
@@ -402,9 +561,7 @@ export class Link {
    * broken leftovers of the lost frames it follows: it keeps asking until its own answer or the deadline, not giving
    * up on the first broken one. @param {number} timeoutMs */
   async confirmRaw(timeoutMs) {
-    const confirm = new Uint8Array(CONFIRM_REQUEST.length + 2);
-    confirm.set(CONFIRM_REQUEST);
-    confirm[CONFIRM_REQUEST.length + 1] = 0xff;   // revisions 0..255
+    const confirm = OWN_CONFIRM;
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       try {

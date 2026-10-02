@@ -19,7 +19,7 @@ export { Host } from './host.js';
 export { Link } from './link.js';
 export { raiseSpeed, speedText } from './speed.js';
 export {
-  OepError, ProtocolError, ShortPayload, BadTlv, Rejected, Failed, NotV1, Timeout, InUse, NotOepProbe, UnitIdMismatch,
+  OepError, ProtocolError, ShortPayload, BadTlv, Rejected, Failed, NotV1, Timeout, FramingLost, InUse, NotOepProbe, UnitIdMismatch,
   Locked, NoSession, Expired,
   Busy, NoConnection, Unsupported, Unavailable,
 } from './errors.js';

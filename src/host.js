@@ -59,6 +59,7 @@ export class Host {
     }
     if (link && 'lease' in link) link.lease = () => (this.session !== null ? this.leaseMs : null);   // raised: bounds each wait
     if (link && 'sessionId' in link) link.sessionId = () => this.session;
+    if (link && 'blind' in link) link.blind = () => this.blindStop();   // the §5.1 resync's stops when pushes keep coming
   }
 
   nextCorr() { this.corr = (this.corr % 0xffff) + 1; return this.corr; }
@@ -284,5 +285,16 @@ export class Host {
   async unsubscribe(fn) {
     await this.call(m.CORE_FN, m.OP.unsubscribe, new Writer().u16(fn).done());
     this.subscriptions.delete(fn);
+  }
+
+  /** The requests a resync may send without confirming (core §5.1): unsubscribe every subscription and end the
+   * session - both harmless when run twice - for when pushes keep the input from going quiet. */
+  blindStop() {
+    if (this.session === null || !this.revision) return [];
+    const out = [...this.subscriptions].sort((a, b) => a - b).map((fn) =>
+      new m.Request(this.nextCorr(), m.CORE_FN, m.OP.unsubscribe, new Writer().u16(fn).done(), this.session).pack());
+    out.push(new m.Request(this.nextCorr(), m.CORE_FN, m.OP.end, new Uint8Array(), this.session).pack());
+    this.subscriptions.clear();
+    return out;
   }
 }

@@ -24,6 +24,9 @@ export class Failed extends OepError {
 export class NotV1 extends OepError {}
 /** No answer in time (after the one resend). */
 export class Timeout extends OepError {}
+/** A length-prefixed link lost its frame boundaries (oep-core §5.1) and could not find them again, or a request
+ * waiting then could not go once more (already resent, or a session request after the resync's blind end). */
+export class FramingLost extends OepError {}
 /** The lock is held by someone who keeps it going. */
 export class InUse extends OepError {}
 /** A device or port this host had not identified gave no valid confirm answer (core §3.3 probing rule): it was closed

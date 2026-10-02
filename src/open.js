@@ -21,6 +21,7 @@ export const PROBE_WAIT_MS = reg.TIMING.host_wait_add_ms;
  */
 async function probe(link, host, transport) {
   const saved = link.timeoutMs;
+  link.probing = true;                       // no §5.1 resync: its confirms would be more than the rule allows
   try {
     if (transport.framing === 'cobs' && transport.kind === 'serial') await link.waitBootSpeed();
     else if (transport.kind !== 'tcp') link.timeoutMs = PROBE_WAIT_MS;
@@ -33,6 +34,7 @@ async function probe(link, host, transport) {
     throw err;
   } finally {
     link.timeoutMs = saved;
+    link.probing = false;
   }
 }
 
