@@ -17,11 +17,12 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      # the fake probe the tests talk to over TCP (oep-client-python's fake_serve), from PyPI
+      # the fake probe the tests talk to over TCP (oep-client-python's fake_serve). The tests follow oep-client-python's
+      # main (this client and the fake move together), so take it from git, not from the last PyPI release
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install oep-client-python
+      - run: pip install "oep-client-python @ git+https://github.com/Open-Embedded-Probe/oep-client-python@main"
       - run: npm ci
       - run: npm run check
       - run: npm run build
