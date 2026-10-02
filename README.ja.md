@@ -37,13 +37,18 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   速さを変え（すぐに DTR / RTS を放す。esptool-js と同じ）、Node の `serialport` は `update` で変える。`end` と戻すの応答で link は
   すぐ起動時の速さに戻る。上げている間は `idleMs` の半分より短く（1 秒）黙れば keepalive を送り、長く黙る呼び出し側は
   `host.link.keepAlive()` で同じことをする。上げた速さで応答の来ない要求は起動時の速さに戻って port_speed_idle_max_ms + 1 秒の内に
-  confirm し（通らなければ Error。上げた速さへは戻さない）、そこでもう一度送る（待つ 1 回は lease の 4 分の 1 まで）。使っている間は
-  直近 3 秒のフレーム（50 未満なら判定しない）を見て、max(基準 × 2, 10 %) を超えて壊れ・失われたら降りる（port_speed の戻す、
-  起動時の速さ、confirm）。離れた速さはそのセッションの間は使わない（`speed.steppedDown`、`downWhy`、`stepDowns`）。
-  `record: true`（既定は OFF。パスか `speedrecord.SpeedRecord` でもよい）は通った / 通らなかった速さを 30 日残す ― Node では
-  （口のパス、unit_id）ごとに `~/.cache/oep-client/link-speed.json`（`$XDG_CACHE_HOME`。oep-client-python と同じファイル）、
-  ブラウザでは localStorage に unit_id ごと ― 通った速さを先頭に、通らなかった速さを外す（`report.skipped`）。oep-client-python と
-  同じ手順
+  confirm し（通らなければ Error。上げた速さへは戻さない）、そこでもう一度送る（待つ 1 回は lease の 4 分の 1 まで）。使っている間、
+  決めた速さの最初の 32 KiB と 1 秒（`probationBytes`、`probationMs`）は試用期間で、壊れ・失われが 3 以上かつ max(基準 × 2, 5 %) 超、
+  または応答が来なければ、確かめの失敗としてすぐ降りる（16 フレームの確かめは素早い関門として残す）。その後は直近 3 秒のフレーム
+  （50 未満なら判定しない）を見て、max(基準 × 2, 10 %) を超えて壊れ・失われたら降りる。降りるのは port_speed の戻す、起動時の速さ、
+  confirm の後、その呼び出しの候補のうちこのセッションで通らなかったものより下の次の候補を新しく試す → confirm → 確かめ → 決める
+  （残っていなければ起動時の速さ）。壊れた速さとそれより上はそのセッションの間は使わない（`speed.steppedDown`、`downWhy`、`to` と
+  `probation` を持つ `stepDowns`）。`maxTries` は 1 回の呼び出しで試す候補の数の上限（キャプチャの host は 2）。`record: true`
+  （既定は OFF。パスか `speedrecord.SpeedRecord` でもよい）は通った / 通らなかった速さを残す（通ったは 30 日、通らなかったは 1 日、
+  別の速さの破綻から 2 秒（`settleMs`）以内に測った失敗は「不明」）― Node では（口のパス、unit_id）ごとに
+  `~/.cache/oep-client/link-speed.json`（`$XDG_CACHE_HOME`。oep-client-python と同じファイル）、ブラウザでは localStorage に unit_id
+  ごと ― 通った速さを先頭に、通らなかった速さを外す（`report.skipped`。全部の候補が通らなかったとあれば、いちばん遅い候補を 1 回
+  試す: `report.retried`）。oep-client-python と同じ手順
 - block の操作: riscv-dm / arm-adi の `readBlock` / `writeBlock` は probe が宣言した `max_length` で区切る（`RiscvDm` / `ArmAdi` の
   `.maxLength` byte、`.maxWords`。oep-if-debug §4.5 / §6）。`MemAp` もそれで分け、block op を持つのに宣言しない probe は
   `riscv.NoMaxLength`。max_frame からは何も計算しない

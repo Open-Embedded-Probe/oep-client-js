@@ -21,8 +21,12 @@
 // frames it sees (good / broken / lost, host guide §7.3.2): at the boot speed into this session's baseline
 // (`baseCounts`), raised into the last IN_USE_WINDOW_MS (3 s) - IN_USE_MIN_FRAMES (50) or more of them with more than
 // max(2 x baseline, IN_USE_FLOOR 10 %) broken or lost step down at the next safe point: port_speed revert at the raised
-// rate, the boot speed, a confirm. Either way the rate is not used again in that session (`speed.steppedDown`,
-// `speed.downWhy`, `speed.stepDowns`). After a rate change the link waits SWITCH_SETTLE_MS before its first byte (the
+// rate, the boot speed, a confirm. A committed rate's first period is its probation (raiseSpeed's probationBytes and
+// probationMs: 32 KiB and 1 s), judged as the verify judges a flow (3 or more broken or lost over max(2 x baseline,
+// 5 %)): a breakage there is a verify failure and steps down at once. Either way the rate (and anything above it) is
+// not used again in that session, and the next lower candidate of that raiseSpeed call that has not failed gets a
+// fresh try -> confirm -> verify -> commit (none left: the boot speed) (`speed.steppedDown`, `speed.downWhy`,
+// `speed.stepDowns` with `to` and `probation`). After a rate change the link waits SWITCH_SETTLE_MS before its first byte (the
 // probe switches once its answer is out; an FTDI lost the first frame sent at once). A raised rate that verified only
 // one request at a time keeps that cap (`inflightCap`) on the pipelined exchange until the link is back at the boot
 // speed. A committed rate also goes back after idle_ms (at most 3 s) with no good frame: while raised, the link sends a
@@ -84,6 +88,23 @@ export const EXPECT_MARGIN_MS = 500;
 
 /** @typedef {{ resolve: (b: Uint8Array) => void, reject: (e: unknown) => void, timer: any, message: Uint8Array, attempt: number, arm: () => void }} Pending */
 
+/**
+ * A committed rate's first period in use (host guide §7.3.2 item 4): ends (passed) at a good frame once `bytes` have
+ * moved both ways and `ms` have passed since `started`; FLOW_FAIL_MIN (3) or more of its frames broken or lost and a
+ * ratio over `threshold` (max(2 x baseline, 5 %)) fail it.
+ * @typedef {{ rate: number, trial: import('./speed.js').SpeedTrial, bytes: number, ms: number, threshold: number,
+ *   started: number, settling: boolean, moved: number, frames: number, bad: number }} Probation
+ */
+
+/**
+ * What a step down in use may go to: the candidates the last raiseSpeed would try (after the record and maxTries), for
+ * the session it ran in, and how to try some of them (`go`, raiseSpeed's own procedure).
+ * @typedef {{ rates: number[], session: number | null, go: (lower: number[]) => Promise<unknown> }} SpeedPlan
+ */
+
+/** In probation, a failure needs this many broken or lost frames (as a verify's flow, host guide §7.3.2 item 3-4). */
+const PROBATION_FAIL_MIN = 3;
+
 export class Link {
   /**
    * @param {Transport} transport
@@ -122,7 +143,12 @@ export class Link {
     /** @type {import('./speedrecord.js').SpeedRecord | null} the record raiseSpeed used, if any */ this.record = null;
     /** @type {[string | null, string] | null} its key: the port's path (null in a browser) and the unit_id */ this.recordKey = null;
     /** @type {number | null} the transport index the raised rate is on (the revert names it) */ this.speedPort = null;
-    /** @type {Map<number, string>} rates stepped down from in this session -> why (raiseSpeed skips them) */ this.unusable = new Map();
+    /** @type {Map<number, string>} rates that broke in use in this session -> why (none at or above again) */ this.unusable = new Map();
+    /** @type {Map<number, string>} every rate the line failed in this session (a step down goes below them) */ this.failed = new Map();
+    /** @type {Probation | null} raised, in use: the first period at a new rate (host guide §7.3.2 item 4) */ this.probation = null;
+    /** @type {SpeedPlan | null} the candidates a step down in use may go to (the lower ones) */ this.speedPlan = null;
+    /** @type {number | null} when the link was last back after a breakdown (ms) ... */ this.brokeAt = null;
+    /** @type {number | null} ... at this rate (settleMs: results soon after are unknown) */ this.brokeRate = null;
     /** @type {number | null} the session `unusable` belongs to */ this.unusableSession = null;
     /** @type {((op: number, payload: Uint8Array) => Uint8Array) | null} a core request in the session (bound by Host) */ this.sessionFrame = null;
     /** @type {() => number | null} the session's lease (bound by Host; raised: bounds each wait) */ this.lease = () => null;
@@ -198,6 +224,7 @@ export class Link {
         }
         continue;
       }
+      this.moved(raw.length + 2);
       this.count('good');                   // a result or a notification that decoded (host guide §7.3.2)
       this.deliver(message);
     }
@@ -277,6 +304,7 @@ export class Link {
   /** @param {Uint8Array} bytes */
   async write(bytes) {
     this.lastTx = Date.now();
+    this.moved(bytes.length);
     const max = this.transport.maxWrite;
     if (!max || bytes.length <= max) return this.transport.write(bytes);
     for (let at = 0; at < bytes.length; at += max) await this.transport.write(bytes.subarray(at, at + max));
@@ -464,7 +492,10 @@ export class Link {
    * a result or notification that decoded, broken = a candidate that did not, lost = a request with no good answer
    * within its wait). At the boot speed it goes into this session's baseline (`baseCounts`); raised and in use into the
    * 3 s window, judged on every bad one: IN_USE_MIN_FRAMES or more in the window and a ratio over max(2 x baseline,
-   * IN_USE_FLOOR) make the link step down at the next safe point.
+   * IN_USE_FLOOR) make the link step down at the next safe point. While the rate is in its probation, its frames are
+   * also judged as the verify judges a flow: 3 or more broken or lost and a ratio over max(2 x baseline, 5 %) step down
+   * at once (a verify failure, not an in-use one); a good frame once probationBytes have moved and probationMs have
+   * passed ends the probation.
    * @param {'good' | 'broken' | 'lost'} kind
    */
   count(kind) {
@@ -472,6 +503,21 @@ export class Link {
     if (this.baud === this.baseBaud) { this.baseCounts[kind]++; return; }
     if (!this.inUse()) return;
     const now = Date.now();
+    const p = this.probation;
+    if (p && p.rate === this.baud) {
+      p.frames++;
+      if (kind !== 'good') {
+        p.bad++;
+        const ratio = p.bad / p.frames;
+        if (!this.stepDue && p.bad >= PROBATION_FAIL_MIN && ratio > p.threshold) {
+          this.stepRatio = ratio;
+          this.stepDue = `in probation: ${p.bad} of ${p.frames} frames broken or lost at ${this.baud} after ${p.moved} bytes `
+            + `(${(ratio * 100).toFixed(1)}%, over ${Math.round(p.threshold * 100)}%)`;
+        }
+      } else if (p.moved >= p.bytes && now - p.started >= p.ms) {
+        this.probationPassed(p);
+      }
+    }
     this.window.push([now, kind !== 'good']);
     while (this.window.length && now - this.window[0][0] > IN_USE_WINDOW_MS) this.window.shift();
     if (kind === 'good' || this.stepDue || this.window.length < IN_USE_MIN_FRAMES) return;
@@ -484,6 +530,71 @@ export class Link {
     }
   }
 
+  /** Bytes on the line at a raised rate in use (both ways): the probation counts them. @param {number} n */
+  moved(n) {
+    const p = this.probation;
+    if (p && p.rate === this.baud && this.inUse()) { p.moved += n; p.trial.probationBytes = p.moved; }
+  }
+
+  /** @param {Probation} p */
+  probationPassed(p) {
+    this.probation = null;
+    p.trial.probation = 'passed';
+    p.trial.probationBytes = p.moved;
+    if (this.record && this.recordKey) this.record.note(this.recordKey[0], this.recordKey[1], p.rate, true, 'probation');
+  }
+
+  /**
+   * `rate` broke (in its probation or later in use): not used again in this session, nor anything at or above it; the
+   * report and the record say so. A probation's failure is a verify failure (phase 'probation'), a later one an in-use
+   * failure ('in_use'); a probation measured within settleMs of a breakdown at another rate is written unknown.
+   * @param {number} rate @param {string} why @param {boolean} lost  no answer came (the probe went back by itself)
+   */
+  stepped(rate, why, lost) {
+    const p = this.probation;
+    this.probation = null;
+    const inProbation = !!p && p.rate === rate;
+    if (inProbation && !why.startsWith('in probation')) why = `in probation: ${why}`;
+    if (lost) this.speedLost++;
+    this.unusable.set(rate, why);
+    this.failed.set(rate, why);
+    if (this.speed) {
+      this.speed.rate = /** @type {number} */ (this.baseBaud);
+      this.speed.chosen = null;
+      if (lost) this.speed.lost = true;
+      this.speed.steppedDown = true;
+      this.speed.downWhy = why;
+      this.speed.stepDowns.push({ at: Date.now(), rate, why, ratio: this.stepRatio, to: this.baseBaud, probation: inProbation });
+    }
+    if (p && inProbation) p.trial.probation = 'failed';
+    this.stepRatio = null;
+    if (this.record && this.recordKey) {
+      this.record.note(this.recordKey[0], this.recordKey[1], rate, inProbation && p?.settling ? null : false, inProbation ? 'probation' : 'in_use');
+    }
+    this.brokeAt = Date.now();
+    this.brokeRate = rate;
+  }
+
+  /**
+   * After a breakdown in use, back at the boot speed: the next lower candidate of the last raiseSpeed's plan that has
+   * not failed in this session (below every rate that has) gets a fresh try -> confirm -> verify -> commit, the next
+   * after it if that fails; none left (or none passes): the boot speed for the rest of the session. The report's last
+   * step down says where the link went (`to`).
+   */
+  async stepLower() {
+    const plan = this.speedPlan;
+    if (!plan || plan.session !== this.unusableSession || !this.unusable.size) return;
+    const ceiling = Math.min(...this.unusable.keys(), ...this.failed.keys());
+    const lower = [...new Set(plan.rates.filter((r) => r < ceiling))].sort((a, b) => b - a);
+    if (lower.length) {
+      const saved = this.fallback;
+      this.fallback = false;                 // every failure there is handled there
+      try { await plan.go(lower); } finally { this.fallback = saved; }
+    }
+    const last = this.speed?.stepDowns.at(-1);
+    if (last) last.to = this.baud;
+  }
+
   async stepDownIfDue() {
     if (this.stepDue && this.inUse()) await this.leave(this.stepDue, true);
   }
@@ -492,7 +603,9 @@ export class Link {
    * Leave the raised rate for the rest of the session (one at a time; a second caller waits for the first).
    * revert: port_speed step 2 at it first (STEP_DOWN_WAIT_MS, never sent again: a probe that already went back cannot
    * hear it, and a committed one reverts at the broken candidates the confirms make). Then the boot speed and a
-   * confirm there; the rate is unusable for the session and the report says why. Rejects when no confirm is answered.
+   * confirm there; the rate (and anything above it) is unusable for the session and the report says why; then the next
+   * lower candidate (`stepLower`). Rejects when no confirm is answered. Other requests wait for all of it (`falling`);
+   * raiseSpeed's own requests in it go straight to the line.
    * @param {string} why @param {boolean} revert @returns {Promise<boolean>}
    */
   leave(why, revert) {
@@ -515,18 +628,8 @@ export class Link {
           }
         }
         if (!(await this.backToBase())) throw new Error(`the probe answers neither at ${from} nor at the boot speed ${this.baseBaud}`);
-        if (!revert) this.speedLost++;
-        this.unusable.set(from, why);
-        if (this.speed) {
-          this.speed.rate = /** @type {number} */ (this.baseBaud);
-          this.speed.chosen = null;
-          if (!revert) this.speed.lost = true;
-          this.speed.steppedDown = true;
-          this.speed.downWhy = why;
-          this.speed.stepDowns.push({ at: Date.now(), rate: from, why, ratio: this.stepRatio });
-        }
-        this.stepRatio = null;
-        if (this.record && this.recordKey) this.record.note(this.recordKey[0], this.recordKey[1], from, false);
+        this.stepped(from, why, !revert);
+        await this.stepLower();
         return true;
       } finally {
         this.falling = null;
@@ -538,14 +641,15 @@ export class Link {
   /**
    * A request sent at rate `at` failed (its resend too) while a raised rate was in use. Broken frames (the probe still
    * answers there) or a step down already due: step down (`leave` with the revert). No answer at all: the probe went
-   * back by itself (idle_ms, broken candidates, a lapse) - back to the boot speed, confirmed. Either way the rate is not
-   * used again in this session. Already back (another request did it): just send again. true = send again.
+   * back by itself (idle_ms, broken candidates, a lapse) - back to the boot speed, confirmed. Either way the rate (and
+   * anything above it) is not used again in this session, and the next lower candidate is tried (`stepLower`). Already
+   * left (another request did it): just send again. true = send again.
    * @param {unknown} [e] @param {number | null} [at]
    */
   async speedFallback(e, at = this.baud) {
     if (this.falling) return this.falling;
     if (this.baseBaud === null) return false;
-    if (at !== this.baseBaud && this.baud === this.baseBaud && this.unusable.has(/** @type {number} */ (at))) return true;
+    if (at !== null && at !== this.baseBaud && at !== this.baud && this.unusable.has(at)) return true;
     if (!this.inUse()) return false;
     const from = this.baud;
     if (this.stepDue || !(e instanceof Timeout)) return this.leave(this.stepDue || `frames kept breaking at ${from}`, true);
