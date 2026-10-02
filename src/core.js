@@ -85,8 +85,8 @@ export async function maxOpMs(hst) {
 
 /**
  * oep.core's describe decoded (core §7.5). labels: the firmware's fixed channel labels (0x46); the labels the settings
- * gave are read from oep.probe.config (config.ProbeConfig.items(), Label). discoverable: the probe enumerates in a way
- * discovery lists (an iProduct starting "OEP", core §3.3). maxOpMs: the longest one request may take.
+ * gave are read from oep.probe.config (config.ProbeConfig.items(), Label). discoverable: the probe also enumerates with the
+ * project's USB VID:PID (core §3.3, §7.5; every probe says 0 until that VID:PID is listed). maxOpMs: the longest one request may take.
  * @param {import('./host.js').Host} hst
  */
 export async function probeInfo(hst) {

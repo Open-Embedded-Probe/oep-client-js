@@ -1,9 +1,9 @@
 // @ts-check
 // WebUSB: the probe's vendor bulk interface (class 0xFF, subclass 0x4F, protocol 0x45, one bulk IN / OUT pair;
 // length(u16) frames, oep-core §3.1, §3.3). The same code runs in Node through the `usb` package (src/usbvendor.js).
-import { VENDOR_CLASS, VENDOR_PROTOCOL, VENDOR_SUBCLASS, isOepDevice, usbUnitId, vendorTransport } from '../usbvendor.js';
+import { VENDOR_CLASS, VENDOR_PROTOCOL, VENDOR_SUBCLASS, isProjectDevice, temporaryClue, usbCandidate, usbUnitId, vendorTransport } from '../usbvendor.js';
 
-export { usbUnitId, isOepDevice };
+export { usbUnitId, isProjectDevice, temporaryClue, usbCandidate };
 
 /** @typedef {import('../usbtypes.js').UsbDevice} UsbDevice */
 
@@ -24,32 +24,29 @@ export function webUsbTransport(device, opts) {
 }
 
 /**
- * Ask the user for an OEP probe's USB device: the chooser offers devices with the OEP vendor interface (class 0xFF,
- * subclass 0x4F, protocol 0x45), and the one picked must have an iProduct starting "OEP" (core §3.3).
+ * Ask the user for a probe's USB device. The default chooser filter - devices with a vendor interface class 0xFF,
+ * subclass 0x4F, protocol 0x45 - is a temporary clue (host guide §1.7, not normative) until the project's VID:PID
+ * exists; the device the user picks is a device the user chose (core §3.3), not an identified one: connect (openWebUsb)
+ * probes it with a confirm first and closes it when no valid answer comes. No iProduct check.
  * @param {{ filters?: object[] }} [opts]
  * @returns {Promise<UsbDevice>}
  */
 export async function requestUsbProbe({ filters } = {}) {
-  const device = /** @type {UsbDevice} */ (await usbApi().requestDevice({
+  return /** @type {UsbDevice} */ (await usbApi().requestDevice({
     filters: filters ?? [{ classCode: VENDOR_CLASS, subclassCode: VENDOR_SUBCLASS, protocolCode: VENDOR_PROTOCOL }],
   }));
-  if (!isOepDevice(device.vendorId, device.productId, device.productName)) {
-    throw new Error(`not an OEP probe: ${device.productName ?? 'no product name'} (${hex(device.vendorId)}:${hex(device.productId)})`);
-  }
-  return device;
 }
 
 /**
- * The OEP probes this page was given before (no chooser), optionally the one whose unit id (USB serial) is `unitId`.
+ * The devices this page was given before (no chooser). With `unitId`: the one whose USB serial is that unit id, by the
+ * serial alone (core §3.3; connect's `unitId` then checks describe). Without: the candidates - the project's VID:PID
+ * (none listed yet) or a temporary clue (host guide §1.7) - each still probed by confirm when opened.
  * @param {{ unitId?: string }} [opts]
  * @returns {Promise<UsbDevice[]>}
  */
 export async function getUsbProbes({ unitId } = {}) {
   /** @type {UsbDevice[]} */
   const all = await usbApi().getDevices();
-  return all.filter((d) => isOepDevice(d.vendorId, d.productId, d.productName)
-    && (!unitId || (usbUnitId(d) ?? '').toLowerCase() === unitId.toLowerCase()));
+  if (unitId) return all.filter((d) => (usbUnitId(d) ?? '').toLowerCase() === unitId.toLowerCase());
+  return all.filter((d) => usbCandidate(d));
 }
-
-/** @param {number} n */
-const hex = (n) => n.toString(16).padStart(4, '0');

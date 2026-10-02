@@ -8,7 +8,7 @@ import { requestUsbProbe, webUsbTransport } from './webusb.js';
 import { requestHidProbe, webHidTransport } from './webhid.js';
 
 export { webSerialTransport, requestSerialPort, getSerialPorts } from './webserial.js';
-export { webUsbTransport, requestUsbProbe, getUsbProbes, usbUnitId, isOepDevice } from './webusb.js';
+export { webUsbTransport, requestUsbProbe, getUsbProbes, usbUnitId, isProjectDevice, temporaryClue, usbCandidate } from './webusb.js';
 export { webHidTransport, requestHidProbe, packHidReports, unpackHidReport, findVendorReports } from './webhid.js';
 export { requestDfuDevice, getDfuDevices, updateFirmware } from './dfu.js';
 export { DfuClient, DfuError, openDfu, dfuUpdate, DFU_STATUS, DFU_STATE, dfuStatusName, dfuStateName } from '../dfu.js';
@@ -28,21 +28,23 @@ export async function openWebSerial(port, opts = {}) {
 }
 
 /**
- * A Host on a probe's vendor bulk interface (the chooser when `device` is not given).
+ * A Host on a probe's vendor bulk interface (the chooser when `device` is not given), probed with a confirm first
+ * (connect). `unitId`: the unit the device was named as (getUsbProbes({ unitId })): describe must say it, else closed.
  * @param {import('../usbtypes.js').UsbDevice} [device]
- * @param {{ timeoutMs?: number }} [opts]
+ * @param {{ timeoutMs?: number, unitId?: string }} [opts]
  */
 export async function openWebUsb(device, opts = {}) {
   const d = device ?? await requestUsbProbe();
-  return connect(await webUsbTransport(d), { timeoutMs: opts.timeoutMs });
+  return connect(await webUsbTransport(d), { timeoutMs: opts.timeoutMs, unitId: opts.unitId });
 }
 
 /**
- * A Host on a probe's vendor HID interface (the chooser when `device` is not given).
+ * A Host on a probe's vendor HID interface (the chooser when `device` is not given), probed with a confirm first
+ * (connect). `unitId`: as openWebUsb.
  * @param {import('./webhid.js').HidDeviceLike} [device]
- * @param {{ timeoutMs?: number }} [opts]
+ * @param {{ timeoutMs?: number, unitId?: string }} [opts]
  */
 export async function openWebHid(device, opts = {}) {
   const d = device ?? await requestHidProbe();
-  return connect(await webHidTransport(d), { timeoutMs: opts.timeoutMs });
+  return connect(await webHidTransport(d), { timeoutMs: opts.timeoutMs, unitId: opts.unitId });
 }
