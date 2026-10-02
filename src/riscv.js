@@ -236,7 +236,7 @@ export class Wire extends WireBase {
   static HALT = RVSWD.enum.attach_method.halt;
   static TAG_TARGET_ID = RVSWD.tlv.attach_answer.target_id;
   static TAG_DPC = RVSWD.tlv.attach_answer.dpc;
-  static SCHEME_WCH_DMI_7F = RVSWD.enum.target_id_scheme.wch_dmi_7f;
+  static SCHEME_WCH_DMI_7F = reg.COMMON.enum.target_id_scheme.wch_dmi_7f;   // one scheme space (common)
 
   hadReset = false;
   existing = false;

@@ -46,8 +46,8 @@ export const REFERENCE_SOURCE = Object.fromEntries(Object.entries(ANA.enum.refer
 export const IGNORED = m.TAG_IGNORED;
 export const CRITICAL = m.TAG_CRITICAL;
 export const ONE_SHOT = CAP.enum.mode.one_shot, REPEAT = CAP.enum.mode.repeat, STREAMING = CAP.enum.mode.streaming;
-const T = ANA.enum.trigger;   // logic has immediate / level / edge; analog adds cross_up / cross_down
-export const IMMEDIATE = T.immediate, LEVEL = T.level, EDGE = T.edge, CROSS_UP = T.cross_up, CROSS_DOWN = T.cross_down;
+const LT = CAP.enum.trigger, AT = ANA.enum.trigger;   // logic: immediate / level / edge; analog: immediate / cross_up / cross_down
+export const IMMEDIATE = LT.immediate, LEVEL = LT.level, EDGE = LT.edge, CROSS_UP = AT.cross_up, CROSS_DOWN = AT.cross_down;
 /** @type {Record<string, number>} */
 export const STATE = CAP.enum.state;
 /** @type {Record<string, number>} */

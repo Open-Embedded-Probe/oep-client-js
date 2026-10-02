@@ -8,7 +8,7 @@ import * as catalog from './catalog.js';
 import * as m from './message.js';
 import { OepError } from './errors.js';
 
-const TAG_ROLE_ASSIGNMENT = reg.CORE.tlv.plan_apply.role_assignment;   // already critical (0x90)
+const TAG_ROLE_ASSIGNMENT = reg.CORE.tlv.plan_apply.role_assignment;   // the number 0x10; always sent critical (0x90, core §8)
 const D = reg.CORE.tlv.describe;
 export const TRANSPORT_KIND = reg.CORE.enum.transport_kind;
 export const SERIAL_KINDS = new Set([TRANSPORT_KIND.uart_bridge, TRANSPORT_KIND.usb_cdc, TRANSPORT_KIND.usb_serial_jtag]);
@@ -80,7 +80,7 @@ export async function describe(hst, fn = 0) {
  * @param {import('./host.js').Host} hst */
 export async function maxOpMs(hst) {
   for (const [tag, v] of await describe(hst, 0)) if ((tag & 0x7f) === D.max_op_ms && v.length >= 4) return getU32(v);
-  return reg.LIMITS.max_op_ms_reference;
+  return reg.REFERENCE.max_op_ms;
 }
 
 /**
@@ -131,7 +131,7 @@ export async function take(hst, leaseMs = 3000, { owner, waitMs = 5000, force = 
  * @param {import('./host.js').Host} hst @param {[number, number, number][]} assignments */
 export async function planApply(hst, assignments) {
   const w = new Writer();
-  for (const [fn, role, ch] of assignments) w.u8(TAG_ROLE_ASSIGNMENT).u8(5).u16(fn).u8(role).u16(ch);
+  for (const [fn, role, ch] of assignments) w.u8(TAG_ROLE_ASSIGNMENT | m.TAG_CRITICAL).u8(5).u16(fn).u8(role).u16(ch);
   await hst.call(m.CORE_FN, m.OP.plan_apply, w.done());
 }
 
