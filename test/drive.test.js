@@ -1,8 +1,9 @@
 // @ts-check
 // oep-spec ee562c3: the gpio output strength (fixture §1.1: describe drive_levels, set's drive TLV, the effective
 // strength, read's drive TLV), the idle item's drive (probe.config §1), the slot's boot_reset (§1.1) and slot_state's
-// reset_at_ns (§3.3). Mirrors oep-client-python's tests/test_drive_and_boot_reset.py as far as the TCP fake allows
-// (no probe without drive_levels, no target silent until reset: the retry with reset itself is the fake's own test).
+// reset_at_ns (§3.3), and the at-boot retry with reset (§3.1). Mirrors oep-client-python's
+// tests/test_drive_and_boot_reset.py through the TCP fake (fake_serve's --no-drive-levels, --silent-until-reset,
+// --boot-reset and --label give a probe without drive_levels and a target that answers only after a reset).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Writer, concat } from '../src/bytes.js';
@@ -162,6 +163,16 @@ test('set lists unknown non-critical TLVs as ignored', { skip }, () => withFake(
   assert.deepEqual(new m.Reader(r.payload).tail().ignored, [0x22]);
 }));
 
+test('a probe without drive_levels: none declared, read has no drive, a drive in set is ignored', { skip }, () => withFake(['--profile', 'p4-bench', '--no-drive-levels'], async (hst) => {
+  const g = await gpioOf(hst, [20, 21]);
+  assert.equal(await g.driveLevels(), null);
+  assert.deepEqual(await g.set([[20, Gpio.OUTPUT_HIGH, 1], [21, Gpio.OUTPUT_LOW, Drive.maxMa(5)]]), [DRIVE, DRIVE]);
+  const st = await g.readState([20, 21]);
+  assert.deepEqual(st.levels, [1, 0]);                             // the modes apply
+  assert.equal(st.drive, null);                                    // read carries no drive TLV
+  assert.deepEqual(await g.set([[20, Gpio.OUTPUT_LOW]]), []);      // nothing to ignore without a drive
+}));
+
 // ---- the idle item's drive --------------------------------------------------------------------------------------
 
 test('the idle item\'s drive encodes and decodes', () => {
@@ -247,3 +258,28 @@ test('slot_state reset_at_ns is null without a retry with reset; findLine finds 
   assert.equal(await config.findLine(hst, 'v003', 'nrst'), 23);
   assert.equal(await config.findLine(hst, null, 'nrst'), 23);
 }));
+
+// ---- the retry with reset (probe.config §3.1) -------------------------------------------------------------------
+
+const SILENT_V003 = ['--profile', 'esp32-v003', '--slot', 'v003', '--silent-until-reset', '0'];   // swio 16, reset 23
+
+test('retry with reset: a target silent until reset attaches after it, and resetAtNs says when', { skip }, () => withFake([...SILENT_V003, '--boot-reset', '--label', '23=v003.nrst'], async (hst) => {
+  const [st] = (await (await ProbeConfig.open(hst)).state()).slots;
+  assert.equal(st.state, 'connected');
+  assert.notEqual(st.connection, 0);
+  assert.equal(typeof st.resetAtNs, 'bigint');                     // the probe's clock when it started pulling
+  assert.ok(/** @type {bigint} */ (st.resetAtNs) <= /** @type {bigint} */ (st.lastTryAtNs));
+}));
+
+for (const [what, args] of /** @type {[string, string[]][]} */ ([
+  ['no nrst label', ['--boot-reset']],
+  ['the label ambiguous (two at one step)', ['--boot-reset', '--label', '23=v003.nrst', '--label', '22=V003.NRST']],
+  ['the slot does not ask for it', ['--label', '23=v003.nrst']],
+])) {
+  test(`no retry with reset: ${what}`, { skip }, () => withFake([...SILENT_V003, ...args], async (hst) => {
+    const [st] = (await (await ProbeConfig.open(hst)).state()).slots;
+    assert.equal(st.state, 'absent');
+    assert.equal(st.connection, 0);
+    assert.equal(st.resetAtNs, null);
+  }));
+}
