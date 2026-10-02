@@ -35,7 +35,7 @@ function scripted(handlers, maxFrame = 1024) {
     },
   };
   const hst = new Host(/** @type {any} */ (link));
-  hst.limits = { revision: 1, flags: 0, maxFrame, window: 4096, maxInflight: 4, bootId: 1, tail: new m.Tail() };
+  hst.limits = { revision: 1, flags: 0, maxFrame, window: 4096, maxInflight: 4, bootId: 1, transport: 0, tail: new m.Tail() };
   hst.revision = 1;
   hst.fns.set(Console.NAME, CONSOLE);
   hst.revisions.set(CONSOLE, 1);

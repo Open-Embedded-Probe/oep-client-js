@@ -18,11 +18,13 @@
 import * as reg from './registry.js';
 import { Writer, concat, getU16, getU32, text, utf8 } from './bytes.js';
 import * as m from './message.js';
-import { Interface, describe } from './core.js';
+import { Interface, describe, firmwareLabels } from './core.js';
 import { Drive } from './fixture.js';
 
 const CFG = reg.PROBE_CONFIG;
 export const ITEM = CFG.tlv.item;
+/** A label's text at most this many bytes (probe.config §1, PC-5). */
+export const LABEL_MAX = reg.LIMITS.label_max_bytes;
 export const DESCRIBE = CFG.tlv.describe;
 
 /** @param {Record<string, number>} e */
@@ -77,7 +79,14 @@ export class Label {
   /** @param {{ channel: number, text: string }} o */
   constructor({ channel, text }) { this.channel = channel; this.text = text; }
   key() { return [this.channel]; }
-  value() { return new Writer().u16(this.channel).raw(utf8(this.text)).done(); }
+  value() {
+    const raw = utf8(this.text);
+    if (raw.length < 1 || raw.length > LABEL_MAX || !m.validText(raw)) {
+      // probe.config §1 (PC-5): 1 to 32 bytes of UTF-8 without control characters - the probe refuses others
+      throw new RangeError(`label ${JSON.stringify(this.text)}: 1 to ${LABEL_MAX} bytes of text without control characters`);
+    }
+    return new Writer().u16(this.channel).raw(raw).done();
+  }
 }
 
 /**
@@ -490,26 +499,33 @@ export class ProbeConfig extends Interface {
   }
 }
 
-/** The line names of the label convention (probe.config §1.3): `nrst` a target's reset, `power_hi` high powers it,
- * `power_lo` low powers it. Per slot `<slot name>.<name>`; the bare name on settings with at most one slot item. */
-export const LINE_NAMES = Object.freeze(['nrst', 'power_hi', 'power_lo']);
+/** The line names of the label convention (probe.config §1.3), the registry's standard names (PC-2; private ones start
+ * with `x-`): `nrst` a target's reset, `power_hi` high powers it, `power_lo` low powers it. Per slot
+ * `<slot name>.<name>`; the bare name on settings with at most one slot item. */
+export const LINE_NAMES = Object.freeze(Object.keys(CFG.line_names));
 
 /** ASCII case folded (only A-Z: probe.config §1.3 compares ignoring ASCII case). @param {string} text */
 export function foldName(text) { return text.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32)); }
 
 /**
- * probe.config §1.3 on bare data: labels as [channel, text], nSlots the settings' slot items. The channel whose label
- * equals `<slotName>.<name>`; if none, and only with at most one slot item, the one equal to `name`; two or more at one
- * step: none (no fall-through). slotName null (settings without slot items): the bare name only.
+ * probe.config §1.3 on bare data: labels as [channel, text] - the settings' label items -, nSlots the settings' slot
+ * items, firmware the firmware's fixed labels (fn 0 describe 0x46) as [channel, text]. In order, stopping at the first
+ * step that finds exactly one channel: (a) a settings label equal to `<slotName>.<name>`; (b) only with at most one
+ * slot item, a settings label equal to `name`; (c) only with at most one slot item, a firmware label equal to `name`
+ * (PC-1). A step that finds two or more ends the search with none (no fall-through). Texts compare ignoring ASCII
+ * case. slotName null (settings without slot items): steps (b) and (c).
  * @param {Iterable<[number, string]>} labels @param {number} nSlots @param {string | null} slotName @param {string} name
+ * @param {Iterable<[number, string]>} [firmware]
  * @returns {number | null}
  */
-export function lineFromLabels(labels, nSlots, slotName, name) {
-  const all = [...labels];
-  const steps = [...(slotName !== null && slotName !== undefined ? [`${slotName}.${name}`] : []), ...(nSlots <= 1 ? [name] : [])];
-  for (const text of steps) {
+export function lineFromLabels(labels, nSlots, slotName, name, firmware = []) {
+  const settings = [...labels], fixed = [...firmware];
+  /** @type {[[number, string][], string][]} */
+  const steps = [...(slotName !== null && slotName !== undefined ? [/** @type {[[number, string][], string]} */ ([settings, `${slotName}.${name}`])] : []),
+    ...(nSlots <= 1 ? [/** @type {[[number, string][], string]} */ ([settings, name]), /** @type {[[number, string][], string]} */ ([fixed, name])] : [])];
+  for (const [source, text] of steps) {
     const want = foldName(text);
-    const found = new Set(all.filter(([, t]) => foldName(t) === want).map(([ch]) => ch));
+    const found = new Set(source.filter(([, t]) => foldName(t) === want).map(([ch]) => ch));
     if (found.size > 1) return null;                                 // ambiguous at this step: no such line
     if (found.size) return [...found][0];
   }
@@ -523,14 +539,17 @@ export function lineFromLabels(labels, nSlots, slotName, name) {
  * item (the target connected to the probe) or one (that slot).
  *
  * `<slot>.<name>` first, ignoring ASCII case; then the bare `name`, only when the settings hold at most one slot item;
- * two or more channels matching at one step mean no such line. Throws RangeError for slotName null with several
- * slots, and for a slot number not in the settings.
+ * then (PC-1) the firmware's fixed label equal to `name` (fn 0 describe 0x46), on the same condition; two or more
+ * channels matching at one step mean no such line. firmware: the fixed labels as [channel, text] - read from the
+ * probe's describe when `config` is a Host, none when it is a list of items and this is not given. Throws RangeError
+ * for slotName null with several slots, and for a slot number not in the settings.
  * @param {import('./host.js').Host | (Item | { tag: number, value: Uint8Array })[]} config
- * @param {string | number | null} slotName @param {string} name
+ * @param {string | number | null} slotName @param {string} name @param {Iterable<[number, string]> | null} [firmware]
  * @returns {Promise<number | null>}
  */
-export async function findLine(config, slotName, name) {
+export async function findLine(config, slotName, name, firmware = null) {
   const items = Array.isArray(config) ? config : await (await ProbeConfig.open(config)).items();
+  const fixed = firmware ? [...firmware] : Array.isArray(config) ? [] : await firmwareLabels(config);
   const labels = /** @type {Label[]} */ (items.filter((i) => i instanceof Label)).map((l) => /** @type {[number, string]} */ ([l.channel, l.text]));
   const slots = /** @type {Slot[]} */ (items.filter((i) => i instanceof Slot));
   if (typeof slotName === 'number') {
@@ -542,5 +561,5 @@ export async function findLine(config, slotName, name) {
     throw new RangeError(`${name}: the settings hold ${slots.length} slots; name the slot`);
   }
   if ((slotName === null || slotName === undefined) && slots.length) slotName = slots[0].name;
-  return lineFromLabels(labels, slots.length, slotName ?? null, name);
+  return lineFromLabels(labels, slots.length, slotName ?? null, name, fixed);
 }

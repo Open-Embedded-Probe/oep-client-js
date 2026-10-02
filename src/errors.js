@@ -2,8 +2,8 @@
 // What the probe (or the link) said no to. `rejection(result)` picks the class by the reject reason.
 
 import * as reg from './registry.js';
-import { getU16, getU32, text } from './bytes.js';
-import { OepError, ProtocolError, ShortPayload, BadTlv, REJECT, TAG_FIXED, splitTlvs, Tail } from './message.js';
+import { getU16, getU32 } from './bytes.js';
+import { OepError, ProtocolError, ShortPayload, BadTlv, REJECT, TAG_FIXED, splitTlvs, shown, Tail } from './message.js';
 
 export { OepError, ProtocolError, ShortPayload, BadTlv };
 
@@ -39,11 +39,11 @@ const OWNER = reg.CORE.tlv.locked_payload.owner;
 
 export class Locked extends Rejected {
   get remainingMs() { return this.result.payload.length >= 4 ? getU32(this.result.payload) : 0; }
-  /** The holder's owner text, when its open gave one. */
+  /** The holder's owner text, when its open gave one (control characters replaced, core §2.1). */
   get owner() {
     try {
       const v = Tail.parse(this.result.payload.slice(4)).get(OWNER);
-      return v ? text(v) : null;
+      return v ? shown(v) : null;
     } catch { return null; }
   }
 }
@@ -83,6 +83,13 @@ export class Unsupported extends Rejected {
   get fn() { const v = this.first(UNS.fn); return v && v.length >= 2 ? getU16(v) : null; }
   /** Where in the request's list the refused element stood (unsupported_payload 0x40), else null. */
   get index() { const v = this.first(UNS.index); return v && v.length >= 1 ? v[0] : null; }
+  /** confirm's refusal (core §7.1, C-15): [min, max] of the protocol revisions the probe handles (TLV 0x01 supported
+   * after tag 0x00); null for any other refusal. @returns {[number, number] | null} */
+  get supported() {
+    if (this.tag !== null) return null;
+    const v = this.tlvs.find(([t]) => t === UNS.supported)?.[1];
+    return v && v.length >= 2 ? [v[0], v[1]] : null;
+  }
 }
 
 const UNS = reg.CORE.tlv.unsupported_payload;

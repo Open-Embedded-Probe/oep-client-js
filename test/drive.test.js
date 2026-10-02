@@ -134,7 +134,6 @@ test('a plan takes and releases at the idle state\'s strength', { skip }, () => 
 for (const [what, tail] of /** @type {[string, Uint8Array][]} */ ([
   ['index n or more', driveTlv(3, 0, 0)],
   ['the same index twice', concat(driveTlv(0, 0, 0), driveTlv(0, 0, 1))],
-  ['kind undefined', driveTlv(0, 2, 0)],
   ['its element is not mode 3 / 4', driveTlv(1, 0, 0)],
   ['not index kind value', m.tlv(DRIVE, Uint8Array.of(0, 0, 0))],
   ['malformed first, even after an ignored one', concat(driveTlv(0, 0, 9), driveTlv(5, 0, 0))],
@@ -192,7 +191,7 @@ const idleTlv = (ch, ...rest) => m.tlv(config.ITEM.idle, Uint8Array.of(ch & 0xff
 for (const [value, reason] of /** @type {[number[], 'malformed' | 'unsupported'][]} */ ([
   [[4, 0], 'malformed'],                                           // 4 bytes
   [[4, 0, 1], 'malformed'],                                        // 5 bytes
-  [[4, 2, 0, 0], 'malformed'],                                     // drive_kind undefined
+  [[4, 2, 0, 0], 'unsupported'],                                   // drive_kind undefined: a later revision's (C-02)
   [[1, 0, 0, 0], 'malformed'],                                     // a drive on a mode other than 3 / 4
   [[0, 1, 10, 0], 'malformed'],
   [[4, 0, 4, 0], 'unsupported'],                                   // level number = the number of levels
@@ -271,8 +270,13 @@ test('retry with reset: a target silent until reset attaches after it, and reset
   assert.ok(/** @type {bigint} */ (st.resetAtNs) <= /** @type {bigint} */ (st.lastTryAtNs));
 }));
 
+test('retry with reset through the firmware label NRST (probe.config §1.3 step (c), PC-1)', { skip }, () => withFake([...SILENT_V003, '--boot-reset'], async (hst) => {
+  const [st] = (await (await ProbeConfig.open(hst)).state()).slots;  // no settings label: describe's 23 "NRST" is the line
+  assert.equal(st.state, 'connected');
+  assert.equal(typeof st.resetAtNs, 'bigint');
+}));
+
 for (const [what, args] of /** @type {[string, string[]][]} */ ([
-  ['no nrst label', ['--boot-reset']],
   ['the label ambiguous (two at one step)', ['--boot-reset', '--label', '23=v003.nrst', '--label', '22=V003.NRST']],
   ['the slot does not ask for it', ['--label', '23=v003.nrst']],
 ])) {

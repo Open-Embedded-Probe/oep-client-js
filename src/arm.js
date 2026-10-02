@@ -32,6 +32,7 @@ export class SwdWire extends WireBase {
 
   speedHz = 0;
   existing = false;
+  /** @type {number | null} the last attach's failed speed-search tries (null: not said) */ searchRetries = null;
 
   /**
    * -> { conn, dpidr, dormant: woke from dormant }. The request is method 0 (swd has no halting attach) and TLVs:
@@ -43,12 +44,13 @@ export class SwdWire extends WireBase {
   async attach({ targetsel = null, maxSpeed = null, pins = null, reset = null } = {}) {
     let body = concat([SwdWire.RUN], this.speedTlv(await this.speedOrDefault(maxSpeed)), this.pinsTlv(pins), this.resetTlv(reset));
     if (targetsel != null) body = concat(body, m.tlv(SwdWire.TAG_TARGETSEL, new Writer().u32(targetsel).done(), true));
-    const rd = new m.Reader((await this.call(SwdWire.ATTACH, body, { expectMs: reset?.[1] ?? 0 })).payload);
+    const rd = new m.Reader((await this.call(SwdWire.ATTACH, body, { expectMs: await this.attachMs(reset) })).payload);
     const conn = rd.u16(), dpidr = rd.u32();
     this.flags = rd.u8();
     this.speedHz = rd.u32();
     this.existing = !!(this.flags & ATTACH_FLAGS.existing);
-    rd.tail();
+    const tries = rd.tail().get(SWD.tlv.attach_answer.search_retries);   // oep-if-debug §1 (optional)
+    this.searchRetries = tries && tries.length >= 2 ? tries[0] | (tries[1] << 8) : null;
     return { conn, dpidr, dormant: !!(this.flags & ATTACH_FLAGS.dormant_woken) };
   }
 }

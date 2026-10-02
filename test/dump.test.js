@@ -28,13 +28,14 @@ async function withFake(profile, body, framing = 'length') {
 
 test('valid names', () => {
   for (const n of ['oep.core', 'oep.fixture.i2c-target', 'io.github.ch32-riscv-ug.p4.i2c-target', 'local.bench.thing',
-    'uuid.0123456789abcdef0123456789abcdef.tool', 'jp.example.probe']) assert.equal(names.validate(n), n);
+    'uuid.0123456789abcdef0123456789abcdef.tool', 'jp.example.probe', `oep.${'a'.repeat(60)}`]) assert.equal(names.validate(n), n);
 });
 
 test('invalid names say why', () => {
   for (const [n, why] of [['oep', 'namespace'], ['OEP.core', 'label'], ['oep.fixture_uart', 'label'],
     ['1com.example.x', 'top-level'], ['io.github', 'reverse DNS'], ['uuid.1234.tool', '32 lowercase hex'],
-    [`oep.${'a'.repeat(60)}`, 'bytes'], ['oep.café', 'ASCII']]) {
+    [`oep.${'a'.repeat(61)}`, 'bytes'], ['oep.café', 'ASCII'],                // 65 bytes: over the 64 of core §7.2
+    ['oep.-fixture', 'label'], ['oep.fixture-', 'label'], ['oep..core', 'label']]) {   // no '-' at a label's end (C-23)
     assert.throws(() => names.validate(n), (e) => e instanceof names.InvalidName && e.message.includes(why), n);
   }
 });
@@ -127,7 +128,10 @@ test('p4 follows the agreed names; text and JSON', { skip: !haveFake }, () => wi
   assert.ok(text.includes('features: preloaded tx, clock stretching'));
   assert.ok(text.includes('max 5 MHz'));
   assert.ok(text.includes('unit id: fafe00000035') && text.includes('chip: esp32p4 v1.0'));
-  assert.ok(text.includes('oep.fixture.analog  rev 1   (not known to this host)'));
+  assert.ok(text.includes('oep.fixture.analog  rev 1\n'));          // known now: the capture mode is shown (P2-★6)
+  assert.ok(text.includes('mode: one-shot, answers while capturing, max 65536 samples x 1 segments'));
+  assert.ok(!text.includes('MISSING'));                             // the fake gives what core §1.2 requires
+  assert.deepEqual(caps.missing, []);
   const data = JSON.parse(dump.toJson(caps));
   assert.equal(data.maxFrame, 1024);
   assert.equal(data.interfaces.length, 13);

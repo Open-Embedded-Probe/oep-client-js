@@ -7,15 +7,22 @@
 // that does not decode is noise (§3.1, §3.4). Vendor bulk, HID and TCP carry length(u16) message, with no CRC: a
 // result for no request waiting, a length that cannot be right (over max_frame), a frame that stops half way, or a
 // request with no answer in time loses the boundaries, and the link finds them again as oep-core §5.1 says (`resync`):
-// it reads and discards until the input has been quiet for 50 ms, sends a confirm and waits for the result with its
-// corr (up to 3 tries; other results meanwhile are read past), then the requests still waiting go once more with the
-// same corr (§5.2; one already sent twice fails with FramingLost). When pushes keep the input from going quiet for
+// it reads and discards until the input has been quiet for 50 ms and 250 ms have passed since this host last wrote
+// (host_resync_wait_ms: a frame left half written is then dropped by the probe's own gap), sends a confirm and waits for
+// the result with its corr (up to 3 tries; other results meanwhile are read past), then the requests still waiting go
+// once more with the same corr (§5.2; one already sent twice fails with FramingLost). A frame that stops half way is a
+// lost boundary on vendor bulk and HID only: TCP keeps its boundaries and a pause inside a frame is normal there
+// (`Transport.keepsBoundaries`, core §5.1). When pushes keep the input from going quiet for
 // 1 s, the host's unsubscribe and end go out once, blind (both harmless twice); the session requests waiting then are
 // not sent again (the session ended). New requests wait for the resync. While the transport is being probed (core
 // §3.3) there is no resync: its confirms would be more than the probing rule allows.
 //
 // A request whose answer does not come in time goes once more with the same corr: the probe keeps the lock holder's
-// recent results and answers the repeat from them, so a state-changing request does not run twice (§5.2).
+// recent results and answers the repeat from them, so a state-changing request does not run twice (§5.2). "In time" is
+// never under core §4.4's floor (C-06): the time the request's arguments set (`expectMs`) + host_wait_add_ms (1000 ms)
+// + on a serial port the transfer time ((L + max_frame x (1 + notify_pending_max_frames)) x 10 / baud), counted from
+// the write or, while several are outstanding, from the answer before it. The link's own short requests (its
+// confirms, port_speed's procedure) keep their own waits.
 //
 // port_speed (oep-core §3.5 is the handshake, the host guide §7 the procedure; opt-in: speed.js raiseSpeed): on a
 // serial port whose transport can change its rate (`setBaudRate`), the link knows the boot speed (`baseBaud`) and the
@@ -52,6 +59,14 @@ import { COMPLETED, CORE_FN, OP, ROLE_DATA, ROLE_EVENT, ROLE_RESULT, ROLE_SESSIO
 import { FramingLost, Timeout } from './errors.js';
 import { MAX_REVISION, MIN_REVISION } from './host.js';
 
+/** core §4.4's floor: argument time + this + the transfer time (C-06). */
+export const WAIT_ADD_MS = reg.TIMING.host_wait_add_ms;
+/** max_frame x this of notifications may come before an answer (core §11.4): the transfer time counts them. */
+const NOTIFY_PENDING = reg.TIMING.notify_pending_max_frames;
+/** Before a resync's confirm, and the first confirm on a length-prefixed port: this long since the host's last write
+ * there (core §5.1: probe_frame_gap_ms + 50). */
+export const RESYNC_WAIT_MS = reg.TIMING.host_resync_wait_ms;
+
 /** a serial port's answer bytes in flight at most (Linux cdc_acm lost 8 x 1008 B answer bursts; 7 passed) */
 const ANSWER_BURST_MAX = 6144;
 const STALL_MS = reg.TIMING.probe_frame_gap_ms;   // a frame whose bytes stop this long is not coming
@@ -61,7 +76,8 @@ export const RESYNC_QUIET_MS = reg.TIMING.resync_quiet_ms;
 export const RESYNC_NOISY_MS = 1000;
 /** ... confirms (each after a quiet input) before the resync gives up. */
 export const RESYNC_TRIES = 3;
-/** The link's own confirms (the resync, confirmRaw) ask for the revisions this client handles (core §7.1). */
+/** The link's own confirms (the resync, confirmRaw) ask for the revisions this client handles before the first confirm
+ * (core §7.1), and for the revision in use after it (bound by Host: `confirmBody`, C-15). */
 const OWN_CONFIRM = Uint8Array.from([...CONFIRM_REQUEST, MIN_REVISION, MAX_REVISION]);
 /** After a baud change, before the first byte at the new rate (an M5Stack ATOM's FTDI lost it at once, core §3.5). */
 export const SWITCH_SETTLE_MS = 20;
@@ -81,10 +97,8 @@ export const IN_USE_MIN_FRAMES = 50;
 export const IN_USE_FLOOR = 0.10;
 /** The step down's revert (step 2) at the raised rate waits this long, never sent again. */
 export const STEP_DOWN_WAIT_MS = 200;
-/** Raised, in use: each wait for an answer is a quarter of the lease, at least this. */
+/** Raised, in use: each wait for an answer is a quarter of the lease, at least this (never under core §4.4's floor). */
 export const RAISED_WAIT_MIN_MS = 300;
-/** A request that may take long on the probe (Host.request expectMs): waited that long and this. */
-export const EXPECT_MARGIN_MS = 500;
 
 /**
  * The bytes a transport moves. `start` begins delivering what arrives (onData for every chunk; onClose when the
@@ -99,6 +113,8 @@ export const EXPECT_MARGIN_MS = 500;
  * @property {number} [baudRate]          a serial port's rate now (what it was opened with, then set)
  * @property {(rate: number) => Promise<void>} [setBaudRate]   a serial port this host opened: change its rate
  * @property {string} [path]              a serial port's OS device path (the port_speed record's key, with the unit_id)
+ * @property {boolean} [keepsBoundaries]  length frames on a stream that keeps them (TCP): a pause inside a frame is
+ *   read on, never taken for lost boundaries (core §5.1)
  */
 
 /** @typedef {{ resolve: (b: Uint8Array) => void, reject: (e: unknown) => void, timer: any, message: Uint8Array, attempt: number, arm: () => void }} Pending */
@@ -183,6 +199,11 @@ export class Link {
     /** @type {() => Uint8Array[]} the host's blind stops (unsubscribe every subscription, end; bound by Host) */ this.blind = () => [];
     this.endedBlind = false;                 // the last resync sent the blind end: the session is over
     this.probing = false;                    // the probing rule runs (open.js): no resync
+    /** @type {number | null} when this host last wrote to the transport (null: never; core §5.1) */ this.lastWrite = null;
+    this.probeMaxFrame = reg.MIN_MAX_FRAME;  // the probe's max_frame once confirmed (the wait's transfer time)
+    this.waitAddMs = WAIT_ADD_MS;            // the floor's host_wait_add_ms (core §4.4)
+    /** @type {() => Uint8Array} the link's own confirm's payload: the revision in use once bound (Host, C-15) */
+    this.confirmBody = () => OWN_CONFIRM;
   }
 
   /** Begin reading (once). */
@@ -214,7 +235,7 @@ export class Link {
   /** @param {Uint8Array} chunk */
   onData(chunk) {
     const now = Date.now();
-    const stalled = this.framing === 'length' && this.buf.length && now - this.lastRx > STALL_MS;
+    const stalled = this.framing === 'length' && !this.transport.keepsBoundaries && this.buf.length && now - this.lastRx > STALL_MS;
     this.lastRx = now;
     if (this.discarding) return;             // the resync reads and discards until the input is quiet (§5.1)
     if (stalled) {                           // a frame that stopped half way: its rest is not coming
@@ -288,6 +309,8 @@ export class Link {
       this.pending.delete(corr);
       clearTimeout(p.timer);
       p.resolve(frame);
+      // several outstanding: each one's wait starts again from the answer before it (core §4.4)
+      if (!this.resyncing) for (const q of this.pending.values()) { clearTimeout(q.timer); q.arm(); }
     } else if (role === ROLE_EVENT) {
       this.events.push(frame);
       for (const l of this.eventListeners) l(frame);
@@ -334,7 +357,7 @@ export class Link {
 
   /** @param {Uint8Array} bytes */
   async write(bytes) {
-    this.lastTx = Date.now();
+    this.lastTx = this.lastWrite = Date.now();
     this.moved(bytes.length);
     const max = this.transport.maxWrite;
     if (!max || bytes.length <= max) return this.transport.write(bytes);
@@ -343,8 +366,8 @@ export class Link {
 
   /**
    * The answer to one request (its bytes, the corr in them), sent once more after a missing answer (§5.2).
-   * expectMs: how long it may take on the probe (Host.request): its answer is waited for at least that and
-   * EXPECT_MARGIN_MS, at any rate.
+   * expectMs: the time its arguments set on the probe (Host.request): its answer is waited for at least core §4.4's
+   * floor (`waitFloorMs`), at any rate.
    * @param {Uint8Array} message @param {{ expectMs?: number }} [opts]
    * @returns {Promise<Uint8Array>}
    */
@@ -354,10 +377,10 @@ export class Link {
     const at = this.baud;
     let reply;
     try {
-      reply = await this.sendOnce(message, { timeoutMs: this.waitMs(expectMs) });
+      reply = await this.sendOnce(message, { timeoutMs: this.waitMs(expectMs, message) });
     } catch (e) {
       if (!(e instanceof Timeout || e instanceof cobs.CorruptFrame) || !(await this.speedFallback(e, at))) throw e;
-      reply = await this.sendOnce(message, { timeoutMs: this.waitMs(expectMs) });   // once more at the boot speed (the probe answers a repeat from what it kept)
+      reply = await this.sendOnce(message, { timeoutMs: this.waitMs(expectMs, message) });   // once more at the boot speed (the probe answers a repeat from what it kept)
     }
     if (this.baseBaud !== null && this.baud !== this.baseBaud && reverts(message, reply)) {
       await this.setBaud(this.baseBaud);    // the probe went back right after this answer (core §3.5 obligation 6)
@@ -372,11 +395,12 @@ export class Link {
   }
 
   /**
-   * One request on the wire (its resend after timeoutMs unless `resend` is off).
+   * One request on the wire (its resend after timeoutMs unless `resend` is off). The default wait is the link's own
+   * (`baseWaitMs`): send() gives a host request core §4.4's floor.
    * @param {Uint8Array} message @param {{ timeoutMs?: number, resend?: boolean }} [opts]
    * @returns {Promise<Uint8Array>}
    */
-  sendOnce(message, { timeoutMs = this.waitMs(), resend = this.resend } = {}) {
+  sendOnce(message, { timeoutMs = this.baseWaitMs(), resend = this.resend } = {}) {
     if (this.resyncing) return this.resyncing.then(() => this.sendOnce(message, { timeoutMs, resend }));
     if (this.closed) return Promise.reject(this.closeError instanceof Error ? this.closeError : new Error('the link is closed'));
     const corr = message[1] | (message[2] << 8);
@@ -458,6 +482,7 @@ export class Link {
             this.endedBlind = true;          // the session ended: a session request sent again would meet no_session
           }
         }
+        await this.settleBeforeConfirm();    // still discarding: 250 ms since the last write (§5.1)
         this.discarding = false;
         this.buf = new Uint8Array(0);
         if (this.closed) break;
@@ -472,6 +497,29 @@ export class Link {
     } finally {
       this.discarding = false;
       this.resyncWaiter = null;
+    }
+  }
+
+  /** core §5.1: before a resync's confirm, and the first confirm on a length-prefixed port, host_resync_wait_ms (250 ms
+   * = probe_frame_gap_ms + 50) since this host last wrote there - a frame it left half written is then dropped by the
+   * probe's own gap, not completed by the confirm. */
+  async settleBeforeConfirm() {
+    if (this.lastWrite === null) return;
+    const left = this.lastWrite + RESYNC_WAIT_MS - Date.now();
+    if (left > 0) await new Promise((r) => setTimeout(r, left));
+  }
+
+  /** The first confirm on a length-prefixed port (core §5.1): read and discard until the input has been quiet for
+   * RESYNC_QUIET_MS (at most RESYNC_NOISY_MS), and RESYNC_WAIT_MS since this host's last write there. */
+  async beforeFirstConfirm() {
+    if (this.framing !== 'length') return;
+    this.discarding = true;
+    try {
+      await this.quiet(RESYNC_QUIET_MS, RESYNC_NOISY_MS);
+      await this.settleBeforeConfirm();
+    } finally {
+      this.discarding = false;
+      this.buf = new Uint8Array(0);
     }
   }
 
@@ -492,9 +540,9 @@ export class Link {
     return new Promise((resolve) => {
       /** @param {boolean} ok */
       const done = (ok) => { clearTimeout(timer); this.resyncWaiter = null; resolve(ok); };
-      const timer = setTimeout(() => done(false), this.waitMs());
+      const timer = setTimeout(() => done(false), this.baseWaitMs());
       this.resyncWaiter = { corr, done };
-      this.write(this.framed(new Request(corr, CORE_FN, OP.confirm, OWN_CONFIRM).pack())).catch(() => done(false));
+      this.write(this.framed(new Request(corr, CORE_FN, OP.confirm, this.confirmBody()).pack())).catch(() => done(false));
     });
   }
 
@@ -561,7 +609,7 @@ export class Link {
    * broken leftovers of the lost frames it follows: it keeps asking until its own answer or the deadline, not giving
    * up on the first broken one. @param {number} timeoutMs */
   async confirmRaw(timeoutMs) {
-    const confirm = OWN_CONFIRM;
+    const confirm = this.confirmBody();
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       try {
@@ -632,17 +680,34 @@ export class Link {
   /** A raised rate in force outside raiseSpeed's own trial (where every failure is handled there). */
   inUse() { return this.fallback && this.raised(); }
 
-  /** How long one answer is waited for: the link's timeout; raised and in use, at most a quarter of the session's
+  /** The link's own wait for one answer: the link's timeout; raised and in use, at most a quarter of the session's
    * lease (at least RAISED_WAIT_MIN_MS) - a probe that went back by itself (broken candidates, core §3.5 item 5) hears
    * nothing at the raised rate, and the fall back (both waits, the confirm at the boot speed, the request again there)
-   * must end well inside the lease. A request that may take longer on the probe (`expectMs`: a run's timeoutMs, a dmi
-   * list's waits, ...; the probe does not count the lease meanwhile, core §6.1) waits at least that and
-   * EXPECT_MARGIN_MS, at any rate. @param {number} [expectMs] */
-  waitMs(expectMs = 0) {
+   * must end inside the lease. */
+  baseWaitMs() {
     const lease = this.inUse() ? this.lease() : null;
-    const wait = lease ? Math.min(this.timeoutMs, Math.max(RAISED_WAIT_MIN_MS, lease / 4)) : this.timeoutMs;
-    return expectMs > 0 ? Math.max(wait, expectMs + EXPECT_MARGIN_MS) : wait;
+    return lease ? Math.min(this.timeoutMs, Math.max(RAISED_WAIT_MIN_MS, lease / 4)) : this.timeoutMs;
   }
+
+  /** core §4.4's transfer time of one answer on this port, in ms: (L + max_frame x (1 + notify_pending_max_frames)) x 10
+   * / baud on a port with a line speed (a serial port; 0 elsewhere), L the request's frame on the wire. The rule asks
+   * it of a UART bridge only; counting it on every serial port only waits longer, which it allows.
+   * @param {Uint8Array | number} [request] the request (its frame is measured) or its frame's length */
+  transferMs(request = 0) {
+    const baud = this.baud ?? this.transport.baudRate;
+    if (this.framing !== 'cobs' || !baud) return 0;
+    const len = typeof request === 'number' ? request : cobs.frame(request).length;
+    return (len + this.probeMaxFrame * (1 + NOTIFY_PENDING)) * 10 / baud * 1000;
+  }
+
+  /** The least a host request's answer is waited for (core §4.4, C-06): the time its arguments set (`expectMs`:
+   * run's timeoutMs, dmi's waits, attach / scan budgets, a save) + host_wait_add_ms + the transfer time.
+   * @param {number} [expectMs] @param {Uint8Array | number} [request] */
+  waitFloorMs(expectMs = 0, request = 0) { return Math.max(0, expectMs) + this.waitAddMs + this.transferMs(request); }
+
+  /** How long a host request's answer is waited for: the link's own wait (`baseWaitMs`), never under core §4.4's floor
+   * (`waitFloorMs`). @param {number} [expectMs] @param {Uint8Array | number} [request] */
+  waitMs(expectMs = 0, request = 0) { return Math.max(this.baseWaitMs(), this.waitFloorMs(expectMs, request)); }
 
   /**
    * One frame the host side saw while a session holds the port: `kind` good / broken / lost (host guide §7.3.2: good =
@@ -828,10 +893,10 @@ export class Link {
 
   /**
    * Pipelined: up to maxInflight requests (and no more than a raised rate's inflightCap) and window bytes
-   * outstanding; answers in order.
-   * @param {Uint8Array[]} messages @param {{ maxInflight: number, window: number, maxFrame?: number }} limits
+   * outstanding; answers in order. expectMs: each one's argument time (core §4.4).
+   * @param {Uint8Array[]} messages @param {{ maxInflight: number, window: number, maxFrame?: number, expectMs?: number }} limits
    */
-  async exchange(messages, { maxInflight: probeMax, window, maxFrame = 0 }) {
+  async exchange(messages, { maxInflight: probeMax, window, maxFrame = 0, expectMs = 0 }) {
     const maxInflight = this.inflightFor({ maxInflight: probeMax, maxFrame });
     /** @type {Promise<Uint8Array>[]} */
     const answers = [];
@@ -843,7 +908,7 @@ export class Link {
         await flying[0].done.catch(() => {});
         flying.shift();
       }
-      const answer = this.send(msg);
+      const answer = this.send(msg, expectMs ? { expectMs } : undefined);
       answers.push(answer);
       flying.push({ size, done: answer });
     }

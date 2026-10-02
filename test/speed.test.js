@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as m from '../src/message.js';
-import { NotOepProbe, Rejected, Timeout, Unavailable } from '../src/errors.js';
+import { NotOepProbe, Rejected, Timeout, Unavailable, Unsupported } from '../src/errors.js';
 import { Link, SWITCH_SETTLE_MS, IDLE_MAX_MS, KEEPALIVE_MS, OPEN_RETRY_MS, IN_USE_WINDOW_MS } from '../src/link.js';
 import { getU16, getU32, u32 } from '../src/bytes.js';
 import { Host } from '../src/host.js';
@@ -187,17 +187,19 @@ test('a request unanswered at a raised rate goes back to the boot speed and once
   assert.equal(link.speedLost, 1);
 });
 
-test('WebSerial: a new rate closes and opens the same port, releases DTR / RTS, and reads again', async () => {
+test('WebSerial: opens 8N1 without flow control; a new rate closes and opens the same port, asserts DTR / RTS, and reads again', async () => {
   const { webSerialTransport } = await import('../src/browser/webserial.js');
   /** @type {any[]} */
   const calls = [];
   /** @type {ReadableStreamDefaultController<Uint8Array> | null} */ let feed = null;
+  /** @type {any[]} */ const opened = [];
   const port = {
     /** @type {ReadableStream<Uint8Array> | null} */ readable: null,
     /** @type {WritableStream<Uint8Array> | null} */ writable: null,
     /** @param {{ baudRate: number }} o */
     async open(o) {
       calls.push(['open', o.baudRate]);
+      opened.push(o);
       this.readable = new ReadableStream({ start(c) { feed = c; } });
       this.writable = new WritableStream({ write(chunk) { calls.push(['write', chunk.length]); } });
     },
@@ -218,8 +220,9 @@ test('WebSerial: a new rate closes and opens the same port, releases DTR / RTS, 
   await new Promise((r) => setTimeout(r, 5));
   assert.deepEqual(got, [1, 2]);
   assert.equal(closedWith, 'open');               // the reopen is not the transport closing
-  assert.deepEqual(calls, [['open', 115200], ['close'], ['open', 1500000],
-    ['signals', { dataTerminalReady: false, requestToSend: false }], ['write', 2]]);
+  const asserted = ['signals', { dataTerminalReady: true, requestToSend: true }];   // core §3.4, C-09
+  assert.deepEqual(calls, [['open', 115200], asserted, ['close'], ['open', 1500000], asserted, ['write', 2]]);
+  for (const o of opened) assert.deepEqual({ ...o, baudRate: 0, bufferSize: 0 }, { baudRate: 0, bufferSize: 0, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
   await t.close();
 });
 
@@ -587,12 +590,13 @@ const malformed = (e) => e instanceof Rejected && e.result.detail === m.REJECT.m
  * write is bypassed so nothing is resent. @param {import('../src/host.js').Host} hst */
 const noise = (hst) => hst.link.transport.write(Uint8Array.of(0, 0x11, 0x22, 0x33, 0));
 
-test('fake: a step that does not fit the port state is unavailable cause 6; a step above 2 is malformed', { skip: !haveFake },
+test('fake: a step that does not fit the port state is unavailable cause 6; a step above 2 is unsupported, verify_ms 0 in a try malformed', { skip: !haveFake },
   () => withSpeedFake([], async (hst) => {
     await assert.rejects(portSpeed(hst, ps(0, 500000, COMMIT)), wrongState);             // commit at the boot speed
     await assert.rejects(portSpeed(hst, ps(0, 500000, REVERT)), wrongState);             // revert at the boot speed
-    await assert.rejects(portSpeed(hst, ps(0, 500000, 3)), malformed);                   // not a defined step
-    await assert.rejects(portSpeed(hst, ps(0, 500000, 0xff)), malformed);
+    await assert.rejects(portSpeed(hst, ps(0, 500000, 3)), (e) => e instanceof Unsupported && e.tag === null);   // a later revision's step (core §2.5)
+    await assert.rejects(portSpeed(hst, ps(0, 500000, 0xff)), Unsupported);
+    await assert.rejects(portSpeed(hst, ps(0, 500000, TRY, 0)), malformed);             // verify_ms 0 in a try (C-32)
     const tried = await portSpeed(hst, ps(0, 1500000, TRY));
     assert.equal(getU32(tried.payload), 1500000);
     await hst.link.setBaud(1500000);
@@ -1030,7 +1034,7 @@ test('in use: no step down to a rate above one that failed its verify', { skip: 
 });
 
 test('the probation fails a rate that passes the quick verify and breaks later; the next lower one passes it', { skip: !haveFake },
-  () => withSpeedFake(['--broken-rate', '921600:30:in:after3000'], async (hst) => {
+  () => withSpeedFake(['--broken-rate', '921600:40:in:after3000'], async (hst) => {
     const rec = new SpeedRecord(memoryStore());
     const r = await raiseSpeed(hst, [921600, 500000], { flows: [['in', 1]], record: rec, probationBytes: 4096, probationMs: 300, ...FAST });
     const [t] = r.trials;
@@ -1063,7 +1067,7 @@ test('the probation fails a rate that passes the quick verify and breaks later; 
   }));
 
 test('a failure soon after a breakdown at another rate is noted unknown', { skip: !haveFake },
-  () => withSpeedFake(['--broken-rate', '921600:30:in', '--broken-rate', '500000:30:in'], async (hst) => {
+  () => withSpeedFake(['--broken-rate', '921600:40:in', '--broken-rate', '500000:40:in'], async (hst) => {
     const rec = new SpeedRecord(memoryStore());
     let r = await raiseSpeed(hst, [921600, 500000], { flows: [['in', 1]], record: rec, ...FAST });
     const [a, b] = r.trials;

@@ -22,6 +22,7 @@ export function tcpTransport({ host = '127.0.0.1', port, framing = 'length', con
       const transport = {
         framing,
         kind: 'tcp',
+        keepsBoundaries: true,   // a pause inside a frame is normal on TCP, never a lost boundary (core §5.1)
         write: (data) => new Promise((res, rej) => sock.write(data, (e) => (e ? rej(e) : res()))),
         start(onData, onClose) {
           sock.on('data', (chunk) => onData(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.length)));

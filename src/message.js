@@ -157,8 +157,15 @@ export class Tail {
     /** @type {[number, Uint8Array][]} */ this.tlvs = [];
     /** @type {number[]} */ this.ignored = [];
   }
-  /** @param {number} tag */ get(tag) { return this.tlvs.find(([t]) => t === tag)?.[1]; }
+  /** The first TLV of `tag` (core §2.3: a tag twice in an answer - the host uses the first). @param {number} tag */
+  get(tag) { return this.tlvs.find(([t]) => t === tag)?.[1]; }
   /** @param {number} tag */ all(tag) { return this.tlvs.filter(([t]) => (t & 0x7f) === tag).map(([, v]) => v); }
+  /** The probe ignored more than it lists (core §2.3, C-04: 0x00 as the last of at most 16 entries): every TLV of the
+   * request not listed may have been ignored too. */
+  get moreIgnored() { return this.ignored.includes(TAG_FIXED); }
+  /** Whether the request's TLV `tag` (its number, bit 7 cleared) may not have taken effect: listed, or not listed but
+   * the list ends in 0x00 ("more were ignored"). @param {number} tag */
+  mayHaveIgnored(tag) { return this.ignored.includes(tag & 0x7f) || this.moreIgnored; }
   /** @param {Uint8Array} data */
   static parse(data) {
     const t = new Tail();
@@ -206,6 +213,22 @@ export class Reader {
   tail() { return Tail.parse(this.rest()); }
   /** One element of an answer's list: len(u8) then the element; read what you know of it (core §2.3). */
   element() { return new Reader(this.bytes(this.u8())); }
+}
+
+/** Text from an answer, made safe to show (core §2.1): invalid UTF-8 replaced, and every C0 control character
+ * (0x00-0x1F) and 0x7F replaced by U+FFFD - an owner or a label can never move a terminal's cursor or colour it.
+ * @param {Uint8Array} raw */
+export function shown(raw) {
+  return text(raw).replace(/[\u0000-\u001f\u007f]/g, '\ufffd');
+}
+
+const strict = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/** Text a request may carry (core §2.1): valid UTF-8 without C0 control characters or 0x7F. @param {Uint8Array} raw */
+export function validText(raw) {
+  let s;
+  try { s = strict.decode(raw); } catch { return false; }
+  return !/[\u0000-\u001f\u007f]/.test(s);
 }
 
 /** a - b for values that wrap (seq u16, serials u32, resource numbers u16), as a signed number of `bits` (core §2.6).

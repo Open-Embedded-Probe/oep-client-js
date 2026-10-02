@@ -60,6 +60,13 @@ export function usbUnitId(device) {
   return device.serialNumber || null;
 }
 
+/** A unit id that names a device: an `x-` unit_id (a probe with neither a unique number nor storage, core §7.5, C-24)
+ * names no unit, so no device is looked up by it - RangeError. @param {string} unitId */
+export function requireUnitName(unitId) {
+  if (unitId.toLowerCase().startsWith('x-')) throw new RangeError(`unit id ${unitId}: an x- unit_id names no unit (core §7.5), so no probe is found by it`);
+  return unitId;
+}
+
 /**
  * @typedef {object} VendorInterface
  * @property {number} interfaceNumber

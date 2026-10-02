@@ -23,8 +23,8 @@ export class ScriptedHost extends Host {
     /** @type {[number, number, Uint8Array][]} */ this.log = [];
     for (const [name, fn] of Object.entries(FNS)) { this.fns.set(name, fn); this.revisions.set(fn, 1); }
     this.revision = 1;
-    this.limits = { revision: 1, flags: 0, maxFrame, window: 4096, maxInflight: 8, bootId: 1, tail: new m.Tail() };
-    for (const fn of Object.values(FNS)) this.describes.set(fn, []);   // declares nothing: attach's default max_speed
+    this.limits = { revision: 1, flags: 0, maxFrame, window: 4096, maxInflight: 8, bootId: 1, transport: 0, tail: new m.Tail() };
+    for (const fn of [0, ...Object.values(FNS)]) this.describes.set(fn, []);   // declares nothing: attach's default max_speed, the reference max_op_ms
     if (maxLength !== null) {
       for (const fn of [FNS['oep.target.riscv-dm'], FNS['oep.target.arm-adi']]) {
         this.describes.set(fn, [[COMMON.max_length, Uint8Array.of(maxLength & 0xff, maxLength >> 8)]]);

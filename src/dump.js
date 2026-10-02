@@ -6,6 +6,7 @@
 //   caps.offers.map(describeOffer)     // plain data, one object per interface
 //   toText(caps)                       // the text `oep dump` prints
 
+import * as reg from './registry.js';
 import { hex } from './bytes.js';
 import * as catalog from './catalog.js';
 import * as m from './message.js';
@@ -19,10 +20,30 @@ import { kind } from './names.js';
  * @property {number} maxFrame
  * @property {Offer[]} offers
  * @property {{ confirm: number, list: number, describe: number }} requests   how many were sent
+ * @property {string[]} missing     what core §1.2 requires and the probe did not give (C-10; empty: nothing seen missing)
  */
 
+/** fn 0's describe TLVs every probe gives (core §1.2, §7.5). @type {[number, string][]} */
+const REQUIRED_CORE_TAGS = /** @type {const} */ (['unit_id', 'transport', 'max_op_ms']).map((k) => [reg.CORE.tlv.describe[k], k]);
+
 /**
- * Every interface the probe lists under `prefix` (exact: that name only) with its describe, paged. No lock.
+ * core §1.2 (C-10) as far as a lock-free look shows it: confirm's answer carries TLV transport (§7.1), fn 0's describe
+ * carries unit_id, transport and max_op_ms. -> what is missing (empty: nothing seen missing).
+ * @param {{ revision: number, transport: number | null }} limits confirm's answer (Host.limits)
+ * @param {[number, Uint8Array][]} coreDescribe fn 0's describe TLVs @returns {string[]}
+ */
+export function requiredMissing(limits, coreDescribe) {
+  const out = [];
+  if (limits.revision >= 1 && limits.transport === null) out.push('confirm\'s transport TLV');
+  const have = new Set(coreDescribe.map(([tag]) => tag & 0x7f));
+  for (const [tag, name] of REQUIRED_CORE_TAGS) if (!have.has(tag)) out.push(`describe of fn 0: ${name}`);
+  return out;
+}
+
+/**
+ * Every interface the probe lists under `prefix` (exact: that name only) with its describe, paged. No lock. The
+ * confirm (when the host has none yet) asks as Host.confirm does: the revision in use once there is one (core §7.1,
+ * C-15). `missing`: what core §1.2 requires and the probe did not give (fn 0 listed).
  * @param {import('./host.js').Host} hst @param {string} prefix @param {boolean} exact @returns {Promise<Capabilities>}
  */
 export async function collect(hst, prefix = '', exact = false) {
@@ -30,7 +51,7 @@ export async function collect(hst, prefix = '', exact = false) {
   const limits = await hst.confirmed();
   /** @type {Capabilities} */
   const caps = { revision: limits.revision, maxFrame: limits.maxFrame, offers: [],
-    requests: { confirm: had ? 0 : 1, list: 0, describe: 0 } };
+    requests: { confirm: had ? 0 : 1, list: 0, describe: 0 }, missing: [] };
   /** @type {catalog.ListEntry[]} */
   const entries = [];
   for (;;) {
@@ -52,6 +73,7 @@ export async function collect(hst, prefix = '', exact = false) {
       if (!p[0] || !page.length) break;
     }
     caps.offers.push({ entry, description: catalog.decodeDescription(tlvs), tlvs });
+    if (entry.fn === m.CORE_FN) caps.missing = requiredMissing(limits, tlvs);
   }
   return caps;
 }
@@ -130,7 +152,8 @@ export function describeOffer(o) {
 /** Everything collected as plain data (the shape `toJson` writes).
  * @param {Capabilities} caps */
 export function toData(caps) {
-  return { revision: caps.revision, maxFrame: caps.maxFrame, requests: { ...caps.requests }, interfaces: caps.offers.map(describeOffer) };
+  return { revision: caps.revision, maxFrame: caps.maxFrame, requests: { ...caps.requests }, missingRequired: [...caps.missing],
+    interfaces: caps.offers.map(describeOffer) };
 }
 
 /** @param {Capabilities} caps */
@@ -153,6 +176,7 @@ export function toText(caps) {
   const rows = caps.offers.map(describeOffer);
   const lines = [`OEP revision ${caps.revision}, max frame ${caps.maxFrame} bytes; `
     + `${rows.length} interfaces in ${caps.requests.list} list and ${caps.requests.describe} describe requests`, ''];
+  if (caps.missing?.length) lines.splice(1, 0, `MISSING what every probe must give (core §1.2): ${caps.missing.join(', ')}`);
   /** @type {Map<number, OfferRow[]>} */
   const byInstance = new Map();
   for (const r of rows) byInstance.set(r.instance, [...(byInstance.get(r.instance) ?? []), r]);

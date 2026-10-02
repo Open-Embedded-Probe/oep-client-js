@@ -78,8 +78,8 @@ test('the canonical order and hash (probe.config §2)', () => {
   assert.deepEqual(order, [[1, 5, 1, 19], [1, 5, 1, 20], [1, 5, 2, 21], [2, 3, 97, undefined], [2, 9, 98, undefined]]);   // plan by (fn, role, channel)
   assert.throws(() => config.canonical([/** @type {any} */ (config.remove('slot', 0))]), RangeError);   // a removal is not an item
   // the hash is over the one TLV encoding (core §2.2): a long label goes in the long form
-  const long = new Label({ channel: 1, text: 'x'.repeat(300) });
-  assert.equal(config.canonicalHash([long]), config.crc32(m.tlv(config.ITEM.label, long.value())));
+  const long = m.tlv(config.ITEM.label, Uint8Array.from([1, 0, ...new Uint8Array(300).fill(0x78)]));   // as item bytes: a label is at most 32 bytes (PC-5)
+  assert.equal(config.canonicalHash([long]), config.crc32(long));
   // the critical bit is not part of it; the same key twice is refused
   const crit = config.item(new Label({ channel: 3, text: 'a' }));
   crit[0] |= 0x80;
@@ -143,10 +143,9 @@ test('slots and binds round trip and show their state', { skip: !haveFake }, () 
     const h = await cfg.set([config.remove('bind', 3)]);                   // goes as an unset
     assert.deepEqual((await cfg.items()).map((i) => i.constructor.name), ['Slot']);
     assert.equal(h, (await cfg.get()).hash);
-    // a slot lock whose scheme the wire does not have: unsupported (undefined: malformed)
+    // a slot lock whose scheme the wire does not have, or one a later revision may define: unsupported (core §2.5, C-02)
     await assert.rejects(cfg.set([new Slot({ slot: 1, wireFn: 1, pins: [4, 5], name: 'l', lock: { scheme: 2, mask: u32(1), value: u32(1) } })]), Unsupported);
-    await assert.rejects(cfg.set([new Slot({ slot: 1, wireFn: 1, pins: [4, 5], name: 'l', lock: { scheme: 9, mask: u32(1), value: u32(1) } })]),
-      (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);
+    await assert.rejects(cfg.set([new Slot({ slot: 1, wireFn: 1, pins: [4, 5], name: 'l', lock: { scheme: 9, mask: u32(1), value: u32(1) } })]), Unsupported);
     await hst.end();
   }));
 

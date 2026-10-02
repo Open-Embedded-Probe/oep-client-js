@@ -23,7 +23,9 @@
 //   const { passed, failed } = rec.lookup('/dev/ttyUSB0', 'fafe00000003');
 //   rec.note('/dev/ttyUSB0', 'fafe00000003', 921600, true, 'verify');
 //
-// `raiseSpeed(host, candidates, { record: true })` reads and writes it; the library default is off.
+// `raiseSpeed(host, candidates, { record: true })` reads and writes it; the library default is off. A unit_id starting
+// with `x-` names no unit (core §7.5, C-24: a probe with neither a unique number nor storage): nothing is kept or found
+// under it, so another unit on the same port inherits nothing.
 
 /** A pass is kept this long ... */
 export const PASS_TTL_MS = 30 * 86400_000;
@@ -152,6 +154,9 @@ export class SpeedRecord {
     }
   }
 
+  /** false for an `x-` unit_id (core §7.5): it names no unit, and nothing is keyed by it. @param {string} unitId */
+  static namesAUnit(unitId) { return !unitId.startsWith('x-'); }
+
   /** @param {string | null} port @param {string} unitId */
   static key(port, unitId) { return port === null ? unitId : `${port}|${unitId}`; }
 
@@ -172,10 +177,11 @@ export class SpeedRecord {
 
   /**
    * The rates that passed and the rates that failed on this port with this probe, within their expiry; each rate is in
-   * one list only (its latest note), fastest first. An unknown is in neither.
+   * one list only (its latest note), fastest first. An unknown is in neither. An `x-` unit_id: nothing.
    * @param {string | null} port @param {string} unitId @returns {{ passed: number[], failed: number[] }}
    */
   lookup(port, unitId) {
+    if (!SpeedRecord.namesAUnit(unitId)) return { passed: [], failed: [] };
     const rates = this.fresh(this.data[SpeedRecord.key(port, unitId)]);
     const by = (/** @type {RateResult} */ want) => [...rates].filter(([, v]) => v === want).map(([r]) => r).sort((a, b) => b - a);
     return { passed: by('passed'), failed: by('failed') };
@@ -183,12 +189,15 @@ export class SpeedRecord {
 
   /** Every rate within its expiry -> 'passed' / 'failed' / 'unknown'.
    * @param {string | null} port @param {string} unitId @returns {Map<number, RateResult>} */
-  results(port, unitId) { return this.fresh(this.data[SpeedRecord.key(port, unitId)]); }
+  results(port, unitId) {
+    return SpeedRecord.namesAUnit(unitId) ? this.fresh(this.data[SpeedRecord.key(port, unitId)]) : new Map();
+  }
 
   /** Remember that `rate` passed (true), failed (false) or is unknown (null: measured while the line was still
-   * settling) now, decided at `phase`, and save.
+   * settling) now, decided at `phase`, and save. An `x-` unit_id: nothing is kept (core §7.5); true.
    * @param {string | null} port @param {string} unitId @param {number} rate @param {boolean | null} passed @param {string} [phase] */
   note(port, unitId, rate, passed, phase = '') {
+    if (!SpeedRecord.namesAUnit(unitId)) return true;
     const key = SpeedRecord.key(port, unitId);
     const entry = this.data[key] ?? (this.data[key] = { port, unit_id: unitId, rates: {} });
     entry.port = port;

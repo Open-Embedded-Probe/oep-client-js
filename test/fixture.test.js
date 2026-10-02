@@ -37,7 +37,7 @@ function scripted(handlers, maxFrame = 1024) {
     },
   };
   const hst = new Host(/** @type {any} */ (link));
-  hst.limits = { revision: 1, flags: 0, maxFrame, window: 4096, maxInflight: 4, bootId: 1, tail: new m.Tail() };
+  hst.limits = { revision: 1, flags: 0, maxFrame, window: 4096, maxInflight: 4, bootId: 1, transport: 0, tail: new m.Tail() };
   hst.revision = 1;
   for (const [name, fn] of /** @type {[string, number][]} */ ([[FixtureUart.NAME, UART], [I2cTarget.NAME, I2C], [SpiTarget.NAME, SPI]])) {
     hst.fns.set(name, fn);
@@ -93,7 +93,7 @@ test('i2c-target and spi-target declarations from describe', async () => {
     tlv(0x06, new Writer().u32(0b11).done()), tlv(0x40, Uint8Array.of(8)), tlv(0x41, new Writer().u32(100_000).done())]);
   hst.describes.set(SPI, [tlv(0x03, new Writer().u16(64).done()), tlv(0x40, Uint8Array.of(4))]);
   const t = await I2cTarget.open(hst);
-  assert.deepEqual(await t.declarations(), { maxLength: 128, maxClockHz: 1_000_000, features: 0b11, queueDepth: 8, maxStretchUs: 100_000 });
+  assert.deepEqual(await t.declarations(), { maxLength: 128, maxClockHz: 1_000_000, features: 0b11, queueDepth: 8, maxStretchUs: 100_000, pullupOhms: null });
   const s = await SpiTarget.open(hst);
   assert.deepEqual(await s.declarations(), { maxLength: 64, maxClockHz: null, features: 0, queueDepth: 4 });
   hst.describes.set(I2C, [tlv(0x06, new Writer().u32(0b01).done())]);
@@ -163,7 +163,7 @@ test('gpio set is a list in order, only planned channels', { skip: !haveFake }, 
     assert.deepEqual(await g.read([23, 5]), [1, 1]);
     const raw = await hst.request(g.fn, Gpio.READ, Uint8Array.of(2, 23, 0, 5, 0), { locked: false });
     assert.deepEqual([...raw.payload], [2, 1, 1, 0x01, 2, 0xff, 2]);      // n(u8) n x level, TLV drive (fixture §1 / §1.1)
-    await assert.rejects(g.set([[5, 8]]), (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);   // not a defined mode
+    await assert.rejects(g.set([[5, 8]]), (e) => e instanceof Unsupported && e.tag === null && e.channel === 5 && e.index === 0);   // a mode a later revision may define (core §2.5)
     const e = await g.set([[5, Gpio.OUTPUT_LOW], [40, Gpio.OUTPUT_LOW]]).then(() => null, (x) => x);
     assert.ok(e instanceof GpioUnavailable && e instanceof Unavailable);
     assert.deepEqual(e.channels, [40]);
@@ -194,7 +194,7 @@ test('uart configure with a format, reads that do not consume, write, marks', { 
     assert.deepEqual(log.at(-2)?.[2].slice(4), Uint8Array.of(0x81, 1, 0b010100));   // format: a critical TLV
     assert.deepEqual(await io.read(), new Uint8Array());
     await assert.rejects(io.uart.configure(9600, 0x01), (e) => e instanceof Unsupported && e.tag === 0x81);   // 7N1: defined, not declared
-    await assert.rejects(io.uart.configure(9600, 0x80), (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);   // an undefined bit
+    await assert.rejects(io.uart.configure(9600, 0x80), (e) => e instanceof Unsupported && e.tag === 0x81);   // a reserved format bit (core §2.5, C-02): the tag
     await assert.rejects(io.uart.configure(50_000_000), (e) => e instanceof Unsupported && e.tag === null);   // more than 5 % off
     assert.deepEqual(await io.uart.status(), { configured: 'session', baud: io.baud, format: 0b010100, isDefault: false });
     assert.ok((await io.uart.write(utf8('abc'))) > 0);

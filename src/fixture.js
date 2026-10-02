@@ -132,7 +132,9 @@ export class Gpio extends Interface {
 
   /** [channel, mode] or [channel, mode, drive] elements, applied in order; drive only on mode 3 / 4 (anything else is
    * rejected malformed). -> the answer's ignored list (core §2.3): one TAG_DRIVE per drive the probe did not apply (a
-   * level number past its list, or a probe without drive_levels). `readState` shows the level in force.
+   * level number past its list, an undefined kind, or a probe without drive_levels), at most 16 - a 0x00 last means
+   * more were ignored than listed (C-04, `Tail.moreIgnored`: any drive may not have taken). `readState` shows the
+   * level in force.
    * @param {GpioElement[]} elements @returns {Promise<number[]>} */
   async set(elements) {
     try {
@@ -299,9 +301,11 @@ export class FixtureUartIO extends StreamIO {
  * A fixture target's describe (fixture §3 / §4): maxLength (bytes a frame / transfer), maxClockHz (the verified bus
  * clock limit), features (bits; 0 when not declared), queueDepth (tag 0x40: frames / transfers the queue holds; i2c
  * mode 3 also the most unread preload slots). null: not declared. */
-/** @typedef {TargetDeclarations & { maxStretchUs: number | null }} I2cTargetDeclarations
+/** @typedef {TargetDeclarations & { maxStretchUs: number | null, pullupOhms: number | null }} I2cTargetDeclarations
  * maxStretchUs (tag 0x41, u32): the largest stretchUs stretch() accepts; null when not declared (a probe declares it
- * exactly when features has bit1). */
+ * exactly when features has bit1). pullupOhms (tag 0x42, u32; fixture §3, P2-★3): the approximate resistance of the
+ * pull-ups the probe enables on SDA / SCL while configured; null when it declares none (features bit2 clear): it then
+ * enables none and the bus needs its own. */
 
 /** The describe of fixture target `iface` decoded (cached on the host like every describe).
  * @param {Interface} iface @returns {Promise<{ d: import('./catalog.js').Description, own: Map<number, Uint8Array> }>} */
@@ -345,14 +349,23 @@ export class I2cTarget extends Interface {
   static TAG_MAX_STRETCH_US = I2C.tlv.describe.max_stretch_us;
   static FEATURE_PRELOADED_TX = I2C.enum.features.preloaded_tx;
   static FEATURE_STRETCH = I2C.enum.features.stretch;
+  static FEATURE_INTERNAL_PULLUPS = I2C.enum.features.internal_pullups;
+  static TAG_PULLUP_OHMS = I2C.tlv.describe.pullup_ohms;
 
-  /** What the probe declares for this target (describe): maxLength, maxClockHz, features, queueDepth, maxStretchUs.
-   * @returns {Promise<I2cTargetDeclarations>} */
+  /** What the probe declares for this target (describe): maxLength, maxClockHz, features, queueDepth, maxStretchUs,
+   * pullupOhms. @returns {Promise<I2cTargetDeclarations>} */
   async declarations() {
     const { d, own } = await targetDescribe(this);
-    return { maxLength: d.maxLength, maxClockHz: d.maxClockHz, features: d.features ?? 0,
-      queueDepth: ownU8(own, I2cTarget.TAG_QUEUE_DEPTH), maxStretchUs: ownU32(own, I2cTarget.TAG_MAX_STRETCH_US) };
+    const features = d.features ?? 0;
+    return { maxLength: d.maxLength, maxClockHz: d.maxClockHz, features,
+      queueDepth: ownU8(own, I2cTarget.TAG_QUEUE_DEPTH), maxStretchUs: ownU32(own, I2cTarget.TAG_MAX_STRETCH_US),
+      pullupOhms: features & I2cTarget.FEATURE_INTERNAL_PULLUPS ? ownU32(own, I2cTarget.TAG_PULLUP_OHMS) : null };
   }
+
+  /** The pull-ups the probe enables on SDA / SCL while configured, in ohms (fixture §3, P2-★3); null when it declares
+   * none - the bus then needs its own. A host may warn that the probe's pull-ups shift the levels of a bus that has
+   * them. */
+  async pullupOhms() { return (await this.declarations()).pullupOhms; }
 
   /** @type {bigint | null} when the probe received the last frame readRx gave (its clock, ns), when it says */
   lastNs = null;

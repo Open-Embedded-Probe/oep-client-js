@@ -157,13 +157,20 @@ function request(port, baud, step, verifyMs, idleMs) {
   return out;
 }
 
-/** The probe's UART bridge (its transport index) when it declares port_speed; else null and why not.
+/** confirm's transport from a broker that answers the session ops itself (core §3.1, §7.1): no port of the probe. */
+export const RELAYING_BROKER = 0xff;
+
+/** The port this host's requests come in on (the transport TLV of confirm's answer, core §7.1, C-05) when the probe
+ * declares port_speed and that transport is a UART bridge; else null and why not.
  * @param {import('./host.js').Host} hst @returns {Promise<[number | null, string]>} */
-async function speedPort(hst) {
+export async function speedPort(hst) {
   const tlvs = await core.describe(hst, 0);
   if (!tlvs.some(([tag, v]) => (tag & 0x7f) === PORT_SPEED_TAG && v[0] === 1)) return [null, 'the probe does not declare port_speed'];
-  const bridge = (await core.probeInfo(hst)).transports.find((t) => t.kind === UART_BRIDGE);
-  return bridge ? [bridge.index, ''] : [null, 'the probe has no UART bridge'];
+  const index = (hst.limits ?? await hst.confirm()).transport;
+  if (index === null || index === undefined) return [null, 'the probe\'s confirm names no transport (core §7.1 requires it)'];
+  if (index === RELAYING_BROKER) return [null, 'a relaying broker answers the confirm (transport 0xFF): no port of this probe to raise'];
+  const kind = (await core.probeInfo(hst)).transports.find((t) => t.index === index)?.kind;
+  return kind === UART_BRIDGE ? [index, ''] : [null, `this host's transport (index ${index}) is not a UART bridge`];
 }
 
 /** The probe's unit_id (core §7.5, mandatory) - the record's key with the port. @param {import('./host.js').Host} hst */
@@ -408,9 +415,16 @@ export async function raiseSpeed(hst, candidates = DEFAULT_CANDIDATES, { flows =
   /** @type {SpeedRecord | null} */
   let rec = null;
   if (record) {
-    rec = record instanceof SpeedRecord ? record : new SpeedRecord(typeof record === 'string' ? await fileStore(record) : await defaultStore());
-    link.record = rec;
-    link.recordKey = [link.transport.path ?? (typeof process !== 'undefined' && process.versions?.node ? '<stream>' : null), await unitId(hst)];
+    const unit = await unitId(hst);
+    if (SpeedRecord.namesAUnit(unit)) {
+      rec = record instanceof SpeedRecord ? record : new SpeedRecord(typeof record === 'string' ? await fileStore(record) : await defaultStore());
+      link.record = rec;
+      link.recordKey = [link.transport.path ?? (typeof process !== 'undefined' && process.versions?.node ? '<stream>' : null), unit];
+    } else {                                    // an x- unit_id names no unit: nothing kept (core §7.5, C-24)
+      link.record = null;
+      link.recordKey = null;
+      report.why = `unit_id ${unit} names no unit (core §7.5): no speed record`;
+    }
   }
   /** @type {Run} */
   const run = { flowSpecs: flows, flows: [], verify: full, frames, wait, idleMs, at, rec, size: 0,
@@ -485,8 +499,8 @@ async function raise(hst, link, report, candidates, run, baseline, maxTries) {
   if (!rates.length) return report;
   if (run.verify) {
     run.flows = resolveFlows(run.flowSpecs, nMax);
-    report.why = await baselineOf(hst, link, report, run.flows, baseline, run.size);
-    if (report.why) return report;
+    const why = await baselineOf(hst, link, report, run.flows, baseline, run.size);
+    if (why) { report.why = why; return report; }
   }
   const session = hst.session;
   link.speedPlan = { rates: [...rates], session, go: (lower) => (hst.session === session ? tryRates(hst, link, report, lower, run) : Promise.resolve(null)) };

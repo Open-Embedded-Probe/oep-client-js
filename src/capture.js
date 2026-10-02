@@ -12,7 +12,13 @@
 // takes the segment's own.
 //
 // configure: a TLV the probe cannot honour is refused (rejected unsupported, 0x0B, payload = the tag) when the host
-// marked it critical, and otherwise ignored and listed in the answer's ignored TLV (0x7F, oep-core §2.3).
+// marked it critical, and otherwise ignored and listed in the answer's ignored TLV (0x7F, oep-core §2.3). mode, rate,
+// trigger, pretrigger and frontend always go critical (oep-if-capture §3.3, P2-○8); samples and segments go critical
+// only when asked: the probe rounds samples down to its limit and the answer (Config.samples / .segments) is what holds.
+//
+// blocking_ms (P2-○9): a start whose answer says blocking_ms > 0 is followed by nothing on any transport for that long
+// (`blocked`), then - on a length-prefixed link - the resync of core §5.1; neither the lease nor the answer's wait
+// counts it.
 
 import * as reg from './registry.js';
 import { Writer, getU16, getU32, getU64, text } from './bytes.js';
@@ -43,6 +49,8 @@ export const DATA_GENERATION = CAP.tlv.data.generation;
 export const GROUP_GENERATIONS = GRP.tlv.start_answer.generations;
 /** @type {Record<number, string>} */
 export const REFERENCE_SOURCE = Object.fromEntries(Object.entries(ANA.enum.reference_source).map(([k, v]) => [v, k]));
+/** configure's TLVs always sent critical (oep-if-capture §3.3 "sent critical", P2-○8). */
+export const ALWAYS_CRITICAL = Object.freeze(new Set([MODE, RATE, TRIGGER, PRETRIGGER, FRONTEND]));
 export const IGNORED = m.TAG_IGNORED;
 export const CRITICAL = m.TAG_CRITICAL;
 export const ONE_SHOT = CAP.enum.mode.one_shot, REPEAT = CAP.enum.mode.repeat, STREAMING = CAP.enum.mode.streaming;
@@ -67,6 +75,19 @@ const NO_INDEX = 0xffffffff;
 
 /** @param {Uint8Array} payload */
 export function tlvs(payload) { return m.splitTlvs(payload); }
+
+/**
+ * oep-if-capture §3.2 (P2-○9): from the start answer for blockingMs the probe may not process frames on any transport,
+ * so this host sends nothing for that long; afterwards a length-prefixed link begins with the resync of core §5.1, a
+ * serial port simply goes on. Neither the lease nor the host's wait counts blockingMs.
+ * @param {import('./host.js').Host} hst @param {number} blockingMs @param {(ms: number) => Promise<unknown>} [wait]
+ */
+export async function blocked(hst, blockingMs, wait = sleep) {
+  if (blockingMs <= 0) return;
+  await wait(blockingMs);
+  const link = /** @type {any} */ (hst).link;
+  if (link && link.framing === 'length' && typeof link.startResync === 'function') await link.startResync();
+}
 
 /** serial u32, position u64, samples u32, start_ns u64, start_uncertainty_ns u32, trigger_index u32, flags u8,
  * generation u32 (oep-if-capture §2) */
@@ -316,7 +337,8 @@ export function parseGroupEvent(frame) {
  * @property {[number, number, number]} [trigger]  (type, role, value)
  * @property {number} [pretrigger]
  * @property {boolean} [query]              ask only (query op, no lock, nothing changes)
- * @property {Iterable<number>} [critical]  tags the probe must honour or reject (Unsupported, .tag = the one it cannot)
+ * @property {Iterable<number>} [critical]  more tags the probe must honour or reject (samples, segments; mode, rate,
+ *   trigger, pretrigger and frontend always are: ALWAYS_CRITICAL) - Unsupported, .tag = the one it cannot
  * @property {Map<number, number> | Record<number, number>} [frontends]  analog: role -> frontend (describe frontend)
  */
 
@@ -347,10 +369,11 @@ export class LogicCapture extends Interface {
     return this.config;
   }
 
-  /** -> the probe's actual values (Config.ignored: tags the probe ignored).
+  /** -> the probe's actual values (Config.ignored: tags the probe ignored). mode, rate, trigger, pretrigger and
+   * frontend always go critical (§3.3); read Config.samples / .segments: the probe rounds samples down.
    * @param {ConfigureOptions} opts */
   async configure({ rate, mode = ONE_SHOT, samples, segments, trigger, pretrigger, query = false, critical = [], frontends }) {
-    const crit = new Set(critical);
+    const crit = new Set([...ALWAYS_CRITICAL, ...critical]);
     const w = new Writer();
     /** @param {number} tag @param {Uint8Array} value */
     const put = (tag, value) => w.raw(m.tlv(tag, value, crit.has(tag)));
@@ -449,13 +472,15 @@ export class LogicCapture extends Interface {
     return got;
   }
 
-  /** -> blockingMs (0: the probe keeps answering while it captures). this.generation: the new capture's. */
+  /** -> blockingMs (0: the probe keeps answering while it captures). this.generation: the new capture's. With
+   * blockingMs > 0 this returns after it (`blocked`): nothing goes to the probe meanwhile (P2-○9). */
   async start() {
-    const rd = new m.Reader((await this.call(LogicCapture.START, undefined, { expectMs: this.config?.blockingMs ?? 0 })).payload);
+    const rd = new m.Reader((await this.call(LogicCapture.START)).payload);   // the answer comes before the blocking (§3.2)
     const blocking = rd.u32();
     this.generation = rd.u32();
     rd.tail();
     this.armedMs = now();
+    await blocked(this.host, blocking);
     return blocking;
   }
 
@@ -784,8 +809,7 @@ export class CaptureGroup extends Interface {
    * generations names each track's new generation; this.generations keeps them by fn).
    * @param {LogicCapture[]} tracks */
   async start(tracks = []) {
-    const rd = new m.Reader((await this.call(CaptureGroup.START, undefined,
-      { expectMs: Math.max(0, ...tracks.map((t) => t.config?.blockingMs ?? 0)) })).payload);
+    const rd = new m.Reader((await this.call(CaptureGroup.START)).payload);   // the answer comes before any blocking (§3.2)
     const blockingMs = rd.u32(), startNs = rd.u64();
     const gens = rd.tail().get(GROUP_GENERATIONS) ?? new Uint8Array();
     this.generations = new Map();
@@ -796,6 +820,7 @@ export class CaptureGroup extends Interface {
       const g = this.generations.get(tr.fn);
       if (g !== undefined) tr.generation = g;
     }
+    await blocked(this.host, blockingMs);
     return { blockingMs, startNs };
   }
 

@@ -24,6 +24,10 @@ export const TIMEOUT = STATUS.timeout;
 export const STATUS_NAMES = Object.fromEntries(Object.entries(STATUS).map(([k, v]) => [v, k]));
 const RV = reg.TARGET_RISCV_DM;
 const RVSWD = reg.WIRE_RVSWD;
+/** One attach answer at most (oep-if-debug §1): its argument time (core §4.4). */
+export const ATTACH_BUDGET_MS = reg.LIMITS.attach_budget_ms;
+/** No scan combination starts later than this; a scan's argument time adds one attach to it. */
+export const SCAN_BUDGET_MS = reg.LIMITS.scan_budget_ms;
 export const STEP = RV.enum.dmi_step;
 export const STEP_WRITE = STEP.write, STEP_READ = STEP.read, STEP_POLL_READS = STEP.poll_reads;
 export const STEP_WAIT_US = STEP.wait_us, STEP_POLL_US = STEP.poll_us;
@@ -72,6 +76,19 @@ export class TargetError extends OepError {
     const outcome = result !== null ? ` (${result.describe()})` : '';
     super(`${what} stopped${at}: ${statusName(status)}${outcome}`);
     this.status = status; this.result = result; this.done = done; this.values = values; this.data = data;
+  }
+}
+
+/**
+ * step did not get the hart back to debug mode (oep-if-debug §4.2, P2-○4): `stepLeft` - the probe could not halt it
+ * again (the hart runs, dcsr.step may still be set: halt it and clear dcsr.step); otherwise it is halted again with
+ * `after` (dpc) valid.
+ */
+export class StepError extends TargetError {
+  /** @param {number} status @param {m.Result} result @param {number} before @param {number} after @param {boolean} stepLeft */
+  constructor(status, result, before, after, stepLeft) {
+    super('step', status, result);
+    this.before = before; this.after = after; this.stepLeft = stepLeft;
   }
 }
 
@@ -139,6 +156,18 @@ export class WireBase extends Interface {
     return WireBase.DEFAULT_MAX_SPEED;
   }
 
+  /** An argument time, at most the probe's max_op_ms (core §4.4). @param {number} ms */
+  async budget(ms) {
+    try { return Math.min(ms, await maxOpMs(this.host)); } catch { return ms; }
+  }
+
+  /** attach's argument time (core §4.4, C-06 / P2-★4): attach_budget_ms plus the reset TLV's holdMs, at most max_op_ms -
+   * the host's wait for its answer adds host_wait_add_ms and the transfer time. @param {[number, number] | null} [reset] */
+  attachMs(reset = null) { return this.budget(ATTACH_BUDGET_MS + (reset ? reset[1] : 0)); }
+
+  /** scan's argument time: scan_budget_ms + attach_budget_ms (one combination's try), at most max_op_ms. */
+  scanMs() { return this.budget(SCAN_BUDGET_MS + ATTACH_BUDGET_MS); }
+
   /** [channel, holdMs], critical: hold the reset line (open drain, low) that long, then attach (§3).
    * @param {[number, number] | null | undefined} reset */
   resetTlv(reset) {
@@ -164,13 +193,14 @@ export class WireBase extends Interface {
     const extra = new Writer();
     if (maxSpeed != null) extra.raw(m.tlv(WireBase.TAG_SCAN_MAX_SPEED, new Writer().u32(maxSpeed).done(), true));
     if (idleClock != null) extra.raw(m.tlv(WireBase.TAG_SCAN_IDLE_CLOCK, [IDLE_CLOCK[idleClock]], true));
+    const expectMs = await this.scanMs();
     for (;;) {
       const chunk = left.slice(0, 255);
       const w = new Writer().u8(chunk.length);
       for (const [d, c] of chunk) w.u16(d).u16(c);
       if (!listed && skip) w.raw(m.tlv(WireBase.TAG_SKIP, u16(skip)));
       w.raw(extra.done());
-      const rd = new m.Reader((await this.call(WireBase.SCAN, w.done())).payload);
+      const rd = new m.Reader((await this.call(WireBase.SCAN, w.done(), { expectMs })).payload);
       const tried = rd.u8(), count = rd.u8();
       for (let i = 0; i < count; i++) {
         const e = rd.element();   // len(u8)-prefixed: read what this client knows of it (core §2.3)
@@ -236,6 +266,7 @@ export class Wire extends WireBase {
   static HALT = RVSWD.enum.attach_method.halt;
   static TAG_TARGET_ID = RVSWD.tlv.attach_answer.target_id;
   static TAG_DPC = RVSWD.tlv.attach_answer.dpc;
+  static TAG_SEARCH_RETRIES = RVSWD.tlv.attach_answer.search_retries;
   static SCHEME_WCH_DMI_7F = reg.COMMON.enum.target_id_scheme.wch_dmi_7f;   // one scheme space (common)
 
   hadReset = false;
@@ -246,6 +277,8 @@ export class Wire extends WireBase {
   speedHz = 0;
   /** @type {number[]} */ ignored = [];
   /** @type {[number, Uint8Array] | null} (scheme, value) the last attach read, or null */ targetId = null;
+  /** @type {number | null} the last attach's failed speed-search tries (0xFFFF: 65535 or more; null: not said) */
+  searchRetries = null;
   /** @type {Map<number, (number | null)[] | Rejected>} channel -> dpc per try (null: attach failed), or the rejection */
   lastSearch = new Map();
 
@@ -291,11 +324,12 @@ export class Wire extends WireBase {
    * host (§3). reset = [channel, holdMs]: hold that reset line (one of resetChannels()) low for holdMs, then attach -
    * halting before the first instruction with halt - the way back from firmware that turns the debug pins into GPIOs
    * (on an existing connection: the target is reset, mark reset detail 3). this.targetId: [scheme, value] of the
-   * target's identity when the probe could read one.
+   * target's identity when the probe could read one; this.searchRetries: the answer's failed speed-search tries. The
+   * answer is waited for attach_budget_ms (+ holdMs) as its argument time (core §4.4).
    * @param {AttachOptions} [opts]
    */
   async attach(opts = {}) {
-    const rd = new m.Reader((await this.call(Wire.ATTACH, await this.attachBody(opts), { expectMs: opts.reset?.[1] ?? 0 })).payload);
+    const rd = new m.Reader((await this.call(Wire.ATTACH, await this.attachBody(opts), { expectMs: await this.attachMs(opts.reset) })).payload);
     const conn = rd.u16(), dmstatus = rd.u32();
     this.flags = rd.u8();
     this.speedHz = rd.u32();
@@ -307,6 +341,8 @@ export class Wire extends WireBase {
     this.takeTargetId(tail);
     const dpc = tail.get(Wire.TAG_DPC);
     this.dpc = this.halted && dpc && dpc.length >= 4 ? getU32(dpc) : null;
+    const tries = tail.get(Wire.TAG_SEARCH_RETRIES);                // oep-if-debug §1 (optional)
+    this.searchRetries = tries && tries.length >= 2 ? getU16(tries) : null;
     return { conn, dmstatus };
   }
 
@@ -466,6 +502,7 @@ export class RiscvDm extends Interface {
   static METHOD_NDMRESET = RV.enum.reset_method.ndmreset;
   static METHOD_SYSTEM = RV.enum.reset_method.system_reset;
   static TAG_RESET_METHOD = RV.tlv.reset.method;
+  static TAG_STEP_LEFT = RV.tlv.step_answer.step_left;
   static DPC = 0x07B1;
 
   /** @type {number | null} bytes one block operation may move (describe max_length; never computed from max_frame) */
@@ -537,13 +574,16 @@ export class RiscvDm extends Interface {
    * @param {{ method?: number | null }} [opts] */
   async resetHalt({ method = null } = {}) { return (await this.resetMode(RiscvDm.RESET_HALT, method)).pc; }
 
-  /** One instruction (dcsr.step, one resume, privilege kept). -> { moved, before, after } (dpc before / after, §4.2) */
+  /** One instruction (dcsr.step, one resume, privilege kept). -> { moved, before, after } (dpc before / after, §4.2). A
+   * hart that did not come back throws StepError (§4.2, P2-○4): `stepLeft` false - the probe halted it with haltreq
+   * and restored it, `after` valid; true (answer TLV step_left) - it could not halt it again: the hart runs and
+   * dcsr.step may still be set, so the host halts it and clears dcsr.step. */
   async step() {
     const r = await this.request(RiscvDm.STEP);
     const rd = ran(r);
     const status = rd.u8(), moved = rd.u8() !== 0, before = rd.u32(), after = rd.u32();
-    rd.tail();
-    check('step', r, status);
+    const tail = rd.tail();
+    if (status !== OK || !r.succeeded) throw new StepError(status, r, before, after, tail.get(RiscvDm.TAG_STEP_LEFT) !== undefined);
     return { moved, before, after };
   }
 
@@ -676,11 +716,12 @@ export async function attachAfterGpioReset(hst, wire, gpioFn, channel, { tries =
   /** @type {m.Result | null} */
   let last = null;
   const attachReq = wire.req(Wire.ATTACH, await wire.attachBody({ halt: true }));   // built once: its describe is not in the race
+  const expectMs = await wire.attachMs();             // the attach's budget is its argument time (core §4.4)
   for (let i = 0; i < tries; i++) {
     await hst.call(gpioFn, GPIO.op.set, gpioSetBody(channel, GPIO.enum.mode.open_drain_low));
     await sleep(lowMs);
     const [release, attach] = await hst.pipeline([[gpioFn, GPIO.op.set, gpioSetBody(channel, GPIO.enum.mode.open_drain_release)],
-      attachReq]);
+      attachReq], { expectMs });
     last = attach;
     if (release.resolution === m.REJECTED) throw rejection(release);   // never leave the reset line held
     if (!release.succeeded) throw new Failed(release);

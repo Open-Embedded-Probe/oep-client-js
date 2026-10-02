@@ -15,8 +15,16 @@ import { Failed, InUse, Locked, NotV1, Rejected, rejection } from './errors.js';
 
 export const MIN_REVISION = 1, MAX_REVISION = 1;
 const OWNER = reg.CORE.tlv.open.owner;
+/** open's owner at most this many bytes (core §6.4). */
+export const OWNER_MAX = reg.LIMITS.owner_max_bytes;
+/** confirm's answer TLV: the index (fn 0's describe) of the transport the confirm came on (core §7.1, C-05). */
+const CONFIRM_TRANSPORT = reg.CORE.tlv.confirm_answer.transport;
 
-/** @typedef {{ revision: number, flags: number, maxFrame: number, window: number, maxInflight: number, bootId: number, tail: m.Tail }} Limits */
+/**
+ * confirm's answer. transport: the index (fn 0's describe) of the transport this confirm came on (core §7.1, C-05;
+ * 0xFF from a relaying broker; null when the probe sent none).
+ * @typedef {{ revision: number, flags: number, maxFrame: number, window: number, maxInflight: number, bootId: number,
+ *   transport: number | null, tail: m.Tail }} Limits */
 /**
  * open's answer. resumed (core §6.4): 0 a new session, 1 the same id with its resources kept, 2 the same id after its
  * lease lapsed and the probe swept them (`swept`: the host rebuilds its plan and connections; `epoch` moved).
@@ -27,6 +35,22 @@ export const RESUMED = reg.CORE.enum.resumed;
 
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * open's owner as it may go (core §2.1, §6.4): control characters replaced by '?', then cut to OWNER_MAX (32) bytes on a
+ * character boundary (never half a UTF-8 sequence). An owner with nothing left throws RangeError.
+ * @param {string} owner @returns {Uint8Array}
+ */
+export function ownerText(owner) {
+  let chars = [...owner.replace(/[\u0000-\u001f\u007f]/g, '?')];
+  let raw = utf8(chars.join(''));
+  while (raw.length > OWNER_MAX) {
+    chars = chars.slice(0, -1);
+    raw = utf8(chars.join(''));
+  }
+  if (!raw.length) throw new RangeError(`owner: 1 to ${OWNER_MAX} bytes of text (core §6.4)`);
+  return raw;
+}
 
 function randomSession() {
   const b = new Uint32Array(1);
@@ -60,6 +84,7 @@ export class Host {
     if (link && 'lease' in link) link.lease = () => (this.session !== null ? this.leaseMs : null);   // raised: bounds each wait
     if (link && 'sessionId' in link) link.sessionId = () => this.session;
     if (link && 'blind' in link) link.blind = () => this.blindStop();   // the §5.1 resync's stops when pushes keep coming
+    if (link && 'confirmBody' in link) link.confirmBody = () => this.confirmBody();   // the link's own confirms: the revision in use (C-15)
   }
 
   nextCorr() { this.corr = (this.corr % 0xffff) + 1; return this.corr; }
@@ -79,9 +104,10 @@ export class Host {
 
   /**
    * One request. locked: send the session id once a session is open. Rejections throw; any other answer comes back.
-   * expectMs: how long it may take on the probe (a run's timeoutMs, a dmi list's waits, an attach's holdMs, a capture's
-   * blocking, a save; core §6.1: the probe does not count the lease meanwhile): the link waits at least that and a
-   * margin for its answer, also at a raised port_speed rate (where an ordinary request waits a quarter of the lease).
+   * expectMs: the time its arguments set on the probe (a run's timeoutMs, a dmi list's waits, an attach's or a scan's
+   * budget, a save; core §4.4, §6.1: the probe does not count the lease meanwhile): the link waits at least that +
+   * host_wait_add_ms (1000 ms) + a serial port's transfer time for its answer (core §4.4's floor, C-06), also at a
+   * raised port_speed rate (where an ordinary request waits a quarter of the lease, never under the floor).
    * @param {number} fn @param {number} op @param {Uint8Array} payload @param {{ locked?: boolean, expectMs?: number }} [opts]
    */
   async request(fn, op, payload = new Uint8Array(), { locked = true, expectMs = 0 } = {}) {
@@ -135,14 +161,15 @@ export class Host {
 
   /**
    * Several requests in flight (the probe's in-flight and window limits); results in order, rejects NOT thrown.
-   * @param {[number, number, Uint8Array][]} requests @param {{ locked?: boolean }} [opts]
+   * expectMs: the argument time of each (as request's; core §4.4).
+   * @param {[number, number, Uint8Array][]} requests @param {{ locked?: boolean, expectMs?: number }} [opts]
    */
-  async pipeline(requests, { locked = true } = {}) {
+  async pipeline(requests, { locked = true, expectMs = 0 } = {}) {
     const session = await this.sessionFor(locked);
     await this.beforeRequest();
     const reqs = requests.map(([fn, op, payload]) => new m.Request(this.nextCorr(), fn, op, payload, session));
     const limits = await this.confirmed();
-    const replies = await this.link.exchange(reqs.map((r) => r.pack()), { maxInflight: limits.maxInflight, window: limits.window, maxFrame: limits.maxFrame });
+    const replies = await this.link.exchange(reqs.map((r) => r.pack()), { maxInflight: limits.maxInflight, window: limits.window, maxFrame: limits.maxFrame, expectMs });
     const results = replies.map((b) => m.Result.unpack(b));
     results.forEach((res, i) => {
       if (res.corr !== reqs[i].corr) throw new m.ProtocolError(`result for correlation ${res.corr}, expected ${reqs[i].corr}`);
@@ -152,7 +179,7 @@ export class Host {
   }
 
   /** pipeline() for operations that must all work: throws at the first result that did not.
-   * @param {[number, number, Uint8Array][]} requests @param {{ locked?: boolean }} [opts] */
+   * @param {[number, number, Uint8Array][]} requests @param {{ locked?: boolean, expectMs?: number }} [opts] */
   async pipelineCalls(requests, opts = {}) {
     const results = await this.pipeline(requests, opts);
     for (const r of results) {
@@ -164,9 +191,22 @@ export class Host {
 
   // ---- confirm (§7.1) -------------------------------------------------------------------------------------
 
-  /** Ask for a revision in [minRev, maxRev] -> the probe's limits, with its boot_id (core §6.5, §7.1: a host without
-   * the lock learns of a restart from it). Also sets the link's frame limit. */
-  async confirm(minRev = MIN_REVISION, maxRev = MAX_REVISION) {
+  /** The revisions a confirm asks for (core §7.1, C-15): the range this client handles before the first confirm, then
+   * [the revision in use, the same] in every later confirm (a resync, probing again) - so a later confirm never
+   * switches the revision in the middle of a session. @returns {[number, number]} */
+  confirmRange() { return this.revision ? [this.revision, this.revision] : [MIN_REVISION, MAX_REVISION]; }
+
+  /** The confirm request's payload with `confirmRange()` (what the link's own confirms send). */
+  confirmBody() { return Uint8Array.from([...m.CONFIRM_REQUEST, ...this.confirmRange()]); }
+
+  /** Ask for a revision in [minRev, maxRev] (default `confirmRange()`) -> the probe's limits, with its boot_id (core
+   * §6.5, §7.1: a host without the lock learns of a restart from it) and `transport`, the index this host came on.
+   * No revision in the range: rejected unsupported (Unsupported: `.supported` says the probe's range). Also sets the
+   * link's frame limit. @param {number} [minRev] @param {number} [maxRev] */
+  async confirm(minRev, maxRev) {
+    const [lo, hi] = this.confirmRange();
+    minRev ??= lo;
+    maxRev ??= hi;
     let r;
     try {
       r = await this.request(m.CORE_FN, m.OP.confirm, new Writer().raw(m.CONFIRM_REQUEST).u8(minRev).u8(maxRev).done(), { locked: false });
@@ -187,8 +227,12 @@ export class Host {
     const tail = rd.tail();
     this.bootIdSeen(bootId);
     this.revision = revision;
-    this.limits = { revision, flags, maxFrame, window, maxInflight, bootId, tail };
-    if (this.link.framing === 'length' && maxFrame) this.link.maxFrame = maxFrame;
+    const where = tail.get(CONFIRM_TRANSPORT);
+    this.limits = { revision, flags, maxFrame, window, maxInflight, bootId, transport: where?.length ? where[0] : null, tail };
+    if (maxFrame && this.link) {
+      if ('probeMaxFrame' in this.link) this.link.probeMaxFrame = maxFrame;   // the wait's transfer time (core §4.4)
+      if (this.link.framing === 'length') this.link.maxFrame = maxFrame;
+    }
     return this.limits;
   }
 
@@ -208,8 +252,9 @@ export class Host {
   // ---- the session and the lock (§6) -----------------------------------------------------------------------
 
   /**
-   * A new random id unless `session` is given. leaseMs 0 = the probe's default; 1000..60000 are taken as asked. owner:
-   * who holds the lock (1-32 bytes, shown to other hosts). Opened.resumed: 0 a new session, 1 the same id with its
+   * A new random id (never 0, core §6.1) unless `session` is given. leaseMs 0 = the probe's default; 1000..60000 are
+   * taken as asked. owner: who holds the lock, shown to other hosts (`ownerText`: control characters replaced, cut to
+   * 32 bytes on a character). Opened.resumed: 0 a new session, 1 the same id with its
    * resources kept, 2 the same id after its lease lapsed swept them (core §6.4).
    * @param {number} leaseMs @param {{ force?: boolean, session?: number, owner?: string }} [opts]
    * @returns {Promise<Opened>}
@@ -217,8 +262,9 @@ export class Host {
   async open(leaseMs = 0, { force = false, session, owner } = {}) {
     await this.requireV1();
     const sid = session ?? randomSession();
+    if (sid === 0) throw new RangeError('session_id 0 is not a session (core §6.1)');
     const w = new Writer().u32(sid).u32(leaseMs).u8(force ? 1 : 0);
-    if (owner) w.raw(m.tlv(OWNER, utf8(owner).slice(0, 32)));
+    if (owner) w.raw(m.tlv(OWNER, ownerText(owner)));
     const r = await this.request(m.CORE_FN, m.OP.open, w.done(), { locked: false });
     if (sid !== this.session) this.subscriptions.clear();
     this.session = sid;
@@ -245,7 +291,7 @@ export class Host {
     const rd = new m.Reader(p);
     const locked = rd.u8() !== 0, remainingMs = rd.u32();
     const v = rd.tail().get(reg.CORE.tlv.lock_state_answer.owner);
-    return { locked, remainingMs, owner: v ? text(v) : null };
+    return { locked, remainingMs, owner: v ? m.shown(v) : null };
   }
 
   /**

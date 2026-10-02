@@ -1,6 +1,10 @@
 // @ts-check
 // Serial ports (USB CDC, USB-Serial/JTAG, a USB-UART bridge) through the optional `serialport` package: COBS frames
-// and the port's raw bytes on one line (oep-core §3.1, §3.4). Opened exclusively (lock: true).
+// and the port's raw bytes on one line (oep-core §3.1, §3.4). Opened exclusively (lock: true), 8 data bits, no parity,
+// 1 stop bit, no flow control, DTR and RTS asserted from the open on and while it stays open (core §3.4, C-09: a UART
+// bridge may wire them to the probe's reset; what a probe does with DTR deasserted is not defined). serialport has no
+// option to give DTR / RTS at open: the OS asserts both when the port opens (POSIX termios, Windows DTR_CONTROL_ENABLE /
+// RTS_CONTROL_ENABLE), and `set({ dtr: true, rts: true })` right after the open makes it explicit.
 
 /** @returns {Promise<any>} the `serialport` module */
 export async function loadSerialport() {
@@ -23,14 +27,26 @@ export async function listSerialPorts() {
   return SerialPort.list();
 }
 
+/** The port's options as core §3.4 asks (C-09), for a check: 8N1, no flow control. */
+export const SERIAL_LINE = Object.freeze({ dataBits: 8, parity: 'none', stopBits: 1, rtscts: false, xon: false, xoff: false, xany: false });
+
+/** DTR and RTS asserted (core §3.4, C-09); a port that cannot set them (a pty, a driver without modem lines) keeps what
+ * the open gave. @param {any} port */
+export function assertLines(port) {
+  return new Promise((resolve) => {
+    try { port.set({ dtr: true, rts: true }, () => resolve(undefined)); } catch { resolve(undefined); }
+  });
+}
+
 /**
  * @param {{ path: string, baudRate?: number }} opts  baudRate matters only on a UART bridge
  * @returns {Promise<import('../link.js').Transport>}
  */
 export async function serialTransport({ path, baudRate = 115200 }) {
   const { SerialPort } = await loadSerialport();
-  const port = new SerialPort({ path, baudRate, lock: true, autoOpen: false });
+  const port = new SerialPort({ path, baudRate, ...SERIAL_LINE, lock: true, autoOpen: false });
   await new Promise((resolve, reject) => port.open((/** @type {Error | null} */ e) => (e ? reject(e) : resolve(undefined))));
+  await assertLines(port);
   let closing = false;
   /** @type {import('../link.js').Transport} */
   const transport = {

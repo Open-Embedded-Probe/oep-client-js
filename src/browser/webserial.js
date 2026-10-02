@@ -1,11 +1,13 @@
 // @ts-check
 // WebSerial: a serial port (USB CDC, USB-Serial/JTAG, a USB-UART bridge). COBS frames and the port's raw bytes on
-// one line (oep-core §3.1, §3.4).
+// one line (oep-core §3.1, §3.4). Opened 8N1 without flow control, DTR and RTS asserted (core §3.4, C-09): WebSerial
+// cannot name DTR / RTS before the open (the browser asserts both when it opens the port), so `setSignals` asserts
+// them right after every open; a browser without setSignals keeps what the open gave.
 
 /**
  * The part of WebSerial's SerialPort used here (lib.dom does not carry WebSerial).
  * @typedef {object} SerialPortLike
- * @property {(opts: { baudRate: number, bufferSize?: number }) => Promise<void>} open
+ * @property {(opts: { baudRate: number, bufferSize?: number, dataBits?: number, stopBits?: number, parity?: string, flowControl?: string }) => Promise<void>} open
  * @property {() => Promise<void>} close
  * @property {ReadableStream<Uint8Array> | null} readable
  * @property {WritableStream<Uint8Array> | null} writable
@@ -32,20 +34,31 @@ export function requestSerialPort({ filters } = {}) {
   return serialApi().requestPort(filters ? { filters } : {});
 }
 
+/** WebSerial's open options as core §3.4 asks (C-09): 8N1, no flow control. */
+export const SERIAL_LINE = Object.freeze({ dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
+
+/** DTR and RTS asserted together (core §3.4, C-09); a browser without setSignals keeps what the open gave.
+ * @param {SerialPortLike} port */
+async function assertSignals(port) {
+  try { await port.setSignals?.({ dataTerminalReady: true, requestToSend: true }); } catch { /* no signals */ }
+}
+
 /** The ports this page was given before. @returns {Promise<SerialPortLike[]>} */
 export function getSerialPorts() { return serialApi().getPorts(); }
 
 /**
- * A serial port as a transport. `setBaudRate` changes the rate the way esptool-js does over WebSerial: the same
- * SerialPort closed and opened again at the new baudRate (the page keeps its permission), DTR and RTS then released
- * together at once (a UART bridge's auto-reset circuit resets the board when they differ), and the reader started
- * again - what arrived meanwhile is gone, which port_speed expects (oep-core §3.5).
+ * A serial port as a transport, opened 8N1 without flow control with DTR and RTS asserted (core §3.4, C-09).
+ * `setBaudRate` changes the rate the way esptool-js does over WebSerial: the same SerialPort closed and opened again at
+ * the new baudRate (the page keeps its permission), DTR and RTS then asserted together at once (a UART bridge's
+ * auto-reset circuit resets the board when they differ), and the reader started again - what arrived meanwhile is
+ * gone, which port_speed expects (oep-core §3.5).
  * @param {SerialPortLike} port
  * @param {{ baudRate?: number, bufferSize?: number }} [opts]  baudRate matters only on a UART bridge
  * @returns {Promise<import('../link.js').Transport>}
  */
 export async function webSerialTransport(port, { baudRate = 115200, bufferSize = 65536 } = {}) {
-  if (!port.readable) await port.open({ baudRate, bufferSize });
+  if (!port.readable) await port.open({ baudRate, bufferSize, ...SERIAL_LINE });
+  await assertSignals(port);
   if (!port.writable || !port.readable) throw new Error('the serial port did not open');
   /** @type {WritableStreamDefaultWriter<Uint8Array>} */
   let writer = port.writable.getWriter();
@@ -90,8 +103,8 @@ export async function webSerialTransport(port, { baudRate = 115200, bufferSize =
         try { reader?.releaseLock(); } catch { /* gone */ }
         try { writer.releaseLock(); } catch { /* gone */ }
         await port.close();
-        await port.open({ baudRate: rate, bufferSize });
-        try { await port.setSignals?.({ dataTerminalReady: false, requestToSend: false }); } catch { /* no signals */ }
+        await port.open({ baudRate: rate, bufferSize, ...SERIAL_LINE });
+        await assertSignals(port);
         if (!port.writable || !port.readable) throw new Error('the serial port did not open again');
         writer = port.writable.getWriter();
         transport.baudRate = rate;

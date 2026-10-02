@@ -16,7 +16,8 @@ export const PROBE_WAIT_MS = reg.TIMING.host_wait_add_ms;
  * payload starting OEP!) came back. None: the link is closed and NotOepProbe thrown. Vendor bulk / HID: one confirm
  * and its one §5.2 resend, each waiting PROBE_WAIT_MS. A serial port (COBS) first runs Link.waitBootSpeed's confirms
  * (core §3.5 host obligation 7: about 4 s at the boot speed, a raised rate a host that died left over going back),
- * confirms only. TCP (a host-side broker, which opens the probe itself) keeps the link's timeout.
+ * confirms only. TCP (a host-side broker, which opens the probe itself) keeps the link's timeout. On length frames
+ * (vendor bulk, HID, TCP) the input is first read and discarded until quiet (core §5.1).
  * @param {Link} link @param {Host} host @param {import('./link.js').Transport} transport
  */
 async function probe(link, host, transport) {
@@ -25,6 +26,9 @@ async function probe(link, host, transport) {
   try {
     if (transport.framing === 'cobs' && transport.kind === 'serial') await link.waitBootSpeed();
     else if (transport.kind !== 'tcp') link.timeoutMs = PROBE_WAIT_MS;
+    // core §5.1: the first confirm on a length-prefixed port waits for 50 ms of quiet input and for
+    // host_resync_wait_ms (250 ms) since this host last wrote there
+    await link.beforeFirstConfirm();
     return await host.confirm();
   } catch (e) {
     link.timeoutMs = saved;

@@ -1,8 +1,9 @@
 // @ts-check
 // Interface names (oep-spec docs/capability-identification-comparison.ja.md, draft).
 //
-// A name is dot-separated labels of lowercase ASCII letters, digits and '-', at most 48 bytes. The first label says
-// which kind of namespace it is:
+// A name is dot-separated labels of lowercase ASCII letters, digits and '-' - each label 1 or more of them, not
+// starting or ending with '-', at least two labels - 1 to 64 bytes (core §7.2, §13 rule 1). The first label says which
+// kind of namespace it is:
 //
 //   oep.                      the OEP standard (reserved; `oep` is not a real top-level domain)
 //   local.                    bench-only experiments, never published, no interoperability promise
@@ -10,8 +11,10 @@
 //   <tld>.<domain>...         reverse DNS of a domain the author owns, including hosting domains such as
 //                             io.github.<name> (GitHub gives <name>.github.io to one owner)
 
-export const MAX_NAME = 48;
-const LABEL = /^[a-z0-9-]+$/;
+import * as reg from './registry.js';
+
+export const MAX_NAME = reg.LIMITS.interface_name_max_bytes;   // 64 (core §7.2)
+const LABEL = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;              // no '-' at either end (core §13 rule 1)
 const TLD = /^[a-z]{2,63}$/;
 const UUID = /^[0-9a-f]{32}$/;
 
@@ -36,7 +39,7 @@ export function validate(name) {
   const labels = name.split('.');
   if (labels.length < 2) throw new InvalidName(`${q(name)}: needs a namespace and at least one more label`);
   for (const label of labels) {
-    if (!LABEL.test(label)) throw new InvalidName(`${q(name)}: label ${q(label)} is not [a-z0-9-]+`);
+    if (!LABEL.test(label)) throw new InvalidName(`${q(name)}: label ${q(label)} is not [a-z0-9-]+ without '-' at either end`);
   }
   const first = labels[0];
   if (first === 'uuid') {

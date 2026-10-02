@@ -6,23 +6,36 @@
 // like. An interface missing from here is still listed and described - with raw role numbers, raw feature bits and raw
 // tag bytes.
 
-import { getU16, getU32, text } from './bytes.js';
+import { getU16, getU32 } from './bytes.js';
 import { bitmapToChannels } from './catalog.js';
+import { shown } from './message.js';
 
 /** @typedef {(v: Uint8Array) => string} Decoder */
 
 /** @param {Uint8Array} v */ const u16 = (v) => String(getU16(v));
 /** @param {Uint8Array} v */ const u32 = (v) => String(getU32(v));
 /** @param {Uint8Array} v */ const bits32 = (v) => { const b = getU32(v); return Array.from({ length: 32 }, (_, i) => i).filter((i) => (b >>> i) & 1).join(', '); };
-/** @param {Uint8Array} v */ const asText = (v) => text(v);
+/** control characters and bad UTF-8 replaced (core §2.1) @param {Uint8Array} v */ const asText = (v) => shown(v);
 /** @param {Uint8Array} v */ const channels = (v) => ranges(bitmapToChannels(getU16(v), v.slice(2)));
-/** @param {Uint8Array} v */ const label = (v) => `${getU16(v)} = ${text(v.slice(2))}`;
+/** @param {Uint8Array} v */ const label = (v) => `${getU16(v)} = ${shown(v.slice(2))}`;
 /** @param {Uint8Array} v */ const first = (v) => String(v[0]);
 
 /** @type {Record<number, string>} */
 const TRANSPORTS = { 1: 'UART bridge', 2: 'USB CDC', 3: 'USB-Serial/JTAG', 4: 'vendor bulk', 5: 'HID', 6: 'TCP' };
 /** @type {Record<number, string>} */
 const MECHANISMS = { 0: 'SDI', 1: 'DMDATA', 2: 'dmseq', 0xff: 'none' };
+
+/** capture §3.5 (P2-★6): what the probe does while it captures @type {Record<number, string>} */
+const BACKGROUND = { 0: 'blocks while capturing', 1: 'answers while capturing' };
+/** @type {Record<number, string>} */
+const CAPTURE_MODES = { 1: 'one-shot', 2: 'repeat', 3: 'streaming' };
+
+/** capture describe's mode: mode(u8) background(u8) max_samples(u32) max_segments(u32) (oep-if-capture §3.5).
+ * @param {Uint8Array} v */
+function captureMode(v) {
+  const mode = v[0], background = v[1], most = getU32(v, 2), segments = getU32(v, 6);
+  return `${CAPTURE_MODES[mode] ?? `mode ${mode}`}, ${BACKGROUND[background] ?? `background ${background}`}, max ${most} samples x ${segments} segments`;
+}
 
 /** @param {Uint8Array} v */
 function transport(v) {
@@ -53,13 +66,14 @@ export const KNOWN = {
       0x43: ['channels', u16], 0x44: ['reserved', channels], 0x45: ['profile', asText],
       0x46: ['label', label], 0x47: ['resets on open', () => 'yes'],
       0x49: ['transport', transport], 0x4a: ['discoverable', (v) => (v[0] === 1 ? 'yes' : 'no')],
-      0x4b: ['plan roles', u32], 0x4c: ['chip', asText], 0x4d: ['max op ms', u32] } }),
+      0x4b: ['plan roles', u32], 0x4c: ['chip', asText], 0x4d: ['max op ms', u32],
+      0x4e: ['port speed', (v) => (v[0] === 1 ? 'yes' : 'no')] } }),
   'oep.wire.rvswd': known('scan, attach, detach over RVSWD (attach returns a connection)',
-    { roles: { 1: 'SWDIO', 2: 'SWCLK', 3: 'reset' }, tags: { 0x40: ['max connections', first] } }),
+    { roles: { 1: 'SWDIO', 2: 'SWCLK', 3: 'reset' }, features: { 0: 'attach writes unbounded' }, tags: { 0x40: ['max connections', first] } }),
   'oep.wire.swio': known('scan, attach, detach over SWIO, one wire (attach returns a connection)',
-    { roles: { 1: 'SWIO', 3: 'reset' }, tags: { 0x40: ['max connections', first] } }),
+    { roles: { 1: 'SWIO', 3: 'reset' }, features: { 0: 'attach writes unbounded' }, tags: { 0x40: ['max connections', first] } }),
   'oep.wire.swd': known('scan, attach, detach over ARM SWD',
-    { roles: { 1: 'SWDIO', 2: 'SWCLK' }, tags: { 0x40: ['max connections', first] } }),
+    { roles: { 1: 'SWDIO', 2: 'SWCLK' }, features: { 0: 'attach writes unbounded' }, tags: { 0x40: ['max connections', first] } }),
   'oep.target.riscv-dm': known(
     'RISC-V Debug Module over DMI: step lists, block read/write, run until halt, halt/resume',
     { features: { 0: 'block read/write', 1: 'run until halt', 2: 'reset', 3: 'step' } }),
@@ -73,9 +87,12 @@ export const KNOWN = {
   'oep.fixture.gpio': known('drive and read probe pins', { roles: { 1: 'line' }, tags: { 0x40: ['modes', bits32] } }),
   'oep.fixture.uart': known('a UART (USART, asynchronous) on probe pins', { roles: { 1: 'RX', 2: 'TX' },
     tags: { 0x40: ['formats', (v) => Array.from(v.slice(1, 1 + v[0]), (b) => `0x${b.toString(16).padStart(2, '0')}`).join(', ')] } }),
-  'oep.fixture.logic': known('sampled logic capture', { roles: LOGIC_LINES }),
-  'oep.fixture.i2c-target': known('an I2C target the DUT can address (ESP-IDF slave driver)',
-    { roles: { 1: 'SDA', 2: 'SCL' }, features: { 0: 'preloaded tx', 1: 'clock stretching' } }),
+  'oep.fixture.logic': known('sampled logic capture', { roles: LOGIC_LINES, tags: { 0x40: ['mode', captureMode] } }),
+  'oep.fixture.analog': known('sampled analog capture',
+    { roles: Object.fromEntries(Array.from({ length: 8 }, (_, k) => [k, `ch${k}`])), tags: { 0x40: ['mode', captureMode] } }),
+  'oep.fixture.i2c-target': known('an I2C target the DUT can address (open-drain only, fixture §3)',
+    { roles: { 1: 'SDA', 2: 'SCL' }, features: { 0: 'preloaded tx', 1: 'clock stretching', 2: 'internal pull-ups' },
+      tags: { 0x40: ['queue depth', first], 0x41: ['max stretch us', u32], 0x42: ['pull-ups ohms', u32] } }),
   'oep.fixture.spi-target': known('an SPI target the DUT can clock (ESP-IDF slave driver)',
     { roles: { 1: 'SCK', 2: 'MOSI', 3: 'MISO', 4: 'CS' }, features: { 0: 'LSB first' } }),
 };

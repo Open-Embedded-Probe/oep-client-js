@@ -1,7 +1,7 @@
 // @ts-check
 // USB through the optional `usb` package's WebUSB class (the same shape as a browser's WebUSB): the vendor bulk
 // interface (src/usbvendor.js, shared with the browser), and the P4's DFU for firmware updates (src/dfu.js).
-import { usbCandidate, usbUnitId, vendorTransport } from '../usbvendor.js';
+import { requireUnitName, usbCandidate, usbUnitId, vendorTransport } from '../usbvendor.js';
 import { dfuUpdate, findDfuInterface, openDfu } from '../dfu.js';
 
 /** @typedef {import('../usbtypes.js').UsbDevice} UsbDevice */
@@ -57,6 +57,7 @@ export async function findUsbProbes() {
  * @param {{ unitId?: string, vendorId?: number, productId?: number }} want
  */
 async function pick(want) {
+  if (want.unitId) requireUnitName(want.unitId);
   const found = (await usbDevices()).filter((d) => matches(d, want));
   const what = [want.unitId ? 'device' : want.vendorId != null ? `${hex(want.vendorId)}:${want.productId != null ? hex(want.productId) : '*'}` : 'OEP probe candidate',
     want.unitId ? `unit id ${want.unitId}` : ''].filter(Boolean).join(' ');

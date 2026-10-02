@@ -3,7 +3,7 @@
 // transports, the pin plan, taking the lock - and `Interface`, the base every interface client shares.
 
 import * as reg from './registry.js';
-import { Writer, getU16, getU32, text } from './bytes.js';
+import { Writer, getU16, getU32 } from './bytes.js';
 import * as catalog from './catalog.js';
 import * as m from './message.js';
 import { OepError } from './errors.js';
@@ -83,8 +83,16 @@ export async function maxOpMs(hst) {
   return reg.REFERENCE.max_op_ms;
 }
 
+/** The firmware's fixed channel labels from oep.core's describe (tag 0x46) as [channel, text], in describe order -
+ * every one, two channels with the same text included (probe.config §1.3 step (c) finds none then). Text shown as core
+ * §2.1 says (`m.shown`). @param {import('./host.js').Host} hst @returns {Promise<[number, string][]>} */
+export async function firmwareLabels(hst) {
+  return (await describe(hst, 0)).filter(([tag, v]) => (tag & 0x7f) === D.label && v.length >= 2)
+    .map(([, v]) => [getU16(v), m.shown(v.slice(2))]);
+}
+
 /**
- * oep.core's describe decoded (core §7.5). labels: the firmware's fixed channel labels (0x46); the labels the settings
+ * oep.core's describe decoded (core §7.5). Text values are shown as core §2.1 says (control characters replaced). labels: the firmware's fixed channel labels (0x46); the labels the settings
  * gave are read from oep.probe.config (config.ProbeConfig.items(), Label). discoverable: the probe also enumerates with the
  * project's USB VID:PID (core §3.3, §7.5; every probe says 0 until that VID:PID is listed). maxOpMs: the longest one request may take.
  * @param {import('./host.js').Host} hst
@@ -101,14 +109,14 @@ export async function probeInfo(hst) {
   };
   for (const [tag, v] of await describe(hst, 0)) {
     const t = tag & 0x7f;
-    if (t === D.firmware) info.firmware = text(v);
-    else if (t === D.model) info.model = text(v);
-    else if (t === D.unit_id) info.unitId = text(v);
-    else if (t === D.chip) info.chip = text(v);
-    else if (t === D.profile) info.profile = text(v);
+    if (t === D.firmware) info.firmware = m.shown(v);
+    else if (t === D.model) info.model = m.shown(v);
+    else if (t === D.unit_id) info.unitId = m.shown(v);
+    else if (t === D.chip) info.chip = m.shown(v);
+    else if (t === D.profile) info.profile = m.shown(v);
     else if (t === D.channels) info.channels = getU16(v);
     else if (t === D.reserved) info.reserved = catalog.bitmapToChannels(getU16(v), v.slice(2));
-    else if (t === D.label && v.length >= 2) info.labels.set(text(v.slice(2)), getU16(v));
+    else if (t === D.label && v.length >= 2) info.labels.set(m.shown(v.slice(2)), getU16(v));
     else if (t === D.transport && v.length >= 2) info.transports.push({ index: v[0], kind: v[1], usbInterface: v.length > 2 ? v[2] : 0xff });
     else if (t === D.discoverable) info.discoverable = v[0] === 1;
     else if (t === D.plan_roles && v.length >= 4) info.planRoles = getU32(v);
