@@ -57,10 +57,16 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 - block operations: riscv-dm / arm-adi `readBlock` / `writeBlock` are bounded by the probe's declared `max_length`
   (`RiscvDm` / `ArmAdi` `.maxLength` bytes, `.maxWords`; oep-if-debug §4.5 / §6) - `MemAp` chunks by it, and a probe
   with block ops that declares none throws `riscv.NoMaxLength`; nothing is derived from max_frame.
+- gpio output strength (oep-if-fixture §1.1): `Gpio.set([[ch, mode, Drive.maxMa(10)]])` (a drive per output element,
+  `Drive.level(n)` or a number for a level) returns the answer's ignored list; `driveLevels()` -> `DriveLevels`
+  (`defaultLevel`, `ma`, `pick(drive)`), `readState(channels)` -> `{ levels, drive }` (the level in force); the
+  settings' `Idle({ ..., drive })`, `Slot({ ..., bootReset: true })` (the at-boot retry with reset) and
+  `SlotState.resetAtNs`; `config.findLine(config, slotName, 'nrst')` is probe.config §1.3's line lookup
+  (`lineFromLabels` the same on bare data).
 
 The wire is oep-spec's zero-base rewrite of 2026-10-01 (every answer carries its lengths, TLVs have a long form, confirm
-answers the boot_id, `expired`, probe.config's `state` / `unset` / `uart`, the attach reset TLV, capture generations; see
-the changelog). Tested against oep-client-python's fake probe (148 tests) and scripted devices; the browser transports,
+answers the boot_id, `expired`, probe.config's `state` / `unset` / `uart`, the attach reset TLV, capture generations, the
+gpio drive and the slot's boot_reset; see the changelog). Tested against oep-client-python's fake probe (191 tests) and scripted devices; the browser transports,
 DFU and the page are not yet checked on hardware.
 
 Until the v1 freeze the spec may break and this package follows it at once, with the probe firmware

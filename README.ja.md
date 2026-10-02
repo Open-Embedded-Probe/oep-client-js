@@ -52,10 +52,15 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 - block の操作: riscv-dm / arm-adi の `readBlock` / `writeBlock` は probe が宣言した `max_length` で区切る（`RiscvDm` / `ArmAdi` の
   `.maxLength` byte、`.maxWords`。oep-if-debug §4.5 / §6）。`MemAp` もそれで分け、block op を持つのに宣言しない probe は
   `riscv.NoMaxLength`。max_frame からは何も計算しない
+- gpio の出力の強さ（oep-if-fixture §1.1）: `Gpio.set([[ch, mode, Drive.maxMa(10)]])`（出力の要素ごとの drive。段は
+  `Drive.level(n)` か数）は応答の ignored を返す。`driveLevels()` は `DriveLevels`（`defaultLevel`、`ma`、`pick(drive)`）、
+  `readState(channels)` は `{ levels, drive }`（いま効いている段）。設定の `Idle({ ..., drive })`、`Slot({ ..., bootReset: true })`
+  （at-boot のリセットでのやり直し）、`SlotState.resetAtNs`。`config.findLine(config, slotName, 'nrst')` は probe.config §1.3 の
+  線の探し方（`lineFromLabels` は同じことを素のデータで）
 
 wire は oep-spec の 2026-10-01 のゼロベース見直しの形です（応答はすべて長さを持つ、TLV の長い形、confirm の boot_id、`expired`、
-probe.config の `state` / `unset` / `uart`、attach の reset TLV、キャプチャの世代。変更履歴を参照）。oep-client-python の fake の
-probe（148 件の試験）と台本のデバイスで試しています。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
+probe.config の `state` / `unset` / `uart`、attach の reset TLV、キャプチャの世代、gpio の drive、スロットの boot_reset。変更履歴を
+参照）。oep-client-python の fake の probe（191 件の試験）と台本のデバイスで試しています。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
 
 v1 の凍結までは仕様が壊れることがあり、この package は probe の firmware
 （[OpenEmbeddedProbe](https://github.com/Open-Embedded-Probe/oep-probe-arduino)）と

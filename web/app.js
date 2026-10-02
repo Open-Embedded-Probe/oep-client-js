@@ -200,11 +200,11 @@ function itemText(it) {
   if (it instanceof config.Slot) {
     return [`slot ${it.slot} "${it.name}"`, `wire fn ${it.wireFn}`, `pins ${it.pins.join('/')}`, it.attach,
       it.retryS ? `retry ${it.retryS} s` : '', it.maxSpeed ? `≤ ${it.maxSpeed} Hz` : '', `idle ${it.idleClock}`,
-      it.mechanism, it.lock ? 'lock' : ''].filter(Boolean).join(', ');
+      it.mechanism, it.lock ? 'lock' : '', it.bootReset ? 'boot reset' : ''].filter(Boolean).join(', ');
   }
   if (it instanceof config.Bind) return `bind port ${it.port} ${it.mode}: ${it.streams.map((s) => s.join(':')).join(', ')}`;
   if (it instanceof config.Label) return `label ${it.channel} "${it.text}"`;
-  if (it instanceof config.Idle) return `idle ${it.channel} ${it.mode}`;
+  if (it instanceof config.Idle) return `idle ${it.channel} ${it.mode}${it.drive ? ` (${it.drive})` : ''}`;
   if (it instanceof config.Disable) return `disable ${it.channel}`;
   if (it instanceof config.Plan) return `plan fn ${it.fn} role ${it.role} → channel ${it.channel}`;
   if (it instanceof config.Uart) return `uart fn ${it.fn} ${it.baud} baud, format 0x${it.format.toString(16).padStart(2, '0')}`;
@@ -230,7 +230,8 @@ async function readSettings() {
   const cfg = await probeConfig();
   const [items, declared, state] = await Promise.all([cfg.items(), cfg.describe(), cfg.state()]);
   const slots = state.slots.map((s) => `slot ${s.slot}: ${s.state}${s.connection ? ` (connection ${s.connection})` : ''}`
-    + (s.lastTryAtNs !== null ? ` (last try at ${(Number(s.lastTryAtNs / 1_000_000n) / 1000).toFixed(3)} s)` : ''));
+    + (s.lastTryAtNs !== null ? ` (last try at ${(Number(s.lastTryAtNs / 1_000_000n) / 1000).toFixed(3)} s)` : '')
+    + (s.resetAtNs !== null ? ` (reset retried at ${(Number(s.resetAtNs / 1_000_000n) / 1000).toFixed(3)} s)` : ''));
   const binds = state.binds.map((b) => `port ${b.port}: ${b.flow}`);
   $('settings-state').textContent = [`storage ${state.storage}${state.unreadable ? ` (${state.unreadable})` : ''}`
     + (declared.storageBytes ? ` of ${declared.storageBytes} bytes` : ''), `${declared.slotsMax} slots`,
@@ -273,11 +274,13 @@ function wireForms() {
     form.onsubmit = (e) => { e.preventDefault(); act(() => setItems(make(formData(form)))); };
   };
   on('form-slot', (d) => [new config.Slot({ slot: +d.slot, wireFn: +d.wireFn, pins: [+d.swdio, d.swclk === '' ? 0xffff : +d.swclk],
-    name: d.name, attach: d.attach, retryS: +d.retryS, maxSpeed: +d.maxSpeed, idleClock: d.idleClock, mechanism: d.mechanism })]);
+    name: d.name, attach: d.attach, retryS: +d.retryS, maxSpeed: +d.maxSpeed, idleClock: d.idleClock, mechanism: d.mechanism,
+    bootReset: d.bootReset === 'on' })]);
   on('form-bind', (d) => [new config.Bind({ port: +d.port, mode: d.mode,
     streams: String(d.streams).split(',').map((s) => { const [k, v] = s.trim().split(':'); return [k, +v]; }) })]);
   on('form-label', (d) => [new config.Label({ channel: +d.channel, text: d.text })]);
-  on('form-idle', (d) => [new config.Idle({ channel: +d.channel, mode: d.mode })]);
+  on('form-idle', (d) => [new config.Idle({ channel: +d.channel, mode: d.mode,
+    drive: d.driveMa === '' || d.driveMa === undefined ? null : fixture.Drive.maxMa(+d.driveMa) })]);
   on('form-disable', (d) => String(d.channels).split(',').filter((s) => s.trim() !== '')
     .map((s) => new config.Disable({ channel: +s.trim() })));
   on('form-plan', (d) => String(d.roles).split(',').map((s) => {

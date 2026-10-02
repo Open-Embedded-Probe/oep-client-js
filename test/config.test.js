@@ -90,7 +90,9 @@ test('the canonical order and hash (probe.config §2)', () => {
 test('state is paged by first_slot / first_bind and says why storage is unreadable (probe.config §3.3)', async () => {
   /** @type {number[][]} */
   const asked = [];
-  const slot = (/** @type {number} */ n) => m.element(new Writer().u8(n).u8(1).u16(0).u64(0xffffffffffffffffn).u8(0).u8(0).raw([0xee]).done());
+  // slot state connection last_try_at_ns scheme len tid reset_at_ns, then a later field (skipped)
+  const slot = (/** @type {number} */ n) => m.element(new Writer().u8(n).u8(1).u16(0).u64(0xffffffffffffffffn).u8(0).u8(0)
+    .u64(n === 2 ? 7_000_000n : 0xffffffffffffffffn).raw([0xee]).done());
   const bind = (/** @type {number} */ p) => m.element(new Writer().u8(p).u8(2).u8(0xff).u8(1).done());
   const hst = /** @type {any} */ ({
     /** @param {number} fn @param {number} op @param {Uint8Array} p */
@@ -108,6 +110,7 @@ test('state is paged by first_slot / first_bind and says why storage is unreadab
   assert.equal(st.unreadableReason, 2);
   assert.match(/** @type {string} */ (st.unreadable), /gone/);
   assert.deepEqual(st.slots.map((s) => [s.slot, s.state, s.lastTryAtNs, s.targetId]), [[0, 'absent', null, null], [1, 'absent', null, null], [2, 'absent', null, null]]);
+  assert.deepEqual(st.slots.map((s) => s.resetAtNs), [null, null, 7_000_000n]);   // NEVER_NS: no retry with reset
   assert.deepEqual(st.binds, [{ port: 3, mode: 'mixed', selected: null, flow: 'streaming' }]);
 });
 
@@ -327,26 +330,47 @@ test('an output idle drives while free, survives the gpio take until the first s
   await planRelease(hst, [gpio.fn]);
   await planApply(hst, [[gpio.fn, 1, 20]]);
   assert.deepEqual(await gpio.read([20]), [1]);                            // released to the idle, taken in it
-  assert.equal(await config.findLine(hst, 'power_hi'), 20);
+  assert.equal(await config.findLine(hst, null, 'power_hi'), 20);
   await hst.end();
 }));
 
-test('findLine: <slot>.<name> first, the bare name on one slot, ambiguity listed', async () => {
-  const L = (/** @type {number} */ channel, /** @type {string} */ text) => new Label({ channel, text });
-  const S = (/** @type {number} */ slot, /** @type {string} */ name) => new Slot({ slot, wireFn: 1, pins: [2, 3], name });
+const L = (/** @type {number} */ channel, /** @type {string} */ text) => new Label({ channel, text });
+const S = (/** @type {number} */ slot, /** @type {string} */ name) => new Slot({ slot, wireFn: 1, pins: [2, 3], name });
+
+test('findLine: <slot>.<name> first, then the bare name on one slot (probe.config §1.3)', async () => {
   const one = [S(0, 'x035'), L(5, 'nrst'), L(6, 'x035.nrst'), L(7, 'power_hi')];
-  assert.equal(await config.findLine(one, 'nrst'), 6);
-  assert.equal(await config.findLine(one, 'nrst', 'x035'), 6);
-  assert.equal(await config.findLine(one, 'nrst', 0), 6);
-  assert.equal(await config.findLine(one, 'power_hi'), 7);
-  assert.equal(await config.findLine(one, 'power_lo'), null);
-  assert.equal(await config.findLine([L(7, 'power_lo')], 'power_lo'), 7);
-  await assert.rejects(config.findLine(one, 'nrst', 3), RangeError);
-  const two = [S(0, 'a'), S(1, 'b'), L(5, 'a.nrst'), L(6, 'b.nrst'), L(7, 'power_hi')];
-  assert.equal(await config.findLine(two, 'nrst', 'b'), 6);
-  assert.equal(await config.findLine(two, 'power_hi', 'a'), null);         // no bare name with several slots
-  await assert.rejects(config.findLine(two, 'nrst'), (e) => e instanceof config.AmbiguousLine &&
-    JSON.stringify(e.candidates) === JSON.stringify([['a.nrst', 5], ['b.nrst', 6]]) && /a\.nrst \(channel 5\)/.test(e.message));
-  assert.equal(await config.findLine(two, 'power_lo'), null);
-  await assert.rejects(config.findLine([L(5, 'nrst'), L(6, 'nrst')], 'nrst'), config.AmbiguousLine);
+  assert.equal(await config.findLine(one, 'x035', 'nrst'), 6);              // <slot>.<name> first
+  assert.equal(await config.findLine(one, null, 'nrst'), 6);                // null: the one slot
+  assert.equal(await config.findLine(one, 0, 'nrst'), 6);                   // or its number
+  assert.equal(await config.findLine(one, 'x035', 'power_hi'), 7);          // then the bare name (one slot)
+  assert.equal(await config.findLine(one, 'x035', 'power_lo'), null);
+  assert.equal(await config.findLine([L(7, 'power_lo')], null, 'power_lo'), 7);   // no slot item: the bare name
+  await assert.rejects(config.findLine(one, 3, 'nrst'), /no slot 3/);
+});
+
+test('findLine ignores ASCII case only', async () => {
+  const items = [S(0, 'x035'), L(6, 'X035.NRST'), L(7, 'Power_Hi')];
+  assert.equal(await config.findLine(items, 'x035', 'nrst'), 6);
+  assert.equal(await config.findLine(items, 'x035', 'POWER_HI'), 7);
+  assert.equal(await config.findLine([L(4, 'nrst\u0130')], null, 'nrst\u0069'), null);   // only A-Z fold
+  assert.equal(config.foldName('A.Z-az_\u00c9'), 'a.z-az_\u00c9');
+});
+
+test('findLine with several slots: no bare name, a slot must be named', async () => {
+  const items = [S(0, 'a'), S(1, 'b'), L(5, 'a.nrst'), L(6, 'b.nrst'), L(7, 'power_hi')];
+  assert.equal(await config.findLine(items, 'b', 'nrst'), 6);
+  assert.equal(await config.findLine(items, 'a', 'power_hi'), null);        // no bare name with two or more slot items
+  assert.equal(await config.findLine(items, 'c', 'power_hi'), null);
+  await assert.rejects(config.findLine(items, null, 'nrst'), (e) => e instanceof RangeError && /name the slot/.test(e.message));
+  assert.equal(/** @type {any} */ (config).AmbiguousLine, undefined);       // gone: ambiguity is no line
+});
+
+test('findLine: two or more at one step is no line, without falling through', async () => {
+  const two = [S(0, 'a'), L(5, 'a.nrst'), L(6, 'A.Nrst'), L(7, 'nrst')];
+  assert.equal(await config.findLine(two, 'a', 'nrst'), null);              // two at the <slot>.<name> step: none (not 7)
+  assert.equal(await config.findLine([S(0, 'a'), L(5, 'nrst'), L(6, 'NRST')], 'a', 'nrst'), null);   // two bare ones
+  assert.equal(await config.findLine([L(5, 'nrst'), L(6, 'nrst')], null, 'nrst'), null);            // no slot items
+  assert.equal(config.lineFromLabels([[5, 'a.nrst'], [6, 'nrst']], 2, 'a', 'nrst'), 5);
+  assert.equal(config.lineFromLabels([[6, 'nrst']], 2, 'a', 'nrst'), null);
+  assert.equal(config.lineFromLabels([[6, 'nrst'], [6, 'NRST']], 1, 'a', 'nrst'), 6);   // one channel twice: one line
 });

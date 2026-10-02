@@ -19,6 +19,7 @@ import * as reg from './registry.js';
 import { Writer, concat, getU16, getU32, text, utf8 } from './bytes.js';
 import * as m from './message.js';
 import { Interface, describe } from './core.js';
+import { Drive } from './fixture.js';
 
 const CFG = reg.PROBE_CONFIG;
 export const ITEM = CFG.tlv.item;
@@ -45,8 +46,10 @@ export const STORAGE_STATE = byValue(CFG.enum.storage_state);
 export const UNREADABLE = /** @type {Record<number, string>} */ ({
   1: 'unreadable form', 2: 'an interface it names is gone or of another revision', 3: 'refused when applied',
 });
-/** last_try_at_ns: never tried */
+/** last_try_at_ns: never tried; reset_at_ns: never done */
 export const NEVER_NS = 0xffffffffffffffffn;
+/** A slot's boot_reset (probe.config §1.1): off, retry_with_reset */
+export const BOOT_RESET = /** @type {{ off: number, retry_with_reset: number }} */ (CFG.enum.slot_boot_reset);
 /** slot wire_fn swdio swclk attach retry_ms max_speed_hz idle_clock mechanism name_len: the slot's head (§1.1) */
 export const SLOT_HEAD = 19;
 
@@ -81,14 +84,28 @@ export class Label {
  * The state of a channel no plan or connection uses (probe.config §1): at boot and after every release. An output mode
  * keeps driving that level while the channel is free (a target's power switch kept on), and a gpio plan that takes the
  * channel keeps it until its first set (fixture §1); a probe that cannot drive the channel refuses it unsupported.
+ * drive (output modes only): the strength it drives at (`fixture.Drive`, or a level number; fixture §1.1) - also what a
+ * gpio set without its own drive uses on that channel. null: the default level. A probe without drive_levels keeps it
+ * and drives at its default.
  */
 export class Idle {
   static TAG = ITEM.idle;
-  /** @param {{ channel: number, mode?: string }} o  mode: hi-z, pull-up (default), pull-down, output-low, output-high
-   *   (output_low / output_high too: underscores become hyphens) */
-  constructor({ channel, mode = 'pull-up' }) { this.channel = channel; this.mode = mode.replace(/_/g, '-'); }
+  /** @param {{ channel: number, mode?: string, drive?: Drive | number | null }} o  mode: hi-z, pull-up (default),
+   *   pull-down, output-low, output-high (output_low / output_high too: underscores become hyphens) */
+  constructor({ channel, mode = 'pull-up', drive = null }) {
+    this.channel = channel; this.mode = mode.replace(/_/g, '-');
+    /** @type {Drive | null} */
+    this.drive = drive === null || drive === undefined ? null : Drive.of(drive);
+  }
   key() { return [this.channel]; }
-  value() { return new Writer().u16(this.channel).u8(valueOf(IDLE, this.mode, 'idle mode')).done(); }
+  value() {
+    const w = new Writer().u16(this.channel).u8(valueOf(IDLE, this.mode, 'idle mode'));
+    if (this.drive === null) return w.done();
+    if (this.mode !== 'output-low' && this.mode !== 'output-high') {
+      throw new RangeError(`idle mode ${this.mode}: a drive goes with output-low / output-high only`);
+    }
+    return w.raw(this.drive.pack()).done();                         // drive_kind(u8) drive_value(u16)
+  }
 }
 
 /**
@@ -120,21 +137,24 @@ export class Disable {
 /**
  * A place a target is wired to (probe.config §1.1). pins: [swdio, swclk], swclk 0xFFFF on one wire (swio).
  * lock: e.g. { scheme: 1, mask: u32 LE, value: u32 LE }; mask and value are as long as the scheme's value (4 bytes for
- * scheme 1). retryS goes on the wire as retry_ms (u32), maxSpeed as max_speed_hz (u32).
+ * scheme 1). retryS goes on the wire as retry_ms (u32), maxSpeed as max_speed_hz (u32). bootReset (at-boot only): an
+ * automatic attach that got no answer is tried once more with the `nrst` line (probe.config §3.1), before any session
+ * took the lock this boot; it goes after the lock (absent = off).
  */
 export class Slot {
   static TAG = ITEM.slot;
   /**
    * @param {{ slot: number, wireFn: number, pins: [number, number], name: string, attach?: string, retryS?: number,
-   *   mechanism?: string, lock?: Lock | null, maxSpeed?: number, idleClock?: string }} o
+   *   mechanism?: string, lock?: Lock | null, maxSpeed?: number, idleClock?: string, bootReset?: boolean }} o
    *   attach: host (default), at-boot; retryS: at-boot: try again every retryS seconds while the target is not there
    *   (0: never); mechanism: sdi, dmdata, dmseq (default), none (no console on this slot); maxSpeed: the line's ceiling
    *   in Hz for the probe's own attach (0: none); idleClock: rvswd: SWCLK while the line rests, high (default) / low
    */
   constructor({ slot, wireFn, pins, name, attach = 'host', retryS = 0, mechanism = 'dmseq', lock = null, maxSpeed = 0,
-    idleClock = 'high' }) {
+    idleClock = 'high', bootReset = false }) {
     this.slot = slot; this.wireFn = wireFn; this.pins = pins; this.name = name; this.attach = attach;
     this.retryS = retryS; this.mechanism = mechanism; this.lock = lock; this.maxSpeed = maxSpeed; this.idleClock = idleClock;
+    this.bootReset = bootReset;
   }
 
   key() { return [this.slot]; }
@@ -146,12 +166,14 @@ export class Slot {
       .u8(valueOf(ATTACH, this.attach, 'attach')).u32(retryMs).u32(this.maxSpeed)
       .u8(valueOf(IDLE_CLOCK, this.idleClock, 'idle clock')).u8(valueOf(MECHANISM, this.mechanism, 'mechanism'))
       .u8(name.length).raw(name);
-    if (this.lock === null) return w.u8(0).done();                   // lock_len 0: no lock
+    if (this.bootReset && this.attach !== 'at-boot') throw new RangeError('bootReset goes with attach at-boot only');
+    const tail = this.bootReset ? Uint8Array.of(BOOT_RESET.retry_with_reset) : new Uint8Array();   // after the lock
+    if (this.lock === null) return w.u8(0).raw(tail).done();         // lock_len 0: no lock
     const { scheme, mask, value } = this.lock;
     if (mask.length !== value.length || !mask.length || !scheme) {
       throw new RangeError('a lock has a scheme and a mask and value of the same length, at least 1 byte');
     }
-    return w.u8(1 + 2 * mask.length).u8(scheme).raw(mask).raw(value).done();
+    return w.u8(1 + 2 * mask.length).u8(scheme).raw(mask).raw(value).raw(tail).done();
   }
 }
 
@@ -207,13 +229,16 @@ export function remove(kind, key) {
 export function decode(tag, v) {
   if (tag === ITEM.plan && v.length >= 5) return new Plan({ fn: getU16(v), role: v[2], channel: getU16(v, 3) });
   if (tag === ITEM.label && v.length >= 2) return new Label({ channel: getU16(v), text: text(v.slice(2)) });
-  if (tag === ITEM.idle && v.length >= 3) return new Idle({ channel: getU16(v), mode: nameOf(IDLE, v[2]) });
+  if (tag === ITEM.idle && v.length >= 3) {
+    return new Idle({ channel: getU16(v), mode: nameOf(IDLE, v[2]), drive: v.length >= 6 ? Drive.unpack(v.slice(3, 6)) : null });
+  }
   if (tag === ITEM.slot && v.length >= SLOT_HEAD + 1) {
     const nameLen = v[SLOT_HEAD - 1];
     const name = text(v.slice(SLOT_HEAD, SLOT_HEAD + nameLen));
     const at = SLOT_HEAD + nameLen;
     const lockLen = at < v.length ? v[at] : 0;
-    const part = v.slice(at + 1, at + 1 + lockLen);                 // after it: later fields (core §2.3), skipped
+    const part = v.slice(at + 1, at + 1 + lockLen);
+    const bootReset = at + 1 + lockLen < v.length ? v[at + 1 + lockLen] : 0;   // optional; after it: later fields, skipped
     let lock = null;
     if (lockLen >= 3 && part.length === lockLen) {
       const half = (lockLen - 1) >> 1;
@@ -221,7 +246,7 @@ export function decode(tag, v) {
     }
     return new Slot({ slot: v[0], wireFn: getU16(v, 1), pins: [getU16(v, 3), getU16(v, 5)], name,
       attach: nameOf(ATTACH, v[7]), retryS: getU32(v, 8) / 1000, maxSpeed: getU32(v, 12), idleClock: nameOf(IDLE_CLOCK, v[16]),
-      mechanism: nameOf(MECHANISM, v[17]), lock });
+      mechanism: nameOf(MECHANISM, v[17]), lock, bootReset: bootReset === BOOT_RESET.retry_with_reset });
   }
   if (tag === ITEM.disable && v.length >= 2) return new Disable({ channel: getU16(v) });
   if (tag === ITEM.uart && v.length >= 7) return new Uart({ fn: getU16(v), baud: getU32(v, 2), format: v[6] });
@@ -308,6 +333,8 @@ export function canonicalHash(items) {
  * @property {bigint | null} lastTryAtNs the probe's clock when it last tried an automatic attach (null: never tried)
  * @property {number} targetIdScheme     0: none
  * @property {Uint8Array | null} targetId
+ * @property {bigint | null} resetAtNs   when the retry with reset (bootReset, probe.config §3.1) started pulling the line
+ *                                       (the probe's clock; null: not done this boot)
  */
 /**
  * @typedef {object} BindState
@@ -445,8 +472,9 @@ export class ProbeConfig extends Interface {
       for (let i = 0; i < nSlots; i++) {
         const e = rd.element();
         const slot = e.u8(), state = e.u8(), connection = e.u16(), tried = e.u64(), scheme = e.u8(), tid = e.bytes(e.u8());
+        const resetAt = e.u64();
         st.slots.push({ slot, state: SLOT_STATE[state] ?? String(state), connection, lastTryAtNs: tried === NEVER_NS ? null : tried,
-          targetIdScheme: scheme, targetId: tid.length ? tid : null });
+          targetIdScheme: scheme, targetId: tid.length ? tid : null, resetAtNs: resetAt === NEVER_NS ? null : resetAt });
       }
       const nBinds = rd.u8();
       for (let i = 0; i < nBinds; i++) {
@@ -462,54 +490,57 @@ export class ProbeConfig extends Interface {
   }
 }
 
-/** The label names of a target's power and reset lines (host-development-guide §8.1): `nrst` its reset, `power_hi`
- * high powers it, `power_lo` low powers it. On a probe with several slots they are `<slot name>.<name>`. */
+/** The line names of the label convention (probe.config §1.3): `nrst` a target's reset, `power_hi` high powers it,
+ * `power_lo` low powers it. Per slot `<slot name>.<name>`; the bare name on settings with at most one slot item. */
 export const LINE_NAMES = Object.freeze(['nrst', 'power_hi', 'power_lo']);
 
-/** findLine could not tell which channel is meant; `candidates` holds [label text, channel]. */
-export class AmbiguousLine extends Error {
-  /** @param {string} message @param {[string, number][]} candidates */
-  constructor(message, candidates) { super(message); this.name = 'AmbiguousLine'; this.candidates = candidates; }
+/** ASCII case folded (only A-Z: probe.config §1.3 compares ignoring ASCII case). @param {string} text */
+export function foldName(text) { return text.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32)); }
+
+/**
+ * probe.config §1.3 on bare data: labels as [channel, text], nSlots the settings' slot items. The channel whose label
+ * equals `<slotName>.<name>`; if none, and only with at most one slot item, the one equal to `name`; two or more at one
+ * step: none (no fall-through). slotName null (settings without slot items): the bare name only.
+ * @param {Iterable<[number, string]>} labels @param {number} nSlots @param {string | null} slotName @param {string} name
+ * @returns {number | null}
+ */
+export function lineFromLabels(labels, nSlots, slotName, name) {
+  const all = [...labels];
+  const steps = [...(slotName !== null && slotName !== undefined ? [`${slotName}.${name}`] : []), ...(nSlots <= 1 ? [name] : [])];
+  for (const text of steps) {
+    const want = foldName(text);
+    const found = new Set(all.filter(([, t]) => foldName(t) === want).map(([ch]) => ch));
+    if (found.size > 1) return null;                                 // ambiguous at this step: no such line
+    if (found.size) return [...found][0];
+  }
+  return null;
 }
 
 /**
- * The channel labelled for `name` (nrst, power_hi, power_lo: host-development-guide §8.1), or null when there is none.
- * hstOrItems: a Host (its settings are read: ProbeConfig items, no lock) or the decoded items. slot: the slot's name or
- * number; omitted, the probe's one slot.
+ * The channel of the line `name` (nrst, power_hi, power_lo: LINE_NAMES) of a slot by the label convention
+ * (probe.config §1.3), or null when that slot has no such line. config: a Host (its settings are read with
+ * ProbeConfig items, no lock) or the decoded items. slotName: the slot's name or number; null on settings with no slot
+ * item (the target connected to the probe) or one (that slot).
  *
- * `<slot>.<name>` first, then the bare `name` - the bare name only while the settings hold at most one slot (a bare name
- * is for a one-slot probe). With several slots and no slot, or two channels with the same label, it throws
- * AmbiguousLine listing the candidates.
- * @param {import('./host.js').Host | (Item | { tag: number, value: Uint8Array })[]} hstOrItems
- * @param {string} name @param {number | string | null} [slot]
+ * `<slot>.<name>` first, ignoring ASCII case; then the bare `name`, only when the settings hold at most one slot item;
+ * two or more channels matching at one step mean no such line. Throws RangeError for slotName null with several
+ * slots, and for a slot number not in the settings.
+ * @param {import('./host.js').Host | (Item | { tag: number, value: Uint8Array })[]} config
+ * @param {string | number | null} slotName @param {string} name
  * @returns {Promise<number | null>}
  */
-export async function findLine(hstOrItems, name, slot = null) {
-  const items = Array.isArray(hstOrItems) ? hstOrItems : await (await ProbeConfig.open(hstOrItems)).items();
-  /** @type {[string, number][]} */
-  const labels = items.filter((i) => i instanceof Label).map((i) => [/** @type {Label} */ (i).text, /** @type {Label} */ (i).channel]);
+export async function findLine(config, slotName, name) {
+  const items = Array.isArray(config) ? config : await (await ProbeConfig.open(config)).items();
+  const labels = /** @type {Label[]} */ (items.filter((i) => i instanceof Label)).map((l) => /** @type {[number, string]} */ ([l.channel, l.text]));
   const slots = /** @type {Slot[]} */ (items.filter((i) => i instanceof Slot));
-  if (typeof slot === 'number') {
-    const named = slots.find((s) => s.slot === slot);
-    if (!named) throw new RangeError(`no slot ${slot} in the probe's settings`);
-    slot = named.name;
+  if (typeof slotName === 'number') {
+    const named = slots.find((s) => s.slot === slotName);
+    if (!named) throw new RangeError(`no slot ${slotName} in the probe's settings`);
+    slotName = named.name;
   }
-  /** @param {[string, number]} a @param {[string, number]} b */
-  const order = (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1]);
-  if (slot == null && slots.length > 1) {
-    const candidates = labels.filter(([t]) => t === name || t.endsWith(`.${name}`)).sort(order);
-    if (candidates.length) {
-      const listed = candidates.map(([t, c]) => `${t} (channel ${c})`).join(', ');
-      throw new AmbiguousLine(`${name}: ${slots.length} slots and no slot given; candidates: ${listed}`, candidates);
-    }
-    return null;
+  if ((slotName === null || slotName === undefined) && slots.length > 1) {
+    throw new RangeError(`${name}: the settings hold ${slots.length} slots; name the slot`);
   }
-  if (slot == null && slots.length) slot = slots[0].name;
-  const texts = [...(slot != null ? [`${slot}.${name}`] : []), ...(slots.length <= 1 ? [name] : [])];
-  for (const t of texts) {
-    const found = labels.filter(([x]) => x === t).map(([, c]) => c).sort((a, b) => a - b);
-    if (found.length > 1) throw new AmbiguousLine(`${t}: on ${found.length} channels`, found.map((c) => [t, c]));
-    if (found.length) return found[0];
-  }
-  return null;
+  if ((slotName === null || slotName === undefined) && slots.length) slotName = slots[0].name;
+  return lineFromLabels(labels, slots.length, slotName ?? null, name);
 }
