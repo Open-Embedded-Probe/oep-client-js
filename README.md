@@ -13,12 +13,15 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 **A first full port, ahead of the v1 freeze: expect it to be redone as the spec settles.** What is there:
 
 - the core: the registry (generated from oep-spec), frames (COBS + CRC, length), messages, the link (corr matching, one
-  resend, pipelining, pushes and events), the host (confirm, session, lock, subscribe), list / describe / plan;
+  resend, pipelining, pushes and events; every answer waited at least core §4.4's floor - argument time + 1000 ms + a
+  serial port's transfer time, `Link.waitFloorMs` -; the §5.1 resync on length frames, its confirm 250 ms after the
+  host's last write, none for a pause inside a TCP frame), the host (confirm - `limits.transport`, the index this host
+  came in on; later confirms ask for the revision in use -, session, lock, subscribe), list / describe / plan;
 - the interfaces: the debug wires (rvswd, swio, swd) and riscv-dm, ARM ADI / MEM-AP / Cortex-M, the target console, the
   fixtures (gpio, uart, i2c-target, spi-target), the captures (logic, analog, capture-group, sigrok .sr), probe.config and
   the `oep dump` view;
 - the transports: WebSerial, WebUSB (vendor bulk), WebHID in the browser; TCP, serial ports (`serialport`) and USB (`usb`)
-  in Node (the native packages optional);
+  in Node (the native packages optional); serial ports open 8N1 without flow control, DTR and RTS asserted (core §3.4);
 - the firmware update: USB DFU (the ESP32-P4) and the Release's firmware-<version>.json;
 - the page: connect, read what the probe declares, edit and save its settings, GPIO and UART, port_speed, a DFU update;
 - port_speed (oep-core §3.5 is the handshake; the procedure is the oep-spec host guide §7, opt-in):
@@ -36,7 +39,7 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
   speed, confirmed there. The first candidate that passes is kept; a rate the probe's UART cannot make is skipped. The
   report (`host.link.speed`: `base`, `rate`, `chosen`, `baseline`, `trials` with `flows`, `inKBs` / `outKBs` /
   `duplexKBs`, `stepDowns`, `skipped`; `speedText(report)`) is there to budget a capture or a write. WebSerial changes
-  the rate by closing and opening the same port again (DTR / RTS released at once, as esptool-js does), Node's
+  the rate by closing and opening the same port again (DTR / RTS asserted again together at once), Node's
   `serialport` by `update`. An `end` or a revert takes the link back to the boot speed at once; while raised the link
   sends a keepalive when quiet for less than half of `idleMs` (1 s), and `host.link.keepAlive()` does the same for a
   caller that sits idle. A request unanswered at a raised rate falls back to the boot speed, confirmed within
@@ -53,7 +56,9 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
   for 1 day, a failure measured within 2 s (`settleMs`) of a breakdown at another rate as unknown - in Node per (port
   path, unit_id) in `~/.cache/oep-client/link-speed.json` (`$XDG_CACHE_HOME`; the same file as oep-client-python's),
   in a browser in localStorage by unit_id - and puts a passed rate first, failed ones out (`report.skipped`; every
-  candidate failed: the slowest is tried once, `report.retried`). The same procedure as oep-client-python.
+  candidate failed: the slowest is tried once, `report.retried`); an `x-` unit_id (core §7.5) keys nothing. The port
+  raised is the one this host came in on (confirm's transport TLV) when that is a UART bridge. The same procedure as
+  oep-client-python.
 - block operations: riscv-dm / arm-adi `readBlock` / `writeBlock` are bounded by the probe's declared `max_length`
   (`RiscvDm` / `ArmAdi` `.maxLength` bytes, `.maxWords`; oep-if-debug §4.5 / §6) - `MemAp` chunks by it, and a probe
   with block ops that declares none throws `riscv.NoMaxLength`; nothing is derived from max_frame.
@@ -61,12 +66,21 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
   `Drive.level(n)` or a number for a level) returns the answer's ignored list; `driveLevels()` -> `DriveLevels`
   (`defaultLevel`, `ma`, `pick(drive)`), `readState(channels)` -> `{ levels, drive }` (the level in force); the
   settings' `Idle({ ..., drive })`, `Slot({ ..., bootReset: true })` (the at-boot retry with reset) and
-  `SlotState.resetAtNs`; `config.findLine(config, slotName, 'nrst')` is probe.config §1.3's line lookup
-  (`lineFromLabels` the same on bare data).
+  `SlotState.resetAtNs`; `config.findLine(config, slotName, 'nrst')` is probe.config §1.3's line lookup, the
+  firmware's fixed labels as its step (c) (`lineFromLabels` the same on bare data).
+- the rule changes of 2026-10-02 (oep-spec `docs/v1-rule-change-proposal-2026-10-02.md`), host side: attach and scan
+  wait their budgets (`attachMs`, `scanMs`); `Unsupported.supported` (confirm's range); an `x-` unit_id names no USB
+  device; text from an answer is shown without control characters (`message.shown`), open's owner is cut on a
+  character (`ownerText`), a label the probe would refuse is not sent; `Tail.moreIgnored` (an ignored list ending in
+  0x00); `dump` names what core §1.2 requires and the probe did not give (`missing`); capture's mode / rate / trigger /
+  pretrigger / frontend always go critical, a start's blocking_ms is waited out with nothing sent (then a resync on
+  length frames); `Wire.searchRetries`, `riscv.StepError` (`stepLeft`), `I2cTarget.pullupOhms()`, the capture mode with
+  its background in describe.
 
 The wire is oep-spec's zero-base rewrite of 2026-10-01 (every answer carries its lengths, TLVs have a long form, confirm
 answers the boot_id, `expired`, probe.config's `state` / `unset` / `uart`, the attach reset TLV, capture generations, the
-gpio drive and the slot's boot_reset; see the changelog). Tested against oep-client-python's fake probe (191 tests) and scripted devices; the browser transports,
+gpio drive and the slot's boot_reset), with the rule changes of 2026-10-02 (see the changelog). Tested against
+oep-client-python's fake probe and scripted devices (249 tests, oep-spec's test vectors among them); the browser transports,
 DFU and the page are not yet checked on hardware.
 
 Until the v1 freeze the spec may break and this package follows it at once, with the probe firmware
@@ -90,7 +104,7 @@ and WebHID need a Chromium browser (Chrome, Edge) and HTTPS.
 
 ```sh
 npm install
-npm test            # needs python -m pip install oep-client-python (the fake probe)
+npm test            # needs python -m pip install oep-client-python (the fake probe); test/vectors are oep-spec's
 npm run typecheck
 npm run serve       # the page at http://localhost:4173/
 ```

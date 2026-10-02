@@ -92,6 +92,8 @@ flash (ch32rv and the like).
 
 The one definition of the numbers is oep-spec's `registry/oep-v1.toml`. As for Python and C++, oep-spec's generator
 writes the JS constants (`generated/oep-v1/oep_v1_registry.js`), copied to `src/registry.js` (never written by hand).
+oep-spec's test vectors (`tests/vectors/*.json`) are copied the same way to `test/vectors/` and checked by
+`test/vectors.test.js` (which also compares the copy with a sibling oep-spec checkout when there is one).
 
 ## 8. Versions and the spec
 

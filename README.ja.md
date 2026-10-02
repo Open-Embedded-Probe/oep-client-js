@@ -13,12 +13,15 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 **v1 の凍結の前に、ひととおり移した版です。仕様が固まるにつれて作り直す前提です。** 入っているもの:
 
 - 核: registry（oep-spec から生成）、フレーム（COBS + CRC、length）、メッセージ、リンク（corr の照合、1 回の送り直し、
-  パイプライン、push と出来事）、host（confirm、セッション、ロック、購読）、list / describe / plan
+  パイプライン、push と出来事。応答はどれも core §4.4 の下限 ― 引数の時間 + 1000 ms + シリアルの口の転送時間、
+  `Link.waitFloorMs` ― 以上待つ。length のフレームでの §5.1 の立て直しは、host の最後の書き込みから 250 ms 待ってから confirm し、
+  TCP のフレームの途中の休みでは立て直さない）、host（confirm ― この host が来た経路の番号 `limits.transport`、2 回目からは
+  使っている revision を求める ―、セッション、ロック、購読）、list / describe / plan
 - インターフェース: debug の線（rvswd、swio、swd）と riscv-dm、ARM の ADI / MEM-AP / Cortex-M、target のコンソール、
   fixture（gpio、uart、i2c-target、spi-target）、キャプチャ（ロジック、アナログ、capture-group、sigrok の .sr）、probe.config、
   `oep dump` の表示
 - 経路: ブラウザは WebSerial、WebUSB（vendor bulk）、WebHID。Node は TCP、シリアルの口（`serialport`）、USB（`usb`）
-  （ネイティブの package は任意）
+  （ネイティブの package は任意）。シリアルの口は 8N1、フロー制御なし、DTR と RTS を立てて開く（core §3.4）
 - firmware の更新: USB の DFU（ESP32-P4）と、Release の firmware-<version>.json
 - ページ: つなぐ、probe の宣言を読む、設定の編集と保存、GPIO と UART、port_speed、DFU での更新
 - port_speed（oep-core §3.5 は握手だけ。手順は oep-spec の host 開発ガイド §7。使うときだけ）:
@@ -34,7 +37,7 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   通らない候補は戻して（step 2）起動時の速さに戻り confirm し直す。最初に通った候補を使う。probe の UART が作れない速さは飛ばす。
   結果（`host.link.speed`: `base`、`rate`、`chosen`、`baseline`、`flows` と `inKBs` / `outKBs` / `duplexKBs` を持つ `trials`、
   `stepDowns`、`skipped`。`speedText(report)`）はキャプチャや書き込みの予算を立てるのに使う。WebSerial は同じ口を閉じて開き直して
-  速さを変え（すぐに DTR / RTS を放す。esptool-js と同じ）、Node の `serialport` は `update` で変える。`end` と戻すの応答で link は
+  速さを変え（すぐに DTR / RTS を一緒に立て直す）、Node の `serialport` は `update` で変える。`end` と戻すの応答で link は
   すぐ起動時の速さに戻る。上げている間は `idleMs` の半分より短く（1 秒）黙れば keepalive を送り、長く黙る呼び出し側は
   `host.link.keepAlive()` で同じことをする。上げた速さで応答の来ない要求は起動時の速さに戻って port_speed_idle_max_ms + 1 秒の内に
   confirm し（通らなければ Error。上げた速さへは戻さない）、そこでもう一度送る（待つ 1 回は lease の 4 分の 1 まで）。使っている間、
@@ -48,7 +51,8 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   別の速さの破綻から 2 秒（`settleMs`）以内に測った失敗は「不明」）― Node では（口のパス、unit_id）ごとに
   `~/.cache/oep-client/link-speed.json`（`$XDG_CACHE_HOME`。oep-client-python と同じファイル）、ブラウザでは localStorage に unit_id
   ごと ― 通った速さを先頭に、通らなかった速さを外す（`report.skipped`。全部の候補が通らなかったとあれば、いちばん遅い候補を 1 回
-  試す: `report.retried`）。oep-client-python と同じ手順
+  試す: `report.retried`）。`x-` の unit_id（core §7.5）では何も残さない。上げるのはこの host が来た経路（confirm の
+  transport TLV）で、それが UART bridge のとき。oep-client-python と同じ手順
 - block の操作: riscv-dm / arm-adi の `readBlock` / `writeBlock` は probe が宣言した `max_length` で区切る（`RiscvDm` / `ArmAdi` の
   `.maxLength` byte、`.maxWords`。oep-if-debug §4.5 / §6）。`MemAp` もそれで分け、block op を持つのに宣言しない probe は
   `riscv.NoMaxLength`。max_frame からは何も計算しない
@@ -56,11 +60,19 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   `Drive.level(n)` か数）は応答の ignored を返す。`driveLevels()` は `DriveLevels`（`defaultLevel`、`ma`、`pick(drive)`）、
   `readState(channels)` は `{ levels, drive }`（いま効いている段）。設定の `Idle({ ..., drive })`、`Slot({ ..., bootReset: true })`
   （at-boot のリセットでのやり直し）、`SlotState.resetAtNs`。`config.findLine(config, slotName, 'nrst')` は probe.config §1.3 の
-  線の探し方（`lineFromLabels` は同じことを素のデータで）
+  線の探し方で、手順 (c) に firmware の固定のラベルを使う（`lineFromLabels` は同じことを素のデータで）
+- 2026-10-02 の規則の変更（oep-spec `docs/v1-rule-change-proposal-2026-10-02.ja.md`）の host の側: attach と scan は予算の分
+  待つ（`attachMs`、`scanMs`）。`Unsupported.supported`（confirm の扱える範囲）。`x-` の unit_id では USB の機器を探さない。
+  応答の文字列は制御文字を除いて見せ（`message.shown`）、open の owner は文字の境で切り（`ownerText`）、probe が断るラベルは
+  送らない。`Tail.moreIgnored`（0x00 で終わる ignored）。`dump` は core §1.2 が求めるもので probe が出さなかったものを示す
+  （`missing`）。キャプチャの mode / rate / trigger / pretrigger / frontend はいつも critical、start の blocking_ms の間は何も送らず
+  待つ（その後 length のフレームなら立て直し）。`Wire.searchRetries`、`riscv.StepError`（`stepLeft`）、`I2cTarget.pullupOhms()`、
+  describe のキャプチャの mode と background
 
 wire は oep-spec の 2026-10-01 のゼロベース見直しの形です（応答はすべて長さを持つ、TLV の長い形、confirm の boot_id、`expired`、
-probe.config の `state` / `unset` / `uart`、attach の reset TLV、キャプチャの世代、gpio の drive、スロットの boot_reset。変更履歴を
-参照）。oep-client-python の fake の probe（191 件の試験）と台本のデバイスで試しています。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
+probe.config の `state` / `unset` / `uart`、attach の reset TLV、キャプチャの世代、gpio の drive、スロットの boot_reset）に、
+2026-10-02 の規則の変更を入れたものです（変更履歴を参照）。oep-client-python の fake の probe と台本のデバイスで試しています
+（249 件。oep-spec の試験ベクタを含む）。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
 
 v1 の凍結までは仕様が壊れることがあり、この package は probe の firmware
 （[OpenEmbeddedProbe](https://github.com/Open-Embedded-Probe/oep-probe-arduino)）と
@@ -83,7 +95,7 @@ Chromium 系のブラウザ（Chrome、Edge）と HTTPS が要ります。
 
 ```sh
 npm install
-npm test            # python -m pip install oep-client-python（fake の probe）が要る
+npm test            # python -m pip install oep-client-python（fake の probe）が要る。test/vectors は oep-spec のもの
 npm run typecheck
 npm run serve       # http://localhost:4173/ でページ
 ```
