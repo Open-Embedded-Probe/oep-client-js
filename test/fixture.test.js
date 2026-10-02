@@ -85,6 +85,21 @@ test('i2c-target request and answer shapes', async () => {
   await assert.rejects(t.armRx(4), Rejected);                  // not scripted: unknown operation
 });
 
+test('i2c-target and spi-target declarations from describe', async () => {
+  const { hst } = scripted({});
+  /** @type {(tag: number, v: Uint8Array) => [number, Uint8Array]} */
+  const tlv = (tag, v) => [tag, v];
+  hst.describes.set(I2C, [tlv(0x03, new Writer().u16(128).done()), tlv(0x02, new Writer().u32(1_000_000).done()),
+    tlv(0x06, new Writer().u32(0b11).done()), tlv(0x40, Uint8Array.of(8)), tlv(0x41, new Writer().u32(100_000).done())]);
+  hst.describes.set(SPI, [tlv(0x03, new Writer().u16(64).done()), tlv(0x40, Uint8Array.of(4))]);
+  const t = await I2cTarget.open(hst);
+  assert.deepEqual(await t.declarations(), { maxLength: 128, maxClockHz: 1_000_000, features: 0b11, queueDepth: 8, maxStretchUs: 100_000 });
+  const s = await SpiTarget.open(hst);
+  assert.deepEqual(await s.declarations(), { maxLength: 64, maxClockHz: null, features: 0, queueDepth: 4 });
+  hst.describes.set(I2C, [tlv(0x06, new Writer().u32(0b01).done())]);
+  assert.equal((await t.declarations()).maxStretchUs, null);   // no features bit1: none declared
+});
+
 test('spi-target request and answer shapes', async () => {
   const { hst, log } = scripted({
     [`${SPI}:${SpiTarget.ARM}`]: () => ok(),
