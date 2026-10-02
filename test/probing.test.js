@@ -66,7 +66,7 @@ test('probing: an answer that is not a valid confirm closes the device, nothing 
 test('named unit id: describe must say it, else closed', { skip: !haveFake }, async () => {
   const fake = await startFake(['--profile', 'p4-x035']);
   try {
-    const hst = await openTcp({ port: fake.port, unitId: '30eda0e31108' });
+    const hst = await openTcp({ port: fake.port, unitId: 'fafe00000035' });
     assert.ok(hst.limits);
     await hst.link.close();
     await assert.rejects(openTcp({ port: fake.port, unitId: 'ffffffffffff' }), UnitIdMismatch);

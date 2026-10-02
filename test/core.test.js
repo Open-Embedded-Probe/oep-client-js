@@ -34,7 +34,7 @@ for (const framing of /** @type {const} */ (['length', 'cobs'])) {
       assert.equal(await find(hst, 'oep.wire.rvswd'), 1);
       const info = await probeInfo(hst);
       assert.equal(info.model, 'esp32p4');
-      assert.equal(info.unitId, '30eda0e31108');
+      assert.equal(info.unitId, 'fafe00000035');
       assert.equal(info.maxOpMs, 10000);                                  // core §7.5 max_op_ms (0x4D)
       assert.equal(info.discoverable, false);                             // 0x4A: 1 only on the project's VID:PID (§7.5)
       assert.equal(await maxOpMs(hst), 10000);
