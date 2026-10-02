@@ -9,9 +9,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as m from '../src/message.js';
-import { Rejected, Timeout, Unavailable } from '../src/errors.js';
+import { NotOepProbe, Rejected, Timeout, Unavailable } from '../src/errors.js';
 import { Link, SWITCH_SETTLE_MS, IDLE_MAX_MS, KEEPALIVE_MS, OPEN_RETRY_MS, IN_USE_WINDOW_MS } from '../src/link.js';
-import { getU16, getU32 } from '../src/bytes.js';
+import { getU16, getU32, u32 } from '../src/bytes.js';
 import { Host } from '../src/host.js';
 import { connect } from '../src/open.js';
 import * as cobs from '../src/cobs.js';
@@ -24,6 +24,7 @@ import { haveFake, startFake } from './fake.js';
 
 const FAST = { verifyMs: 900 };   // the probe's try state ends soon: a failed candidate costs under a second
 const UNIT = '0070070d9394';      // the fake esp32-v003's unit_id
+const NO_PROBATION = { probationBytes: 0, probationMs: 0 };   // the window alone (the probation has its own tests)
 
 /** @param {string[]} args @param {(hst: import('../src/host.js').Host) => Promise<void>} body @param {object} [opts] */
 async function withSpeedFake(args, body, opts = {}) {
@@ -705,9 +706,10 @@ test('connect on a serial port waits out a raised rate left over', { skip: !have
 });
 
 test('connect on a serial port gives up after about 4 s; other transports keep their timeout', { skip: !haveFake }, async () => {
+  // either way the probing rule (core §3.3) closes the transport: NotOepProbe, its cause the Timeout
   const { fake, transport, t0 } = await deafSerial(60000);
   try {
-    await assert.rejects(connect(transport, { timeoutMs: 1000 }), (e) => e instanceof Timeout);
+    await assert.rejects(connect(transport, { timeoutMs: 1000 }), (e) => e instanceof NotOepProbe && /** @type {any} */ (e).cause instanceof Timeout);
     const took = performance.now() - t0;
     assert.ok(took >= OPEN_RETRY_MS - 100 && took < OPEN_RETRY_MS + 3000, `took ${took}`);
   } finally {
@@ -716,7 +718,7 @@ test('connect on a serial port gives up after about 4 s; other transports keep t
   const other = await deafSerial(60000);
   try {
     const t1 = performance.now();
-    await assert.rejects(connect({ ...other.transport, kind: 'tcp' }, { timeoutMs: 300 }), (e) => e instanceof Timeout);
+    await assert.rejects(connect({ ...other.transport, kind: 'tcp' }, { timeoutMs: 300 }), (e) => e instanceof NotOepProbe && /** @type {any} */ (e).cause instanceof Timeout);
     assert.ok(performance.now() - t1 < 3000);                      // the confirm, its resend: no 4 s retry
   } finally {
     other.fake.stop();
@@ -734,7 +736,7 @@ async function raisedInUse(every, body, opts = {}) {
   }, async (hst, line) => {
     rateNow = () => hst.link.baud;
     line.every = every;
-    const report = await raiseSpeed(hst, [921600], { ...FAST, ...opts });
+    const report = await raiseSpeed(hst, [921600], { ...FAST, ...NO_PROBATION, ...opts });
     assert.equal(report.chosen, 921600);
     line.breaking = true;
     await body(hst, line);
@@ -761,7 +763,7 @@ test('in use: the 3 s window over 10 % steps down for the session, which goes on
   assert.equal(hst.session, session);
   await hst.keepalive();                                  // the lease held: the session goes on
   const again = await raiseSpeed(hst, [921600], FAST);
-  assert.match(again.trials[0].why, /^stepped down/);
+  assert.match(again.trials[0].why, /^broke in use earlier/);
   assert.equal(again.chosen, null);
   assert.equal(hst.link.baud, 115200);
 }));
@@ -819,7 +821,7 @@ test('in use: no answer at a raised rate falls back well inside the lease and th
     assert.equal(report.stepDowns[0].ratio, null);
     await hst.keepalive();
     const again = await raiseSpeed(hst, [921600], FAST);
-    assert.match(again.trials[0].why, /^stepped down/);
+    assert.match(again.trials[0].why, /^broke in use earlier/);
   }, 3000);
 });
 
@@ -962,4 +964,169 @@ test('the record is a cache: an unreadable or unwritable store is not an error; 
   assert.deepEqual(rec.lookup('p', 'u'), { passed: [], failed: [] });
   rec.note('p', 'u', 921600, false);
   assert.deepEqual(Object.keys(rec.data['p|u'].rates), ['921600']);
+});
+
+// ---- step downs, the probation, maxTries (host guide §7.3.2 item 4) ----------------------------------------------------
+
+/** In-use traffic: link_source answers of `size` bytes until `until()` (at most `limitMs`).
+ * @param {import('../src/host.js').Host} hst @param {() => boolean} until */
+async function move(hst, until, size = 40, limitMs = 3000) {
+  const deadline = performance.now() + limitMs;
+  while (!until() && performance.now() < deadline) await hst.request(m.CORE_FN, m.OP.link_source, u32(size));
+}
+
+/** @param {import('../src/host.js').Host} hst */
+const report = (hst) => /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
+
+test('in use: a breakdown steps down to the next lower candidate, never at or above a failed one', { skip: !haveFake }, async () => {
+  /** @type {Set<number>} */ const breaking = new Set();
+  let n = 0;
+  await withLine(['--broken-rate', '1500000:in'], {                     // no confirm at 1500000
+    garble: () => breaking.has(/** @type {number} */ (link?.baud)) && ++n % 3 === 0,
+  }, async (hst) => {
+    link = hst.link;
+    const r = await raiseSpeed(hst, [1500000, 921600, 500000, 230400], { ...FAST, ...NO_PROBATION });
+    assert.equal(r.chosen, 921600);
+    assert.deepEqual([...hst.link.failed.keys()], [1500000]);
+    breaking.add(921600);
+    for (let i = 0; i < 60; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
+    assert.equal(r.stepDowns.length, 1);
+    const [s] = r.stepDowns;
+    assert.equal(s.rate, 921600);
+    assert.equal(s.to, 500000);
+    assert.equal(s.probation, false);
+    assert.match(s.why, /within 3 s/);
+    assert.equal(hst.link.baud, 500000);
+    assert.equal(r.chosen, 500000);
+    assert.deepEqual(r.trials.filter((t) => t.committed).map((t) => t.rate), [921600, 500000]);
+    assert.match(speedText(r), /-> 500000/);
+    assert.match(speedText(r), /in force: 500000 \(raised\)/);
+    breaking.add(500000);
+    for (let i = 0; i < 60; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
+    assert.deepEqual(r.stepDowns.map((x) => [x.rate, x.to]), [[921600, 500000], [500000, 230400]]);
+    assert.equal(hst.link.baud, 230400);
+    const again = await raiseSpeed(hst, [921600, 750000, 230400], { ...FAST, ...NO_PROBATION });   // later in the session: no up
+    assert.match(again.trials[0].why, /^broke in use earlier/);
+    assert.match(again.trials[1].why, /^above 500000/);
+    await hst.keepalive();
+  });
+});
+/** @type {import('../src/link.js').Link | null} */ let link = null;
+
+test('in use: no step down to a rate above one that failed its verify', { skip: !haveFake }, async () => {
+  let breaking = false, n = 0;
+  /** @type {() => number | null} */ let rateNow = () => 115200;
+  await withLine(['--broken-rate', '230400:in'], { garble: () => breaking && rateNow() === 921600 && ++n % 3 === 0 }, async (hst) => {
+    rateNow = () => hst.link.baud;
+    const r = await raiseSpeed(hst, [230400, 921600, 500000], { ...FAST, ...NO_PROBATION });
+    assert.equal(r.chosen, 921600);
+    breaking = true;
+    for (let i = 0; i < 60; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
+    assert.equal(r.stepDowns[0].to, 115200);            // 500000 is above 230400, which failed
+    assert.equal(hst.link.baud, 115200);
+    assert.deepEqual(r.trials.map((t) => t.rate), [230400, 921600]);
+    assert.match(speedText(r), /the boot speed for the rest of the session/);
+  });
+});
+
+test('the probation fails a rate that passes the quick verify and breaks later; the next lower one passes it', { skip: !haveFake },
+  () => withSpeedFake(['--broken-rate', '921600:30:in:after3000'], async (hst) => {
+    const rec = new SpeedRecord(memoryStore());
+    const r = await raiseSpeed(hst, [921600, 500000], { flows: [['in', 1]], record: rec, probationBytes: 4096, probationMs: 300, ...FAST });
+    const [t] = r.trials;
+    assert.equal(t.committed, true);
+    assert.ok(t.flows.every((f) => f.passed));
+    assert.equal(t.probation, 'running');
+    await move(hst, () => hst.link.baud !== 921600);
+    assert.equal(r.stepDowns.length, 1);
+    const [s] = r.stepDowns;
+    assert.equal(s.rate, 921600);
+    assert.equal(s.probation, true);
+    assert.equal(s.to, 500000);
+    assert.match(s.why, /^in probation/);
+    assert.equal(t.probation, 'failed');
+    assert.ok(t.probationBytes > 0 && t.probationBytes < 4096);
+    const t2 = r.trials[r.trials.length - 1];
+    assert.equal(t2.rate, 500000);
+    assert.equal(t2.committed, true);
+    assert.equal(t2.settling, true);
+    await move(hst, () => t2.probation !== 'running');
+    assert.equal(t2.probation, 'passed');
+    assert.ok(t2.probationBytes >= 4096);
+    assert.equal(hst.link.probation, null);
+    assert.deepEqual(Object.fromEntries(rec.results('<stream>', UNIT)), { 921600: 'failed', 500000: 'passed' });
+    const rates = rec.data[`<stream>|${UNIT}`].rates;
+    assert.equal(rates['921600'].phase, 'probation');
+    assert.equal(rates['500000'].phase, 'probation');
+    assert.match(speedText(r), /probation passed/);
+    assert.match(speedText(r), /\(in probation\)/);
+  }));
+
+test('a failure soon after a breakdown at another rate is noted unknown', { skip: !haveFake },
+  () => withSpeedFake(['--broken-rate', '921600:30:in', '--broken-rate', '500000:30:in'], async (hst) => {
+    const rec = new SpeedRecord(memoryStore());
+    let r = await raiseSpeed(hst, [921600, 500000], { flows: [['in', 1]], record: rec, ...FAST });
+    const [a, b] = r.trials;
+    assert.equal(a.settling, false);
+    assert.equal(b.settling, true);
+    assert.equal(r.chosen, null);
+    assert.deepEqual(Object.fromEntries(rec.results('<stream>', UNIT)), { 921600: 'failed', 500000: 'unknown' });
+    assert.deepEqual(rec.lookup('<stream>', UNIT), { passed: [], failed: [921600] });   // an unknown is in neither list
+    assert.deepEqual(rec.data[`<stream>|${UNIT}`].rates['500000'], { ...rec.data[`<stream>|${UNIT}`].rates['500000'], result: 'unknown', passed: null, phase: 'verify' });
+    assert.match(speedText(r), /unknown/);
+    await hst.end();
+    await take(hst, 10000);
+    r = await raiseSpeed(hst, [921600, 500000], { flows: [['in', 1]], record: rec, settleMs: 0, ...FAST });
+    assert.deepEqual(r.trials.map((t) => t.rate), [500000]);
+    assert.deepEqual(r.skipped, [921600]);
+    assert.equal(rec.results('<stream>', UNIT).get(500000), 'failed');
+  }));
+
+test('when the record marks every candidate failed the slowest is tried once; maxTries bounds the tries and the step downs', { skip: !haveFake }, async () => {
+  const rec = new SpeedRecord(memoryStore());
+  for (const rate of [1500000, 921600, 500000]) rec.note('<stream>', UNIT, rate, false, 'verify');
+  await withSpeedFake([], async (hst) => {
+    const r = await raiseSpeed(hst, [1500000, 921600, 500000], { record: rec, maxTries: 1, ...FAST });
+    assert.equal(r.retried, 500000);
+    assert.deepEqual(r.skipped, [1500000, 921600]);
+    assert.equal(r.chosen, 500000);
+    assert.deepEqual(r.trials.map((t) => t.rate), [500000]);
+    assert.match(speedText(r), /500000 \(the slowest\) tried once/);
+    assert.deepEqual(rec.lookup('<stream>', UNIT), { passed: [500000], failed: [1500000, 921600] });
+  });
+  let breaking = false, n = 0;
+  /** @type {() => number | null} */ let rateNow = () => 115200;
+  await withLine(['--broken-rate', '1500000:in'], { garble: () => breaking && rateNow() === 921600 && ++n % 3 === 0 }, async (hst) => {
+    rateNow = () => hst.link.baud;
+    const r = await raiseSpeed(hst, [1500000, 921600, 500000], { maxTries: 2, ...FAST, ...NO_PROBATION });
+    assert.deepEqual(r.trials.map((t) => t.rate), [1500000, 921600]);
+    assert.deepEqual(r.capped, [500000]);
+    assert.equal(r.chosen, 921600);
+    assert.deepEqual(hst.link.speedPlan?.rates, [1500000, 921600]);
+    assert.match(speedText(r), /left out \(maxTries\): 500000/);
+    breaking = true;
+    for (let i = 0; i < 60; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
+    assert.equal(r.stepDowns[0].to, 115200);            // 500000 is not in this call's tries
+    assert.equal(hst.link.baud, 115200);
+  });
+});
+
+test('the record keeps a failure a day and a pass 30 days; an unknown is neither; the older shape still reads', () => {
+  let now = Date.parse('2026-10-02T00:00:00Z');
+  const rec = new SpeedRecord(memoryStore(), { now: () => now });
+  rec.note('p', 'u', 1500000, false, 'verify');
+  rec.note('p', 'u', 921600, null, 'verify');
+  rec.note('p', 'u', 500000, true, 'probation');
+  rec.data['p|u'].rates['115201'] = { passed: false, at: '2026-10-02T20:00:00+00:00' };   // no result, no phase
+  assert.deepEqual(rec.lookup('p', 'u'), { passed: [500000], failed: [1500000, 115201] });
+  now += 25 * 3600_000;                                                                     // past a day
+  assert.deepEqual(Object.fromEntries(rec.results('p', 'u')), { 500000: 'passed', 115201: 'failed' });
+  now += 28 * 86400_000;                                                                    // 29 days and an hour
+  assert.deepEqual(Object.fromEntries(rec.results('p', 'u')), { 500000: 'passed' });
+  now += 2 * 86400_000;
+  assert.deepEqual(rec.lookup('p', 'u'), { passed: [], failed: [] });
+  const longer = new SpeedRecord(memoryStore(), { now: () => now, failTtlMs: 3 * 86400_000 });
+  longer.note('p', 'u', 921600, false);
+  now += 2 * 86400_000;
+  assert.deepEqual(longer.lookup('p', 'u'), { passed: [], failed: [921600] });
 });

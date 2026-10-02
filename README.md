@@ -41,13 +41,19 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
   sends a keepalive when quiet for less than half of `idleMs` (1 s), and `host.link.keepAlive()` does the same for a
   caller that sits idle. A request unanswered at a raised rate falls back to the boot speed, confirmed within
   port_speed_idle_max_ms + 1 s (an Error when no confirm comes, never the raised rate again), and goes once more there;
-  each wait is at most a quarter of the lease. In use the link judges the frames of the last 3 s (none under 50): over
-  max(2 x baseline, 10 %) broken or lost steps down (port_speed revert, the boot speed, a confirm) and the rate stays
-  unused for the session (`speed.steppedDown`, `downWhy`, `stepDowns`). `record: true` (off by default; or a file path,
-  or a `speedrecord.SpeedRecord`) keeps passed / failed rates for 30 days - in Node per (port path, unit_id) in
-  `~/.cache/oep-client/link-speed.json` (`$XDG_CACHE_HOME`; the same file as oep-client-python's), in a browser in
-  localStorage by unit_id - and puts a passed rate first, failed ones out (`report.skipped`). The same procedure as
-  oep-client-python.
+  each wait is at most a quarter of the lease. In use, a committed rate's first 32 KiB and 1 s (`probationBytes`,
+  `probationMs`) are its probation: 3 or more broken or lost frames over max(2 x baseline, 5 %), or a missed answer,
+  count as a verify failure and step down at once (the 16-frame verify stays the quick gate). After it the link judges
+  the frames of the last 3 s (none under 50): over max(2 x baseline, 10 %) broken or lost steps down. A step down is
+  port_speed revert, the boot speed, a confirm, then the next lower candidate of that call that has not failed in the
+  session (a fresh try -> confirm -> verify -> commit; none left: the boot speed); a rate that broke stays unused for
+  the session, and so does every rate above it (`speed.steppedDown`, `downWhy`, `stepDowns` with `to` and
+  `probation`). `maxTries` bounds the candidates one call tries (a capture host wants 2). `record: true` (off by
+  default; or a file path, or a `speedrecord.SpeedRecord`) keeps passed / failed rates - a pass for 30 days, a failure
+  for 1 day, a failure measured within 2 s (`settleMs`) of a breakdown at another rate as unknown - in Node per (port
+  path, unit_id) in `~/.cache/oep-client/link-speed.json` (`$XDG_CACHE_HOME`; the same file as oep-client-python's),
+  in a browser in localStorage by unit_id - and puts a passed rate first, failed ones out (`report.skipped`; every
+  candidate failed: the slowest is tried once, `report.retried`). The same procedure as oep-client-python.
 - block operations: riscv-dm / arm-adi `readBlock` / `writeBlock` are bounded by the probe's declared `max_length`
   (`RiscvDm` / `ArmAdi` `.maxLength` bytes, `.maxWords`; oep-if-debug §4.5 / §6) - `MemAp` chunks by it, and a probe
   with block ops that declares none throws `riscv.NoMaxLength`; nothing is derived from max_frame.

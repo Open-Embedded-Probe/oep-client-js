@@ -4,8 +4,15 @@
 //
 // Keyed by the port (the OS device path) and the probe's unit_id: the bridge chip belongs to the port, the probe to
 // the unit_id, so either one changing starts the record afresh. In a browser the port has no name (WebSerial shows
-// none), so the key is the unit_id alone. Entries older than EXPIRY_DAYS (30) are dropped. The record is a cache: a
-// store that cannot be read or written is not an error (`SpeedRecord.error` says what went wrong).
+// none), so the key is the unit_id alone. A pass expires after PASS_TTL_MS (30 days), a failure after FAIL_TTL_MS
+// (1 day: a bridge that broke once may pass tomorrow, and a day-old failure is cheap to measure again), an unknown
+// after FAIL_TTL_MS too. The record is a cache: a store that cannot be read or written is not an error
+// (`SpeedRecord.error` says what went wrong).
+//
+// An entry: `{ result, passed, phase, at }` - result 'passed' / 'failed' / 'unknown' (measured within settleMs of a
+// breakdown at another rate: neither, host guide §7.4), passed true / false / null (the same, for a reader of the
+// older shape), phase where it was decided ('try', 'confirm', 'verify', 'probation', 'in_use'), at ISO 8601 UTC. An
+// entry without `result` is read from `passed`. Not a released format.
 //
 // Where it lives is the store's business: `fileStore(path)` (Node; the default is
 // `$XDG_CACHE_HOME/oep-client/link-speed.json`, `~/.cache/...` - the same file and shape as oep-client-python's
@@ -14,11 +21,15 @@
 //
 //   const rec = new SpeedRecord(await defaultStore());
 //   const { passed, failed } = rec.lookup('/dev/ttyUSB0', '0070070d9394');
-//   rec.note('/dev/ttyUSB0', '0070070d9394', 921600, true);
+//   rec.note('/dev/ttyUSB0', '0070070d9394', 921600, true, 'verify');
 //
 // `raiseSpeed(host, candidates, { record: true })` reads and writes it; the library default is off.
 
-export const EXPIRY_DAYS = 30;
+/** A pass is kept this long ... */
+export const PASS_TTL_MS = 30 * 86400_000;
+/** ... a failure (and an unknown) this long. */
+export const FAIL_TTL_MS = 86400_000;
+/** @typedef {'passed' | 'failed' | 'unknown'} RateResult */
 /** The file under the user's cache directory (Node). */
 export const FILE_NAME = 'link-speed.json';
 export const DIR_NAME = 'oep-client';
@@ -107,19 +118,27 @@ export async function defaultStore() {
   return memoryStore();
 }
 
-/** @typedef {{ port: string | null, unit_id: string, rates: Record<string, { passed: boolean, at: string }> }} Entry */
+/** @typedef {{ result?: RateResult, passed: boolean | null, phase?: string, at: string }} RateEntry */
+/** @typedef {{ port: string | null, unit_id: string, rates: Record<string, RateEntry> }} Entry */
+
+/** An entry's result: `result`, else from `passed`. @param {RateEntry} v @returns {RateResult} */
+function resultOf(v) {
+  if (v.result === 'passed' || v.result === 'failed' || v.result === 'unknown') return v.result;
+  return v.passed === null || v.passed === undefined ? 'unknown' : v.passed ? 'passed' : 'failed';
+}
 
 /**
- * The record: `{ "<port>|<unit_id>" (or "<unit_id>" without a port): { port, unit_id, rates: { "<rate>": { passed, at } } } }`.
+ * The record: `{ "<port>|<unit_id>" (or "<unit_id>" without a port): { port, unit_id, rates: { "<rate>": { result, passed, phase, at } } } }`.
  */
 export class SpeedRecord {
   /**
    * @param {RecordStore} store
-   * @param {{ expiryDays?: number, now?: () => number }} [opts]  now: ms since the epoch (tests move it)
+   * @param {{ passTtlMs?: number, failTtlMs?: number, now?: () => number }} [opts]  now: ms since the epoch (tests move it)
    */
-  constructor(store, { expiryDays = EXPIRY_DAYS, now = () => Date.now() } = {}) {
+  constructor(store, { passTtlMs = PASS_TTL_MS, failTtlMs = FAIL_TTL_MS, now = () => Date.now() } = {}) {
     this.store = store;
-    this.expiryMs = expiryDays * 86400_000;
+    this.passTtlMs = passTtlMs;
+    this.failTtlMs = failTtlMs;
     this.now = now;
     /** @type {string | null} why the store could not be read or written (the record is a cache: not an error) */
     this.error = null;
@@ -136,37 +155,48 @@ export class SpeedRecord {
   /** @param {string | null} port @param {string} unitId */
   static key(port, unitId) { return port === null ? unitId : `${port}|${unitId}`; }
 
-  /** The entry's rates that have not expired: rate -> passed. @param {Entry | undefined} entry */
+  /** The entry's rates that have not expired: rate -> result. @param {Entry | undefined} entry */
   fresh(entry) {
-    /** @type {Map<number, boolean>} */
+    /** @type {Map<number, RateResult>} */
     const out = new Map();
-    const cutoff = this.now() - this.expiryMs;
+    const now = this.now();
     for (const [rate, v] of Object.entries(entry?.rates ?? {})) {
-      const at = Date.parse(v?.at);
-      if (Number.isFinite(at) && at >= cutoff && Number.isFinite(Number(rate))) out.set(Number(rate), !!v.passed);
+      if (!v || typeof v !== 'object') continue;
+      const result = resultOf(v);
+      const at = Date.parse(v.at);
+      const ttl = result === 'passed' ? this.passTtlMs : this.failTtlMs;
+      if (Number.isFinite(at) && at >= now - ttl && Number.isFinite(Number(rate))) out.set(Number(rate), result);
     }
     return out;
   }
 
   /**
-   * The rates that passed and the rates that failed on this port with this probe, within the expiry; each rate is in one
-   * list only (its latest note), fastest first.
+   * The rates that passed and the rates that failed on this port with this probe, within their expiry; each rate is in
+   * one list only (its latest note), fastest first. An unknown is in neither.
    * @param {string | null} port @param {string} unitId @returns {{ passed: number[], failed: number[] }}
    */
   lookup(port, unitId) {
     const rates = this.fresh(this.data[SpeedRecord.key(port, unitId)]);
-    const by = (/** @type {boolean} */ ok) => [...rates].filter(([, p]) => p === ok).map(([r]) => r).sort((a, b) => b - a);
-    return { passed: by(true), failed: by(false) };
+    const by = (/** @type {RateResult} */ want) => [...rates].filter(([, v]) => v === want).map(([r]) => r).sort((a, b) => b - a);
+    return { passed: by('passed'), failed: by('failed') };
   }
 
-  /** Remember that `rate` passed (or failed) now, and save.
-   * @param {string | null} port @param {string} unitId @param {number} rate @param {boolean} passed */
-  note(port, unitId, rate, passed) {
+  /** Every rate within its expiry -> 'passed' / 'failed' / 'unknown'.
+   * @param {string | null} port @param {string} unitId @returns {Map<number, RateResult>} */
+  results(port, unitId) { return this.fresh(this.data[SpeedRecord.key(port, unitId)]); }
+
+  /** Remember that `rate` passed (true), failed (false) or is unknown (null: measured while the line was still
+   * settling) now, decided at `phase`, and save.
+   * @param {string | null} port @param {string} unitId @param {number} rate @param {boolean | null} passed @param {string} [phase] */
+  note(port, unitId, rate, passed, phase = '') {
     const key = SpeedRecord.key(port, unitId);
     const entry = this.data[key] ?? (this.data[key] = { port, unit_id: unitId, rates: {} });
     entry.port = port;
     entry.unit_id = unitId;
-    (entry.rates ?? (entry.rates = {}))[String(Math.trunc(rate))] = { passed: !!passed, at: new Date(this.now()).toISOString().replace(/\.\d{3}Z$/, '+00:00') };
+    const result = passed === null ? 'unknown' : passed ? 'passed' : 'failed';
+    (entry.rates ?? (entry.rates = {}))[String(Math.trunc(rate))] = {
+      result, passed: passed === null ? null : !!passed, phase, at: new Date(this.now()).toISOString().replace(/\.\d{3}Z$/, '+00:00'),
+    };
     return this.save();
   }
 
