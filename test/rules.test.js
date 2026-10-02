@@ -296,13 +296,14 @@ test('C-07: a resync waits 250 ms after the host\'s last write before its confir
 
 test('C-07: the first confirm on a length-prefixed port waits for 50 ms of quiet input', async () => {
   const { t, sent, at } = scripted();
-  const t0 = Date.now();
-  const noisy = setInterval(() => t.inject(Uint8Array.of(0x33)), 10);   // left over bytes until 120 ms
+  /** @type {number[]} */ const noise = [];
+  const noisy = setInterval(() => { t.inject(Uint8Array.of(0x33)); noise.push(Date.now()); }, 10);   // left over bytes for 120 ms
   setTimeout(() => clearInterval(noisy), 120);
   const hst = await connect(t, { timeoutMs: 500 });
   assert.equal(hst.revision, 1);
   assert.equal(sent[0].op, m.OP.confirm);
-  assert.ok(at[0] - t0 >= 120 + 50 - 5, `${at[0] - t0} ms`);
+  const last = Math.max(...noise.filter((n) => n <= at[0]));       // the input was quiet 50 ms before the confirm
+  assert.ok(noise.length && at[0] - last >= 50 - 5, `${at[0] - last} ms after the last byte`);
 });
 
 // ---- PC-1 / PC-2 / PC-5: the line search and labels ---------------------------------------------------------------
