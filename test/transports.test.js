@@ -144,7 +144,7 @@ test('USB vendor interface: chosen by class 0xFF, subclass 0x4F, protocol 0x45 -
   assert.equal(findVendorInterface({ configurationValue: 1, interfaces: d.configurations[0].interfaces.slice(0, 3) }), null);
   assert.equal(findVendorInterface(null), null);
   assert.equal(isOepDevice(0x303a, 2, 'OEP probe (ESP32-P4)'), true);
-  assert.equal(isOepDevice(0x1209, 0x4f45, null), false);                 // the VID:PID tells nothing (core §3.3)
+  assert.equal(isOepDevice(0x303a, 0x0002, null), false);                 // the VID:PID tells nothing (core §3.3)
   assert.equal(isOepDevice(0x303a, 0x1001, 'USB JTAG/serial debug unit'), false);
   assert.equal(usbUnitId(d), '30eda0e31108');
 });

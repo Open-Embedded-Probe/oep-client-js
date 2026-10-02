@@ -47,8 +47,8 @@ docs/           この文書、リリースの手順
 | TCP（ローカルのブローカー、試験の fake） | - | node:net | length(u16) message |
 
 - WebUSB、WebSerial、WebHID は Chromium 系（Chrome、Edge）だけで、ページは HTTPS（か localhost）で配る必要があります。
-- probe の見分け方は core §3.3 のとおりです: iProduct が `OEP` で始まる（VID:PID では見分けない。参照 firmware の 1209:4F45 は WebSerial
-  の選択の目安だけ）、vendor の interface は class 0xFF / subclass 0x4F / protocol 0x45、HID は usage page 0xFF4F / usage 0x45
+- probe の見分け方は core §3.3 のとおりです: iProduct が `OEP` で始まる（VID:PID では見分けない。WebSerial の選択には
+  VID:PID の既定の filter を付けない。呼び出し側が自分の filter を渡せる）、vendor の interface は class 0xFF / subclass 0x4F / protocol 0x45、HID は usage page 0xFF4F / usage 0x45
   （registry の `usb`）。USB の serial が unit_id。
 
 ## 4. Web ページでできること（順番）

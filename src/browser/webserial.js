@@ -1,7 +1,6 @@
 // @ts-check
 // WebSerial: a serial port (USB CDC, USB-Serial/JTAG, a USB-UART bridge). COBS frames and the port's raw bytes on
 // one line (oep-core §3.1, §3.4).
-import { REFERENCE_PRODUCT_ID, REFERENCE_VENDOR_ID } from '../usbvendor.js';
 
 /**
  * The part of WebSerial's SerialPort used here (lib.dom does not carry WebSerial).
@@ -15,12 +14,6 @@ import { REFERENCE_PRODUCT_ID, REFERENCE_VENDOR_ID } from '../usbvendor.js';
  */
 /** @typedef {{ usbVendorId?: number, usbProductId?: number }} SerialPortFilter */
 
-/** The USB serial ports the reference firmware shows (its VID:PID, registry usb). A probe is told by its iProduct
- * (core §3.3), which WebSerial does not show: this is a hint for the chooser, not a test. */
-export const OEP_SERIAL_FILTERS = [
-  { usbVendorId: REFERENCE_VENDOR_ID, usbProductId: REFERENCE_PRODUCT_ID },
-];
-
 /** @returns {any} */
 const serialApi = () => {
   const s = /** @type {any} */ (globalThis.navigator)?.serial;
@@ -29,14 +22,14 @@ const serialApi = () => {
 };
 
 /**
- * Ask the user for a serial port. `oepOnly`: offer only the ports of OEP USB devices (a USB-UART bridge or a
- * USB-Serial/JTAG port is not one: leave it off for those).
- * @param {{ oepOnly?: boolean, filters?: SerialPortFilter[] }} [opts]
+ * Ask the user for a serial port. `filters`: the caller's WebSerial filters (by VID:PID) to narrow the chooser; none
+ * offers every port. A probe is told by its iProduct (core §3.3), which WebSerial does not show, so no OEP filter is
+ * built in: the VID:PID tells nothing.
+ * @param {{ filters?: SerialPortFilter[] }} [opts]
  * @returns {Promise<SerialPortLike>}
  */
-export function requestSerialPort({ oepOnly = false, filters } = {}) {
-  const f = filters ?? (oepOnly ? OEP_SERIAL_FILTERS : undefined);
-  return serialApi().requestPort(f ? { filters: f } : {});
+export function requestSerialPort({ filters } = {}) {
+  return serialApi().requestPort(filters ? { filters } : {});
 }
 
 /** The ports this page was given before. @returns {Promise<SerialPortLike[]>} */

@@ -48,8 +48,8 @@ docs/           this document, the release steps
 | TCP (a local broker, the tests' fake) | - | node:net | length(u16) message |
 
 - WebUSB, WebSerial and WebHID are Chromium only (Chrome, Edge), and the page must be served over HTTPS (or localhost).
-- Probes are recognised as core §3.3 says: an iProduct starting `OEP` (the VID:PID tells nothing; the reference
-  firmware's 1209:4F45 is only a hint for WebSerial's chooser), the vendor interface is class 0xFF / subclass 0x4F /
+- Probes are recognised as core §3.3 says: an iProduct starting `OEP` (the VID:PID tells nothing, so WebSerial's
+  chooser gets no built-in VID:PID filter; a caller may pass its own), the vendor interface is class 0xFF / subclass 0x4F /
   protocol 0x45, the HID collection usage page 0xFF4F / usage 0x45 (registry `usb`); the USB serial is the unit_id.
 
 ## 4. What the page does (in this order)
