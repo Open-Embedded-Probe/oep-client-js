@@ -20,8 +20,8 @@
 // `memoryStore()` (tests, or a session that should remember nothing past itself).
 //
 //   const rec = new SpeedRecord(await defaultStore());
-//   const { passed, failed } = rec.lookup('/dev/ttyUSB0', '0070070d9394');
-//   rec.note('/dev/ttyUSB0', '0070070d9394', 921600, true, 'verify');
+//   const { passed, failed } = rec.lookup('/dev/ttyUSB0', 'fafe00000003');
+//   rec.note('/dev/ttyUSB0', 'fafe00000003', 921600, true, 'verify');
 //
 // `raiseSpeed(host, candidates, { record: true })` reads and writes it; the library default is off.
 

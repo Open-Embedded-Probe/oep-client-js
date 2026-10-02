@@ -93,7 +93,7 @@ test('oep.core is the first entry and describes the probe itself', { skip: !have
   assert.equal(caps.maxFrame, 64);
   assert.ok(caps.requests.list > 1);                                // 64-byte frames: the list is paged
   const d = /** @type {Record<string, string>} */ (dump.describeOffer(caps.offers[0]).declares);
-  assert.equal(d['unit id'], '0070070d9394');
+  assert.equal(d['unit id'], 'fafe00000003');
   assert.equal(d.transport, '0 = UART bridge');
   assert.ok(d.label.includes('16 = SWIO') && d.label.includes('23 = NRST'));   // repeated tags all kept
   const cfg = dump.describeOffer(/** @type {dump.Offer} */ (caps.offers.find((o) => o.entry.name === 'oep.probe.config'))).declares;
@@ -126,7 +126,7 @@ test('p4 follows the agreed names; text and JSON', { skip: !haveFake }, () => wi
   assert.ok(text.includes('instance 0') && text.includes('oep.fixture.i2c-target'));
   assert.ok(text.includes('features: preloaded tx, clock stretching'));
   assert.ok(text.includes('max 5 MHz'));
-  assert.ok(text.includes('unit id: 30eda0e31108') && text.includes('chip: esp32p4 v1.0'));
+  assert.ok(text.includes('unit id: fafe00000035') && text.includes('chip: esp32p4 v1.0'));
   assert.ok(text.includes('oep.fixture.analog  rev 1   (not known to this host)'));
   const data = JSON.parse(dump.toJson(caps));
   assert.equal(data.maxFrame, 1024);

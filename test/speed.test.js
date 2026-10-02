@@ -23,7 +23,7 @@ import { openTcp, tcpTransport } from '../src/node/index.js';
 import { haveFake, startFake } from './fake.js';
 
 const FAST = { verifyMs: 900 };   // the probe's try state ends soon: a failed candidate costs under a second
-const UNIT = '0070070d9394';      // the fake esp32-v003's unit_id
+const UNIT = 'fafe00000003';      // the fake esp32-v003's unit_id
 const NO_PROBATION = { probationBytes: 0, probationMs: 0 };   // the window alone (the probation has its own tests)
 
 /** @param {string[]} args @param {(hst: import('../src/host.js').Host) => Promise<void>} body @param {object} [opts] */
