@@ -200,8 +200,8 @@ export class Link {
     this.endedBlind = false;                 // the last resync sent the blind end: the session is over
     this.probing = false;                    // the probing rule runs (open.js): no resync
     /** @type {number | null} when this host last wrote to the transport (null: never; core §5.1) */ this.lastWrite = null;
-    this.probeMaxFrame = reg.MIN_MAX_FRAME;  // the probe's max_frame once confirmed (the wait's transfer time)
-    this.waitAddMs = WAIT_ADD_MS;            // the floor's host_wait_add_ms (core §4.4)
+    /** @type {number} the probe's max_frame once confirmed (the wait's transfer time) */ this.probeMaxFrame = reg.MIN_MAX_FRAME;
+    /** @type {number} the floor's host_wait_add_ms (core §4.4) */ this.waitAddMs = WAIT_ADD_MS;
     /** @type {() => Uint8Array} the link's own confirm's payload: the revision in use once bound (Host, C-15) */
     this.confirmBody = () => OWN_CONFIRM;
   }

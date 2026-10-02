@@ -30,6 +30,7 @@ const NO_PROBATION = { probationBytes: 0, probationMs: 0 };   // the window alon
 async function withSpeedFake(args, body, opts = {}) {
   const fake = await startFake(['--profile', 'esp32-v003', ...args], 'cobs');
   const hst = await openTcp({ port: fake.port, framing: 'cobs', baudRate: 115200, timeoutMs: 1000, ...opts });
+  hst.link.waitAddMs = 0;    // as withLine
   try {
     if (hst.session === null) await take(hst, 10000);
     await body(hst);
@@ -281,6 +282,7 @@ async function withLine(args, model, body, leaseMs = 10000) {
     close: () => inner.close(),
   };
   const hst = await connect(transport, { timeoutMs: 1000 });
+  hst.link.waitAddMs = 0;    // the fake answers at once: the floor's 1000 ms (core §4.4) would only slow the losses
   try {
     await take(hst, leaseMs);
     await body(hst, line);
