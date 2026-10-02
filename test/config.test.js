@@ -303,3 +303,50 @@ test('a disabled reset line', { skip: !haveFake }, () => withFake(['--profile', 
   await assert.rejects(wire.attachUnderReset(23, { holdMs: 5 }), refused('held_by_settings', 23));
   await hst.end();
 }, 'cobs'));
+
+test('idle modes 3 / 4: names, both spellings', () => {
+  assert.equal(config.IDLE['output-low'], 3);
+  assert.equal(config.IDLE['output-high'], 4);
+  assert.deepEqual(new Idle({ channel: 7, mode: 'output_low' }).value(), Uint8Array.of(7, 0, 3));
+  assert.equal(new Idle({ channel: 7, mode: 'output_high' }).mode, 'output-high');
+  assert.throws(() => new Idle({ channel: 7, mode: 'output-medium' }).value(), RangeError);
+  const back = /** @type {Idle} */ (config.decode(config.ITEM.idle, Uint8Array.of(7, 0, 4)));
+  assert.equal(back.mode, 'output-high');
+});
+
+test('an output idle drives while free, survives the gpio take until the first set, and comes back at release', { skip: !haveFake }, () => withFake(['--profile', 'p4-bench'], async (hst) => {
+  await hst.open(3000);
+  const cfg = await ProbeConfig.open(hst);
+  await cfg.set([new Idle({ channel: 20, mode: 'output-high' }), new Idle({ channel: 21, mode: 'output-low' }),
+    new Label({ channel: 20, text: 'power_hi' })]);
+  const gpio = await Gpio.open(hst);
+  await planApply(hst, [[gpio.fn, 1, 20], [gpio.fn, 1, 21]]);
+  assert.deepEqual(await gpio.read([20, 21]), [1, 0]);                     // taking it changes nothing (fixture §1)
+  await gpio.set([[20, Gpio.OUTPUT_LOW]]);
+  assert.deepEqual(await gpio.read([20]), [0]);
+  await planRelease(hst, [gpio.fn]);
+  await planApply(hst, [[gpio.fn, 1, 20]]);
+  assert.deepEqual(await gpio.read([20]), [1]);                            // released to the idle, taken in it
+  assert.equal(await config.findLine(hst, 'power_hi'), 20);
+  await hst.end();
+}));
+
+test('findLine: <slot>.<name> first, the bare name on one slot, ambiguity listed', async () => {
+  const L = (/** @type {number} */ channel, /** @type {string} */ text) => new Label({ channel, text });
+  const S = (/** @type {number} */ slot, /** @type {string} */ name) => new Slot({ slot, wireFn: 1, pins: [2, 3], name });
+  const one = [S(0, 'x035'), L(5, 'nrst'), L(6, 'x035.nrst'), L(7, 'power_hi')];
+  assert.equal(await config.findLine(one, 'nrst'), 6);
+  assert.equal(await config.findLine(one, 'nrst', 'x035'), 6);
+  assert.equal(await config.findLine(one, 'nrst', 0), 6);
+  assert.equal(await config.findLine(one, 'power_hi'), 7);
+  assert.equal(await config.findLine(one, 'power_lo'), null);
+  assert.equal(await config.findLine([L(7, 'power_lo')], 'power_lo'), 7);
+  await assert.rejects(config.findLine(one, 'nrst', 3), RangeError);
+  const two = [S(0, 'a'), S(1, 'b'), L(5, 'a.nrst'), L(6, 'b.nrst'), L(7, 'power_hi')];
+  assert.equal(await config.findLine(two, 'nrst', 'b'), 6);
+  assert.equal(await config.findLine(two, 'power_hi', 'a'), null);         // no bare name with several slots
+  await assert.rejects(config.findLine(two, 'nrst'), (e) => e instanceof config.AmbiguousLine &&
+    JSON.stringify(e.candidates) === JSON.stringify([['a.nrst', 5], ['b.nrst', 6]]) && /a\.nrst \(channel 5\)/.test(e.message));
+  assert.equal(await config.findLine(two, 'power_lo'), null);
+  await assert.rejects(config.findLine([L(5, 'nrst'), L(6, 'nrst')], 'nrst'), config.AmbiguousLine);
+});
