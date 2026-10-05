@@ -15,8 +15,11 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 - 核: registry（oep-spec から生成）、フレーム（COBS + CRC、length）、メッセージ、リンク（corr の照合、1 回の送り直し、
   パイプライン、push と出来事。応答はどれも core §4.4 の下限 ― 引数の時間 + 1000 ms + シリアルの口の転送時間、
   `Link.waitFloorMs` ― 以上待つ。length のフレームでの §5.1 の立て直しは、host の最後の書き込みから 250 ms 待ってから confirm し、
-  TCP のフレームの途中の休みでは立て直さない）、host（confirm ― この host が来た経路の番号 `limits.transport`、2 回目からは
-  使っている revision を求める ―、セッション、ロック、購読）、list / describe / plan
+  TCP のフレームの途中の休みでは立て直さない。送り直しにも応答が無ければ経路の失敗 `TransportFailed` で、次の要求の前に
+  confirm で立て直す（COBS でも）。header より短いフレームは壊れたフレーム。fn 0 の heartbeat を読み、その boot_id を見る）、
+  host（confirm ― この host が来た経路の番号 `limits.transport`、2 回目からは使っている revision を求める。core §7.1 の範囲の外の
+  confirm や 1..600000 の外の max_op_ms は、その probe を `NotUsable` にする ―、セッション ― 最後に使った id への resumed 0 は
+  一覧をやり直す ―、ロック、購読）、list / describe / plan
 - インターフェース: debug の線（rvswd、swio、swd）と riscv-dm、ARM の ADI / MEM-AP / Cortex-M、target のコンソール、
   fixture（gpio、uart、i2c-target、spi-target）、キャプチャ（ロジック、アナログ、capture-group、sigrok の .sr）、probe.config、
   `oep dump` の表示

@@ -78,6 +78,12 @@ flash (ch32rv and the like).
   too, or the user picks the file.
 - **The lock**: the page takes the lock before it changes anything, like any host (core §6), shows who holds it and ends
   the session when it closes.
+- **A failed transport** (core §5.2, C-38): a request whose resend also goes unanswered throws `TransportFailed`; its
+  outcome (and that of every request outstanding with it) is unknown. The link recovers with a confirm before the next
+  request goes out, and a changed boot_id then shows as a reboot (`host.epoch`). A page reads the state again before it
+  repeats anything that changes it.
+- **A probe not used**: a confirm outside core §7.1's bounds, or a max_op_ms outside 1..600000, throws `NotUsable` and
+  the host sends nothing more to that probe (C-20, C-47). The page says why, with the values.
 - **VS Code**: an extension (Node) can use `./node`, but the native modules need builds for VS Code's Electron. A webview
   has no WebSerial / WebUSB.
 
@@ -85,7 +91,7 @@ flash (ch32rv and the like).
 
 - `node:test`, run by `npm test`.
 - The probe is oep-client-python's fake (`python -m oep_client.fake_serve` over TCP): the same fake the Python tests use,
-  so the same behaviour is checked. CI installs oep-client-python from PyPI.
+  so the same behaviour is checked. CI installs oep-client-python from its main branch (git).
 - The browser transports are checked on hardware (steps in [Releasing](release.md)).
 
 ## 7. Numbers (the registry)

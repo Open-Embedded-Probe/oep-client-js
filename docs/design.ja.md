@@ -74,6 +74,11 @@ docs/           この文書、リリースの手順
 - **Release のファイルと CORS**: GitHub の Release のファイルはブラウザから直接取れません（CORS のヘッダが無い）。firmware は
   Pages にも置くか、利用者にファイルを選んでもらいます。
 - **ロック**: ページもほかの host と同じくロックを取ってから操作し（core §6）、誰が持っているかを見せ、閉じるときに end します。
+- **経路の失敗**（core §5.2、C-38）: 送り直しにも応答が無い要求は `TransportFailed` を投げます。その要求と、一緒に出ていた要求の
+  結果は分かりません。link は次の要求を出す前に confirm で立て直し、boot_id が変わっていれば再起動として見えます（`host.epoch`）。
+  ページは、状態を変える操作を繰り返す前に、状態を読み直します。
+- **使わない probe**: core §7.1 の範囲の外の confirm、1..600000 の外の max_op_ms は `NotUsable` を投げ、host はその probe に
+  もう何も送りません（C-20、C-47）。ページは値を添えて理由を見せます。
 - **VS Code**: 拡張機能（Node）からは `./node` を使えますが、ネイティブのモジュールは VS Code（Electron）の版に合わせたビルドが
   要ります。Webview からは WebSerial / WebUSB を使えません。
 
@@ -81,7 +86,7 @@ docs/           この文書、リリースの手順
 
 - `node:test` で書き、`npm test` で走らせます。
 - probe の代わりに、oep-client-python の fake を使います（`python -m oep_client.fake_serve` の TCP）。Python の試験と同じ fake が
-  相手なので、同じ振る舞いを確かめられます。CI は PyPI から oep-client-python を入れます。
+  相手なので、同じ振る舞いを確かめられます。CI は oep-client-python を main の branch（git）から入れます。
 - ブラウザの経路は、実機で確かめます（手順は [リリースの手順](release.ja.md)）。
 
 ## 7. 番号（registry）

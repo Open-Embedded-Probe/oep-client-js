@@ -15,8 +15,11 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 - the core: the registry (generated from oep-spec), frames (COBS + CRC, length), messages, the link (corr matching, one
   resend, pipelining, pushes and events; every answer waited at least core §4.4's floor - argument time + 1000 ms + a
   serial port's transfer time, `Link.waitFloorMs` -; the §5.1 resync on length frames, its confirm 250 ms after the
-  host's last write, none for a pause inside a TCP frame), the host (confirm - `limits.transport`, the index this host
-  came in on; later confirms ask for the revision in use -, session, lock, subscribe), list / describe / plan;
+  host's last write, none for a pause inside a TCP frame; an unanswered resend fails the transport, `TransportFailed`,
+  and the next request first recovers with a confirm, COBS included; a frame shorter than its header is broken; fn 0's
+  heartbeats read and their boot_id watched), the host (confirm - `limits.transport`, the index this host came in on;
+  later confirms ask for the revision in use; one outside core §7.1's bounds, or a max_op_ms outside 1..600000, makes the
+  probe `NotUsable` -, session - resumed 0 for the id used last lists again -, lock, subscribe), list / describe / plan;
 - the interfaces: the debug wires (rvswd, swio, swd) and riscv-dm, ARM ADI / MEM-AP / Cortex-M, the target console, the
   fixtures (gpio, uart, i2c-target, spi-target), the captures (logic, analog, capture-group, sigrok .sr), probe.config and
   the `oep dump` view;
