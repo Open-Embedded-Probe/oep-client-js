@@ -1,11 +1,11 @@
 // @ts-check
-// port_speed (oep-core §3.5 is the handshake; the host's procedure is oep-spec docs/host-development-guide.ja.md §7,
+// port_speed (oep-core §3.5 is the handshake; the host's procedure is oep-spec docs/host-development-guide.md §17,
 // followed here): a faster UART bridge for one session, opt-in. `raiseSpeed` asks a probe that declares it for a
 // faster rate on the serial port this host opened.
 //
-// The minimal form (§7.2, the default): try a candidate -> switch to the requested baud (the probe's answered baud
+// The minimal form (§17.2, the default): try a candidate -> switch to the requested baud (the probe's answered baud
 // only when the platform refuses it: WebSerial `open({ baudRate })`, serialport `update`) -> settle 20 ms -> confirm
-// (100 ms, up to 3) -> commit. About 50 ms, no measurement. The full form (`verify: true`, or `flows` given; §7.3): a
+// (100 ms, up to 3) -> commit. About 50 ms, no measurement. The full form (`verify: true`, or `flows` given; §17.3): a
 // baseline at the boot speed per flow (this session's frames when 60 or more and under 10 %, else 60 measured per flow
 // at its n; over 10 % once more at n = 1), then per candidate every flow the caller will use (in = link_source, out =
 // link_sink, duplex = both interleaved, each with its in-flight n) for 16 frames at max_frame - 16, a flow failing on
@@ -36,15 +36,15 @@ const PORT_SPEED_TAG = reg.CORE.tlv.describe.port_speed;
 const UNIT_ID_TAG = reg.CORE.tlv.describe.unit_id;
 const UART_BRIDGE = reg.CORE.enum.transport_kind.uart_bridge;
 
-/** Host guide §7.2: one candidate that passed the measured bridges in small duplex use. */
+/** Host guide §17.2: one candidate that passed the measured bridges in small duplex use. */
 export const DEFAULT_CANDIDATES = Object.freeze([500000]);
 /** probe -> host (link_source), host -> probe (link_sink), both interleaved. */
 export const FLOWS = /** @type {const} */ (['in', 'out', 'duplex']);
-/** The probe waits this long for the commit (guide §7.2 / §7.3.2: 2000). */
+/** The probe waits this long for the commit (guide §17.2 / §17.3.2: 2000). */
 export const VERIFY_MS = 2000;
 /** After the switch: confirm, 100 ms each, up to 3 (core §3.5 obligation 2). */
 export const CONFIRM_TRIES = 3, CONFIRM_WAIT_MS = 100;
-/** Full form: at least this many frames per flow (guide §7.3.2 item 3-3) ... */
+/** Full form: at least this many frames per flow (guide §17.3.2 item 3-3) ... */
 export const FLOW_FRAMES = 16;
 /** ... a flow fails only on broken + lost of at least this ... */
 export const FLOW_FAIL_MIN = 3;
@@ -54,7 +54,7 @@ export const VERIFY_FLOOR = 0.05;
 export const BASELINE_FRAMES = 60;
 /** A flow whose baseline is over this is measured again at n = 1; still over: not raised. */
 export const BASELINE_MAX = 0.10;
-/** In use, a new rate's first period (guide §7.3.2 item 4): this many bytes both ways ... */
+/** In use, a new rate's first period (guide §17.3.2 item 4): this many bytes both ways ... */
 export const PROBATION_BYTES = 32 * 1024;
 /** ... and this long since the commit, judged as the verify judges a flow. */
 export const PROBATION_MS = 1000;
@@ -65,7 +65,7 @@ export const SETTLE_MS = 2000;
 /** @typedef {Flow | [Flow, number?]} FlowSpec  a flow at the most this link keeps in flight, or (flow, n); n 0 = that most */
 
 /**
- * One flow run at one rate (guide §7.5 record): the flow, its in-flight n, frames, broken (an answer came but its
+ * One flow run at one rate (guide §17.5 record): the flow, its in-flight n, frames, broken (an answer came but its
  * content is wrong), lost (no answer within the wait; a broken COBS frame on the held port is read as one), KB/s
  * (1000 B/s), whether it passed, `gone` (the probe stopped answering at this rate: it went back), `ratio` = (broken +
  * lost) / frames, `name` = "flow@n".
@@ -86,7 +86,7 @@ export const SETTLE_MS = 2000;
  *   readonly duplexKBs: number | null, flow: (name: Flow) => FlowResult | null }} SpeedTrial
  */
 
-/** A step down in use (guide §7.3.2 item 5): when (ms since the epoch), from which rate, why, the ratio that decided it
+/** A step down in use (guide §17.3.2 item 5): when (ms since the epoch), from which rate, why, the ratio that decided it
  * (the window's or the probation's; null: no answer), the rate the link went to (`to`: the next lower candidate that
  * passed, or the boot speed), whether the rate was still in its probation (then it counts as a verify failure).
  * @typedef {{ at: number, rate: number, why: string, ratio: number | null, to: number | null, probation: boolean }} StepDown */
@@ -202,7 +202,7 @@ async function keep(hst, link) {
 }
 
 /**
- * `frames` of one flow at the rate in force, `n` in flight, `size` bytes each, counted as the guide counts (§7.3.2):
+ * `frames` of one flow at the rate in force, `n` in flight, `size` bytes each, counted as the guide counts (§17.3.2):
  * broken = an answer came but its content is wrong, lost = no answer within the wait (a broken COBS frame on the held
  * port is read as one: the link drops the request at once). After lost frames the link is put in step again with a
  * confirm; when none is answered the probe is not at this rate any more (it went back) and the flow stops there, the
@@ -275,7 +275,7 @@ export function resolveFlows(flows, nMax) {
 }
 
 /**
- * The boot speed's ratio per flow (guide §7.3.2 item 2): `given`, or this session's frames at the boot speed when
+ * The boot speed's ratio per flow (guide §17.3.2 item 2): `given`, or this session's frames at the boot speed when
  * BASELINE_FRAMES or more were exchanged and under BASELINE_MAX, else BASELINE_FRAMES measured per flow at its n (over
  * BASELINE_MAX: again at n = 1, which then caps that flow). -> '' or why the port is not raised at all.
  * @param {import('./host.js').Host} hst @param {import('./link.js').Link} link @param {SpeedReport} report
@@ -312,7 +312,7 @@ async function baselineOf(hst, link, report, flows, given, size) {
 }
 
 /**
- * Every flow at the new rate (guide §7.3.2 items 3-3 / 3-4): `frames` or more, failing on broken + lost of
+ * Every flow at the new rate (guide §17.3.2 items 3-3 / 3-4): `frames` or more, failing on broken + lost of
  * FLOW_FAIL_MIN or more and a ratio over max(2 x baseline, VERIFY_FLOOR); a failed flow at n > 1 runs again at n = 1
  * (then the trial's nCap is 1). One failed flow fails the candidate (trial.why says which).
  * @param {import('./host.js').Host} hst @param {import('./link.js').Link} link @param {number} rate
@@ -343,17 +343,17 @@ async function verifyFlows(hst, link, rate, trial, flows, baseline, frames, size
 }
 
 /**
- * port_speed (oep-core §3.5) on the UART bridge this host opened, by the host guide's §7 procedure: try `candidates`
+ * port_speed (oep-core §3.5) on the UART bridge this host opened, by the host guide's §17 procedure: try `candidates`
  * in order and commit the first that passes. The session must be open (the rate lasts as long as it does).
  *
- * The minimal form (§7.2, the default; about 50 ms, no measurement): try -> switch to the requested baud (the probe's
+ * The minimal form (§17.2, the default; about 50 ms, no measurement): try -> switch to the requested baud (the probe's
  * answer only when the platform refuses it) -> 20 ms -> confirm (100 ms, up to 3) -> commit. The full form (`verify:
- * true`, or `flows` given; §7.3): first the boot speed's baseline per flow (`baseline` given, this session's frames at
+ * true`, or `flows` given; §17.3): first the boot speed's baseline per flow (`baseline` given, this session's frames at
  * the boot speed when 60 or more, else 60 frames measured per flow at its n - over 10 % again at n = 1, still over: not
  * raised), then per candidate every flow for `frames` (16) frames of max_frame - 16 bytes - the quick gate; a flow
  * fails on broken + lost >= 3 and a ratio over max(2 x baseline, 5 %), runs again at n = 1 first (then n = 1 is the
  * link's cap), and one failed flow fails the candidate. `flows`: 'in' | 'out' | 'duplex' or [flow, n] (n 0 = the most
- * this link keeps in flight; default: all three at that n) - verify only what the session will use (§7.3.1).
+ * this link keeps in flight; default: all three at that n) - verify only what the session will use (§17.3.1).
  *
  * A failed candidate: revert (step 2, at the new rate; its answer need not come), the boot speed, confirms up to
  * port_speed_idle_max_ms + 1 s (an Error when none is answered). verifyMs: how long the probe waits for the commit
@@ -361,7 +361,7 @@ async function verifyFlows(hst, link, rate, trial, flows, baseline, frames, size
  * with no good frame (default and at most 3000; 0 and more mean that); the link's keepalive interval is set under half
  * of it.
  *
- * In use (§7.3.2 item 4): the first period at a committed rate is its probation - until `probationBytes` (32 KiB,
+ * In use (§17.3.2 item 4): the first period at a committed rate is its probation - until `probationBytes` (32 KiB,
  * both ways) have moved and `probationMs` (1000) have passed; 0 and 0: none - judged as the verify judges a flow (3
  * or more broken or lost over max(2 x baseline, 5 %)) or a missed answer: either steps down at once and counts as a
  * verify failure. After it the last 3 s are judged (none under 50 frames): over max(2 x baseline, 10 %) broken or

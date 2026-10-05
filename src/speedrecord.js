@@ -1,5 +1,5 @@
 // @ts-check
-// The port_speed record (oep-spec host-development-guide.ja.md §7.4): which rates passed or failed on a serial port
+// The port_speed record (oep-spec host-development-guide.ja.md §17.4): which rates passed or failed on a serial port
 // with a probe, so the next session puts a passed rate first and leaves failed ones out until they expire.
 //
 // Keyed by the port (the OS device path) and the probe's unit_id: the bridge chip belongs to the port, the probe to
@@ -10,7 +10,7 @@
 // (`SpeedRecord.error` says what went wrong).
 //
 // An entry: `{ result, passed, phase, at }` - result 'passed' / 'failed' / 'unknown' (measured within settleMs of a
-// breakdown at another rate: neither, host guide §7.4), passed true / false / null (the same, for a reader of the
+// breakdown at another rate: neither, host guide §17.4), passed true / false / null (the same, for a reader of the
 // older shape), phase where it was decided ('try', 'confirm', 'verify', 'probation', 'in_use'), at ISO 8601 UTC. An
 // entry without `result` is read from `passed`. Not a released format.
 //

@@ -1,5 +1,5 @@
 // @ts-check
-// port_speed (oep-core §3.5 the handshake, host guide §7 the procedure; src/speed.js) against oep-client-python's fake
+// port_speed (oep-core §3.5 the handshake, host guide §17 the procedure; src/speed.js) against oep-client-python's fake
 // probe (esp32-v003 has it; --broken-rate models the line, by the probe's rate alone over TCP), behind a line model
 // of the host's side (withLine: frames garbled or dropped as the host would see them), and the link's fall back to
 // the boot speed on a scripted transport. Mirrors oep-client-python's tests/test_port_speed.py.
@@ -41,7 +41,7 @@ async function withSpeedFake(args, body, opts = {}) {
 }
 
 test('the minimal form tries, confirms and commits without a measurement; the end takes the link back', { skip: !haveFake }, async () => {
-  // host guide §7.2: one candidate, switch, 20 ms, a confirm, commit - no flows, no baseline
+  // host guide §17.2: one candidate, switch, 20 ms, a confirm, commit - no flows, no baseline
   /** @type {[number, number | null][]} */ const ops = [];
   await withLine([], {
     onWrite(msg) {
@@ -346,7 +346,7 @@ test('full form: pipelined frames break, one at a time passes: committed in flig
 
 test('full form: every flow measured at the boot speed and at each candidate; a rate whose frames break fails', { skip: !haveFake },
   () => withSpeedFake(['--broken-rate', '230400:40:in'], async (hst) => {   // the confirm passes, full answers break
-    // host guide §7.3.2: a baseline per flow at the boot speed, then 16 frames per flow at each candidate; a flow fails
+    // host guide §17.3.2: a baseline per flow at the boot speed, then 16 frames per flow at each candidate; a flow fails
     // on broken + lost >= 3 over max(2 x baseline, 5 %), and one failed flow fails the candidate
     const report = await raiseSpeed(hst, [230400, 500000], { verify: true, verifyMs: 5000 });   // the try state outlasts the measurement
     assert.equal(report.verified, true);
@@ -753,7 +753,7 @@ async function raisedInUse(every, body, opts = {}) {
 }
 
 test('in use: the 3 s window over 10 % steps down for the session, which goes on at base', { skip: !haveFake }, () => raisedInUse(4, async (hst) => {
-  // host guide §7.3.2 item 4: the last 3 s judged once 50 frames are in them; over max(2 x baseline, 10 %) broken or
+  // host guide §17.3.2 item 4: the last 3 s judged once 50 frames are in them; over max(2 x baseline, 10 %) broken or
   // lost -> revert, the boot speed, never raised again in this session
   const session = hst.session;
   for (let i = 0; i < 60; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());   // every one answered (a resend at once)
@@ -927,7 +927,7 @@ test('setBaud switches to the requested rate, and to the answer only when the pl
   assert.deepEqual(set, [921600, 1499250]);
 });
 
-// ---- the record (host guide §7.4) ---------------------------------------------------------------------------------
+// ---- the record (host guide §17.4) ---------------------------------------------------------------------------------
 
 test('the record puts passed rates first, skips failed ones, notes a step down, and expires', { skip: !haveFake }, async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'oep-speed-')), 'link-speed.json');
@@ -999,7 +999,7 @@ test('the record is a cache: an unreadable or unwritable store is not an error; 
   assert.deepEqual(Object.keys(rec.data['p|u'].rates), ['921600']);
 });
 
-// ---- step downs, the probation, maxTries (host guide §7.3.2 item 4) ----------------------------------------------------
+// ---- step downs, the probation, maxTries (host guide §17.3.2 item 4) ----------------------------------------------------
 
 /** In-use traffic: link_source answers of `size` bytes until `until()` (at most `limitMs`).
  * @param {import('../src/host.js').Host} hst @param {() => boolean} until */
