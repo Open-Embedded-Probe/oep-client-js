@@ -1,7 +1,8 @@
 // @ts-check
 // oep-spec's test vectors (test/vectors/*.json, copied from oep-spec tests/vectors, never edited) against this client's
 // own code: COBS and serial frames (cobs.js), headers and TLVs (message.js), the CRCs, confirm (the request this host
-// sends, the answer as Host reads it), probe.config's canonical form and hash (config.js), and the refusals as the host
+// sends, the answer as Host reads it), discovery (list, describe and the header refusals of the smallest probe: the
+// requests as this host builds them, the answers as it reads them), probe.config's canonical form and hash (config.js), and the refusals as the host
 // reads them. Where a vector and this code disagree, the spec's text decides (core §0 rule 4) and the vector is the
 // one the spec corrects. Mirrors oep-client-python's tests/test_vectors.py (whose fake-side checks are the fake's).
 import assert from 'node:assert/strict';
@@ -9,11 +10,13 @@ import { test } from 'node:test';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as catalog from '../src/catalog.js';
 import * as cobs from '../src/cobs.js';
+import * as core from '../src/core.js';
 import * as config from '../src/config.js';
 import * as m from '../src/message.js';
 import { fromHex, hex } from '../src/bytes.js';
-import { Unsupported, rejection } from '../src/errors.js';
+import { Rejected, Unsupported, rejection } from '../src/errors.js';
 import { Host } from '../src/host.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -157,6 +160,68 @@ test('confirm: the vector\'s first exchange is what a new Host asks (1..1)', asy
   await hst.confirm();
   assert.equal(hex(sent[0]), c.request_hex);
   assert.deepEqual(hst.confirmRange(), [1, 1]);                   // and every later confirm asks for the revision in use
+});
+
+// ---- discovery: list, describe and the header refusals of the smallest probe (core §7.2, §7.3, §4.3 order 1) ---------
+
+const DISCOVERY = load('discovery.json');
+
+test('discovery: the requests as the host builds them, as serial frames too', () => {
+  for (const c of DISCOVERY.exchanges) {
+    const q = c.request;
+    let req;
+    if ('prefix' in q) {
+      assert.equal(q.flags & ~catalog.LIST_EXACT, 0, c.name);
+      req = new m.Request(q.corr, 0, m.OP.list, catalog.packListRequest(q.prefix, !!(q.flags & catalog.LIST_EXACT), q.first));
+    } else {
+      req = new m.Request(q.corr, 0, m.OP.describe, catalog.packDescribeRequest(q.fn, q.first));
+    }
+    assert.equal(hex(req.pack()), c.request_hex, c.name);
+    if (c.request_serial_frame_hex) assert.equal(hex(cobs.frame(req.pack())), c.request_serial_frame_hex, c.name);
+    if (c.answer_serial_frame_hex) assert.equal(hex(cobs.frame(hx(c.answer_hex))), c.answer_serial_frame_hex, c.name);
+  }
+});
+
+test('discovery: the answers as the host reads them (list, describe, past the end)', async () => {
+  for (const c of DISCOVERY.exchanges) {
+    const a = c.answer;
+    const res = m.Result.unpack(hx(c.answer_hex));
+    assert.deepEqual([res.corr, res.succeeded], [a.corr, true], c.name);
+    if (a.entries) {
+      const { total, entries } = catalog.unpackListResult(res.payload);
+      assert.equal(total, a.total, c.name);
+      assert.deepEqual(entries, a.entries.map((/** @type {any} */ e) => ({ fn: e.fn, instance: e.instance, revision: e.revision, flags: e.flags, name: e.name })), c.name);
+      const { hst, sent } = answering(hx(c.answer_hex), a.corr);   // core.listEntries sends the vector's request
+      assert.deepEqual((await core.listEntries(hst)).map((e) => e.name), a.entries.map((/** @type {any} */ e) => e.name), c.name);
+      assert.equal(hex(sent[0]), c.request_hex, c.name);
+      continue;
+    }
+    assert.equal(res.payload[0], a.more, c.name);
+    const tlvs = m.splitTlvs(res.payload.slice(1));
+    if (!('unit_id' in a)) {
+      assert.deepEqual(tlvs, [], c.name);                        // past the end: more 0 and no TLVs (core §7.3)
+      continue;
+    }
+    const { hst, sent } = answering(hx(c.answer_hex), a.corr);   // core.describe sends the vector's request
+    const info = await core.probeInfo(hst);
+    assert.equal(hex(sent[0]), c.request_hex, c.name);
+    assert.equal(info.unitId, a.unit_id, c.name);
+    assert.deepEqual(info.transports, a.transports.map((/** @type {any} */ t) => ({ index: t.index, kind: t.kind, usbInterface: t.interface })), c.name);
+    assert.equal(info.maxOpMs, a.max_op_ms, c.name);
+    assert.equal(await core.maxOpMs(hst), a.max_op_ms, c.name);
+  }
+});
+
+test('discovery: the header refusals as the host reads them (core §4.3 order 1)', async () => {
+  for (const c of DISCOVERY.refusals) {
+    const q = c.request;
+    const reason = /** @type {Record<string, number>} */ (m.REJECT)[c.answer];
+    assert.equal(hex(new m.Request(q.corr, q.fn, q.op).pack()), c.request_hex, c.name);
+    const res = m.Result.unpack(hx(c.answer_hex));
+    assert.deepEqual([res.resolution, res.detail, res.payload.length], [m.REJECTED, reason, 0], c.name);
+    const { hst } = answering(hx(c.answer_hex), q.corr);
+    await assert.rejects(hst.request(q.fn, q.op, new Uint8Array(), { locked: false }), (e) => e instanceof Rejected && e.reason === reason, c.name);
+  }
 });
 
 // ---- probe.config's canonical form and hash (probe-config §2) -------------------------------------------------------
