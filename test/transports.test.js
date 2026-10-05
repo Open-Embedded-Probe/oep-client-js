@@ -2,7 +2,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { findVendorReports, packHidReports, unpackHidReport, webHidTransport } from '../src/browser/webhid.js';
-import { PROJECT_VID_PIDS, findVendorInterface, isProjectDevice, temporaryClue, usbCandidate, usbUnitId, vendorTransport } from '../src/usbvendor.js';
+import { PROJECT_SERIAL_FILTERS, PROJECT_USB_FILTERS, PROJECT_VID_PIDS, findVendorInterface, isProjectDevice, usbCandidate, usbUnitId, vendorTransport } from '../src/usbvendor.js';
+import * as usbvendor from '../src/usbvendor.js';
+import { findSerialProbes } from '../src/node/serial.js';
+import { requestUsbProbe } from '../src/browser/webusb.js';
+import { requestHidProbe } from '../src/browser/webhid.js';
+import { requestSerialPort } from '../src/browser/webserial.js';
 
 test('HID reports: count(u16) + data + zero padding, split at the report room', () => {
   const data = Uint8Array.from({ length: 10 }, (_, i) => i + 1);
@@ -42,7 +47,7 @@ test('HID transport: writes as reports with their ID, input reports unpacked', a
   /** @type {{ fn: ((e: any) => void) | null }} */
   const listener = { fn: null };
   const device = {
-    vendorId: 0x303a, productId: 2, productName: 'OEP probe (ESP32-P4)', opened: false,
+    vendorId: 0x1209, productId: 0x4f45, productName: 'OEP probe (ESP32-P4)', opened: false,
     collections: [{ usagePage: 0xff4f, usage: 0x45, inputReports: [report(7, 16)], outputReports: [report(7, 16)] }],
     async open() { this.opened = true; },
     async close() { this.opened = false; },
@@ -97,7 +102,7 @@ function mockUsbDevice() {
   const waiting = [];
   let closed = false;
   const device = {
-    vendorId: 0x303a, productId: 0x0002, productName: 'OEP probe (ESP32-P4)', serialNumber: '30eda0e31108',
+    vendorId: 0x1209, productId: 0x4f45, productName: 'OEP probe (ESP32-P4)', serialNumber: '30eda0e31108',
     opened: false,
     /** @type {typeof configuration | null} */ configuration: null,
     configurations: [configuration],
@@ -143,15 +148,15 @@ test('USB vendor interface: chosen by class 0xFF, subclass 0x4F, protocol 0x45 -
   assert.deepEqual(findVendorInterface(d.configurations[0]), { interfaceNumber: 4, alternateSetting: 0, endpointIn: 1, endpointOut: 1, packetSizeOut: 512 });
   assert.equal(findVendorInterface({ configurationValue: 1, interfaces: d.configurations[0].interfaces.slice(0, 3) }), null);
   assert.equal(findVendorInterface(null), null);
-  // core §3.3: only the project's VID:PID identifies a probe (none listed yet); the rest are temporary clues (§1.7)
-  assert.deepEqual(PROJECT_VID_PIDS, []);
+  // core §3.3: only the project's VID:PID identifies a probe - not iProduct, not the interface's class values
+  assert.deepEqual(PROJECT_VID_PIDS, [[0x1209, 0x4f45]]);
+  assert.deepEqual(PROJECT_USB_FILTERS, [{ vendorId: 0x1209, productId: 0x4f45 }]);
+  assert.deepEqual(PROJECT_SERIAL_FILTERS, [{ usbVendorId: 0x1209, usbProductId: 0x4f45 }]);
+  assert.equal(isProjectDevice(0x1209, 0x4f45), true);
   assert.equal(isProjectDevice(0x303a, 0x0002), false);
-  assert.equal(temporaryClue({ productName: 'OEP probe (ESP32-P4)' }), true);
-  assert.equal(temporaryClue({ productName: 'USB JTAG/serial debug unit' }), false);
-  assert.equal(temporaryClue({ productName: null, configurations: d.configurations }), true);   // the vendor interface
-  assert.equal(temporaryClue({ productName: 'x', collections: [{ usagePage: 0xff4f }] }), true);
-  assert.equal(temporaryClue({ productName: 'x', collections: [{ usagePage: 0xff00 }] }), false);
   assert.equal(usbCandidate(d), true);
+  assert.equal(usbCandidate({ ...d, vendorId: 0x303a, productId: 0x0002 }), false);   // same name and interfaces, another VID:PID
+  assert.equal('temporaryClue' in usbvendor, false);
   assert.equal(usbUnitId(d), '30eda0e31108');
 });
 
@@ -185,4 +190,39 @@ test('USB vendor transport: a device without the vendor interface is refused', a
   const d = mockUsbDevice();
   d.configurations[0].interfaces.splice(3, 1);
   await assert.rejects(vendorTransport(d), /OEP vendor interface/);
+});
+
+test('findSerialProbes: the serial ports on the project\'s VID:PID, with their unit id (a probe with CDC only)', async () => {
+  const ports = [
+    { path: '/dev/ttyACM0', vendorId: '1209', productId: '4f45', serialNumber: 'e66164084b2a1234' },
+    { path: '/dev/ttyACM1', vendorId: '1209', productId: '4F45' },                       // no serial: no unit id
+    { path: '/dev/ttyUSB0', vendorId: '0403', productId: '6001', serialNumber: 'A10K' },   // a UART bridge: chosen by the user
+    { path: '/dev/ttyACM2', vendorId: '303a', productId: '1001', serialNumber: 'aa' },     // a built-in USB serial: the same
+    { path: '/dev/ttyS0' },
+  ];
+  assert.deepEqual(await findSerialProbes(ports), [{ path: '/dev/ttyACM0', unitId: 'e66164084b2a1234' }, { path: '/dev/ttyACM1', unitId: null }]);
+});
+
+test('the choosers: WebUSB by the project\'s VID:PID, WebHID by it with the OEP collection, WebSerial unfiltered', async () => {
+  /** @type {any[]} */ const asked = [];
+  const nav = /** @type {any} */ (globalThis.navigator);
+  const saved = { usb: nav.usb, hid: nav.hid, serial: nav.serial };
+  const collections = [{ usagePage: 0xff4f, usage: 0x45, inputReports: [{ reportId: 1, items: [{ reportSize: 8, reportCount: 64 }] }], outputReports: [{ reportId: 1, items: [{ reportSize: 8, reportCount: 64 }] }] }];
+  Object.defineProperty(nav, 'usb', { configurable: true, value: { async requestDevice(/** @type {any} */ o) { asked.push(['usb', o]); return {}; } } });
+  Object.defineProperty(nav, 'hid', { configurable: true, value: { async requestDevice(/** @type {any} */ o) { asked.push(['hid', o]); return [{ collections }]; } } });
+  Object.defineProperty(nav, 'serial', { configurable: true, value: { async requestPort(/** @type {any} */ o) { asked.push(['serial', o]); return {}; } } });
+  try {
+    await requestUsbProbe();
+    await requestHidProbe();
+    await requestSerialPort();
+    await requestSerialPort({ filters: [...PROJECT_SERIAL_FILTERS] });
+  } finally {
+    for (const [k, v] of Object.entries(saved)) Object.defineProperty(nav, k, { configurable: true, value: v });
+  }
+  assert.deepEqual(asked, [
+    ['usb', { filters: [{ vendorId: 0x1209, productId: 0x4f45 }] }],
+    ['hid', { filters: [{ vendorId: 0x1209, productId: 0x4f45, usagePage: 0xff4f, usage: 0x45 }] }],
+    ['serial', {}],                                               // bridges and built-in USB serials stay selectable
+    ['serial', { filters: [{ usbVendorId: 0x1209, usbProductId: 0x4f45 }] }],
+  ]);
 });

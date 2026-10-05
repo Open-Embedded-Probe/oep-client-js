@@ -36,7 +36,7 @@ for (const framing of /** @type {const} */ (['length', 'cobs'])) {
       assert.equal(info.model, 'esp32p4');
       assert.equal(info.unitId, 'fafe00000035');
       assert.equal(info.maxOpMs, 10000);                                  // core §7.5 max_op_ms (0x4D)
-      assert.equal(info.discoverable, false);                             // 0x4A: 1 only on the project's VID:PID (§7.5)
+      assert.equal(info.discoverable, true);                              // 0x4A: the P4 fake is on the project's VID:PID (§7.5)
       assert.equal(await maxOpMs(hst), 10000);
       assert.equal(hst.describes.size, 1);                                // describe is cached (declarations only)
       assert.equal(hst.bootId, hst.limits?.bootId);                       // confirm tells the boot_id (core §7.1)

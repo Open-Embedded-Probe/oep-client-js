@@ -8,7 +8,8 @@ import { requestUsbProbe, webUsbTransport } from './webusb.js';
 import { requestHidProbe, webHidTransport } from './webhid.js';
 
 export { webSerialTransport, requestSerialPort, getSerialPorts } from './webserial.js';
-export { webUsbTransport, requestUsbProbe, getUsbProbes, usbUnitId, isProjectDevice, temporaryClue, usbCandidate } from './webusb.js';
+export { webUsbTransport, requestUsbProbe, getUsbProbes, usbUnitId, isProjectDevice, usbCandidate } from './webusb.js';
+export { PROJECT_VID, PROJECT_PID, PROJECT_USB_FILTERS, PROJECT_SERIAL_FILTERS } from '../usbvendor.js';
 export { webHidTransport, requestHidProbe, packHidReports, unpackHidReport, findVendorReports } from './webhid.js';
 export { requestDfuDevice, getDfuDevices, updateFirmware } from './dfu.js';
 export { DfuClient, DfuError, openDfu, dfuUpdate, DFU_STATUS, DFU_STATE, dfuStatusName, dfuStateName } from '../dfu.js';

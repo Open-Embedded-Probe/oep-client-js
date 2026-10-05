@@ -100,7 +100,7 @@ export async function firmwareLabels(hst) {
 /**
  * oep.core's describe decoded (core §7.5). Text values are shown as core §2.1 says (control characters replaced). labels: the firmware's fixed channel labels (0x46); the labels the settings
  * gave are read from oep.probe.config (config.ProbeConfig.items(), Label). discoverable: the probe also enumerates with the
- * project's USB VID:PID (core §3.3, §7.5; every probe says 0 until that VID:PID is listed). maxOpMs: the longest one request may take.
+ * project's USB VID:PID (core §3.3, §7.5). maxOpMs: the longest one request may take.
  * @param {import('./host.js').Host} hst
  */
 export async function probeInfo(hst) {

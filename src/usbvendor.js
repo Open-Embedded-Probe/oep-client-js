@@ -15,43 +15,32 @@ export const VENDOR_PROTOCOL = reg.USB.vendor_bulk_protocol;
 /** The OEP HID collection: usage page 0xFF4F, usage 0x45 (core §3.3). */
 export const HID_USAGE_PAGE = reg.USB.hid_usage_page;
 
+/** The project's own USB VID:PID, 1209:4F45 (registry usb, core §3.3). */
+export const PROJECT_VID = reg.USB.project_vid;
+export const PROJECT_PID = reg.USB.project_pid;
+
 /**
- * The project's own USB VID:PID pairs (core §3.3): the only automatic identification of an OEP probe. The registry
- * lists them once obtained; none yet, so this is empty and nothing is identified automatically.
+ * The project's own USB VID:PID pairs (core §3.3): the only automatic identification of an OEP probe.
  * @type {ReadonlyArray<readonly [number, number]>}
  */
-export const PROJECT_VID_PIDS = Object.freeze([]);
+export const PROJECT_VID_PIDS = Object.freeze([/** @type {readonly [number, number]} */ (Object.freeze([PROJECT_VID, PROJECT_PID]))]);
 
-/** core §3.3: the device has the project's VID:PID (PROJECT_VID_PIDS; empty now, so always false).
- * @param {number} vendorId @param {number} productId */
+/** core §3.3: the device has the project's VID:PID (PROJECT_VID_PIDS). Nothing else (iProduct, interface class values)
+ * identifies an OEP probe. @param {number} vendorId @param {number} productId */
 export function isProjectDevice(vendorId, productId) {
   return PROJECT_VID_PIDS.some(([v, p]) => v === vendorId && p === productId);
 }
 
-/** Temporary clue (host guide §1.7, not normative; gone once the project's VID:PID exists): an iProduct starting this. */
-export const TEMPORARY_IPRODUCT_PREFIX = 'OEP';
-
-/**
- * A temporary clue that a USB device may be an OEP probe, until the project's VID:PID exists (host guide §1.7; not
- * normative, removed once that VID:PID is listed): an iProduct starting "OEP", a vendor interface class 0xFF / subclass
- * 0x4F / protocol 0x45 in any configuration (WebUSB), or a HID collection with usage page 0xFF4F (WebHID
- * `collections`). Never an identification: a candidate is opened and probed by the confirm-only rule (open.js connect)
- * before anything else goes to it.
- * @param {{ productName?: string | null, configurations?: import('./usbtypes.js').UsbConfiguration[],
- *   configuration?: import('./usbtypes.js').UsbConfiguration | null, collections?: { usagePage?: number }[] }} device
- */
-export function temporaryClue(device) {
-  if ((device.productName ?? '').startsWith(TEMPORARY_IPRODUCT_PREFIX)) return true;
-  const configs = device.configurations ?? (device.configuration ? [device.configuration] : []);
-  if (configs.some((c) => findVendorInterface(c))) return true;
-  return (device.collections ?? []).some((c) => c.usagePage === HID_USAGE_PAGE);
-}
-
-/** A device worth probing without being named: the project's VID:PID, or (until it exists) a temporary clue.
- * @param {UsbDevice & { collections?: { usagePage?: number }[] }} device */
+/** A device found without being named: one with the project's VID:PID (core §3.3).
+ * @param {UsbDevice} device */
 export function usbCandidate(device) {
-  return isProjectDevice(device.vendorId, device.productId) || temporaryClue(device);
+  return isProjectDevice(device.vendorId, device.productId);
 }
+
+/** WebUSB / WebHID chooser filters for the project's VID:PID. */
+export const PROJECT_USB_FILTERS = Object.freeze(PROJECT_VID_PIDS.map(([vendorId, productId]) => Object.freeze({ vendorId, productId })));
+/** WebSerial chooser filters for the project's VID:PID (a probe's USB CDC ports). */
+export const PROJECT_SERIAL_FILTERS = Object.freeze(PROJECT_VID_PIDS.map(([usbVendorId, usbProductId]) => Object.freeze({ usbVendorId, usbProductId })));
 
 /** The probe's unit id: its USB serial number (core §3.3, §7.5): how a probe named by its unit id is found (the serial
  * alone decides; after confirm, describe's unit_id must match, open.js connect `unitId`).

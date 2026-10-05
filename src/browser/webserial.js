@@ -25,8 +25,8 @@ const serialApi = () => {
 
 /**
  * Ask the user for a serial port. `filters`: the caller's WebSerial filters (by VID:PID) to narrow the chooser; none
- * offers every port. A probe is told by its iProduct (core §3.3), which WebSerial does not show, so no OEP filter is
- * built in: the VID:PID tells nothing.
+ * offers every port - a UART bridge or a built-in USB serial is never on the project's VID:PID, so the default does not
+ * narrow. PROJECT_SERIAL_FILTERS (usbvendor.js) offers only probes on the project's VID:PID (core §3.3).
  * @param {{ filters?: SerialPortFilter[] }} [opts]
  * @returns {Promise<SerialPortLike>}
  */

@@ -35,7 +35,7 @@ function mockDfu({ busy = 0, onBlock = () => 0, onManifest = () => 0, initial = 
   /** @param {number} s @param {number} poll */
   const statusBytes = (s, poll) => new DataView(Uint8Array.from([status, poll & 0xff, poll >> 8, 0, s, 0]).buffer);
   const device = {
-    vendorId: 0x303a, productId: 2, productName: 'OEP probe (ESP32-P4)', serialNumber: 'aa', opened: false,
+    vendorId: 0x1209, productId: 0x4f45, productName: 'OEP probe (ESP32-P4)', serialNumber: 'aa', opened: false,
     /** @type {any} */ configuration: null,
     configurations: [{ configurationValue: 1, interfaces: [
       { interfaceNumber: 0, alternates: [{ alternateSetting: 0, interfaceClass: 3, interfaceSubclass: 0, interfaceProtocol: 0, endpoints: [] }] },

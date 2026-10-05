@@ -34,16 +34,15 @@ function matches(d, { unitId, vendorId, productId }) {
   if (productId != null && d.productId !== productId) return false;
   // a unit id names the device by its serial alone (core §3.3: checked by describe after confirm, open.js connect)
   if (unitId) return (usbUnitId(d) ?? '').toLowerCase() === unitId.toLowerCase();
-  // a VID:PID given names the device; otherwise a candidate: the project's VID:PID, or a temporary clue (host guide
-  // §1.7) - probed by confirm before anything else either way
+  // a VID:PID given names the device; otherwise the project's VID:PID (core §3.3) - probed by confirm first either way
   if (vendorId == null && !usbCandidate(d)) return false;
   return true;
 }
 
 /**
- * The USB devices that may be OEP probes, with their unit id (the USB serial): the project's VID:PID (none listed yet,
- * core §3.3) or, until it exists, a temporary clue (host guide §1.7: iProduct "OEP...", the vendor interface 0xFF /
- * 0x4F / 0x45). Candidates only: nothing is sent here; opening one (openUsb) probes it with a confirm first.
+ * The USB devices with the project's VID:PID (core §3.3), with their unit id (the USB serial). Nothing is sent here;
+ * opening one (openUsb) probes it with a confirm first. A probe with only a CDC port (RP2040 / RP2350) is opened as a
+ * serial port: findSerialProbes.
  * @returns {Promise<{ unitId: string | null, vendorId: number, productId: number, product: string | null, device: UsbDevice }[]>}
  */
 export async function findUsbProbes() {
@@ -59,7 +58,7 @@ export async function findUsbProbes() {
 async function pick(want) {
   if (want.unitId) requireUnitName(want.unitId);
   const found = (await usbDevices()).filter((d) => matches(d, want));
-  const what = [want.unitId ? 'device' : want.vendorId != null ? `${hex(want.vendorId)}:${want.productId != null ? hex(want.productId) : '*'}` : 'OEP probe candidate',
+  const what = [want.unitId ? 'device' : want.vendorId != null ? `${hex(want.vendorId)}:${want.productId != null ? hex(want.productId) : '*'}` : 'OEP probe',
     want.unitId ? `unit id ${want.unitId}` : ''].filter(Boolean).join(' ');
   if (!found.length) throw new Error(`no USB ${what}`);
   if (found.length > 1 && !want.unitId) throw new Error(`${found.length} USB devices match (${what}): give the unitId`);

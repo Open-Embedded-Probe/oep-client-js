@@ -6,6 +6,8 @@
 // option to give DTR / RTS at open: the OS asserts both when the port opens (POSIX termios, Windows DTR_CONTROL_ENABLE /
 // RTS_CONTROL_ENABLE), and `set({ dtr: true, rts: true })` right after the open makes it explicit.
 
+import { isProjectDevice } from '../usbvendor.js';
+
 /** @returns {Promise<any>} the `serialport` module */
 export async function loadSerialport() {
   const name = 'serialport';   // not a literal: the package is optional, and neither tsc nor a bundler should need it
@@ -25,6 +27,20 @@ export async function loadSerialport() {
 export async function listSerialPorts() {
   const { SerialPort } = await loadSerialport();
   return SerialPort.list();
+}
+
+/**
+ * The serial ports of devices with the project's VID:PID (core §3.3: every CDC of an OEP probe is a serial port), with
+ * their unit id (the USB serial). How a probe with only a CDC port (RP2040 / RP2350) is found without naming the port;
+ * still probed by confirm when opened. A UART bridge or a built-in USB serial is never on that VID:PID: its port is
+ * chosen by the user. `ports`: a list as listSerialPorts gives it (default: the OS's now).
+ * @param {{ path: string, vendorId?: string, productId?: string, serialNumber?: string }[]} [ports]
+ * @returns {Promise<{ path: string, unitId: string | null }[]>}
+ */
+export async function findSerialProbes(ports) {
+  return (ports ?? await listSerialPorts())
+    .filter((p) => p.vendorId != null && p.productId != null && isProjectDevice(parseInt(p.vendorId, 16), parseInt(p.productId, 16)))
+    .map((p) => ({ path: p.path, unitId: p.serialNumber || null }));
 }
 
 /** The port's options as core §3.4 asks (C-09), for a check: 8N1, no flow control. */

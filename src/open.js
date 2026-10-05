@@ -11,8 +11,8 @@ import { DEFAULT_CANDIDATES, raiseSpeed } from './speed.js';
 export const PROBE_WAIT_MS = reg.TIMING.host_wait_add_ms;
 
 /**
- * The probing rule (core §3.3): every transport this client opens is one it has not identified (no project VID:PID is
- * listed yet), so the first thing sent is a confirm, and nothing else until a valid answer (completed, the same corr, a
+ * The probing rule (core §3.3): every transport this client opens - one it has not identified, and a project VID:PID
+ * device too - gets a confirm first, and nothing else until a valid answer (completed, the same corr, a
  * payload starting OEP!) came back. None: the link is closed and NotOepProbe thrown. Vendor bulk / HID: one confirm
  * and its one §5.2 resend, each waiting PROBE_WAIT_MS. A serial port (COBS) first runs Link.waitBootSpeed's confirms
  * (core §3.5 host obligation 7: about 4 s at the boot speed, a raised rate a host that died left over going back),
