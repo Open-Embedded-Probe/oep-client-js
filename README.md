@@ -24,7 +24,7 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
   in Node (the native packages optional); serial ports open 8N1 without flow control, DTR and RTS asserted (core §3.4);
 - the firmware update: USB DFU (the ESP32-P4) and the Release's firmware-<version>.json;
 - the page: connect, read what the probe declares, edit and save its settings, GPIO and UART, port_speed, a DFU update;
-- port_speed (oep-core §3.5 is the handshake; the procedure is the oep-spec host guide §7, opt-in):
+- port_speed (oep-core §3.5 is the handshake; the procedure is the oep-spec host guide §17, opt-in):
   `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, idleMs, port, record })` (or
   `portSpeed: true | [candidates]` with `flows` / `verify` / `record` on `connect` / `openWebSerial` / `openSerial`) runs
   a UART bridge faster for the session. The **minimal form** (the default, about 50 ms, no measurement): each candidate
@@ -111,6 +111,11 @@ npm run serve       # the page at http://localhost:4173/
 
 ## Documents
 
+- Specification: [oep-spec](https://github.com/Open-Embedded-Probe/oep-spec) (the English text is authoritative) - start
+  with its [README](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/README.md) and [review guide](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/review-guide.md);
+  [getting started](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/getting-started.md) builds the smallest probe and host,
+  [docs/oep-core.md](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/oep-core.md) is the protocol core, and
+  [docs/conformance.md](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/conformance.md) says what a host must do to conform
 - [Design](docs/design.md): layers, transports, what the page does, tests, the registry, versions
 - [Releasing](docs/release.md)
 - [Changelog](CHANGELOG.md)

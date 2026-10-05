@@ -24,7 +24,7 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   （ネイティブの package は任意）。シリアルの口は 8N1、フロー制御なし、DTR と RTS を立てて開く（core §3.4）
 - firmware の更新: USB の DFU（ESP32-P4）と、Release の firmware-<version>.json
 - ページ: つなぐ、probe の宣言を読む、設定の編集と保存、GPIO と UART、port_speed、DFU での更新
-- port_speed（oep-core §3.5 は握手だけ。手順は oep-spec の host 開発ガイド §7。使うときだけ）:
+- port_speed（oep-core §3.5 は握手だけ。手順は oep-spec の host 開発ガイド §17。使うときだけ）:
   `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, idleMs, port, record })`（または
   `connect` / `openWebSerial` / `openSerial` の `portSpeed: true | [候補]` と `flows` / `verify` / `record`）で、セッションの間
   UART bridge を速くする。**最小の形**（既定、約 50 ms、計測なし）: 候補ごとに順に `試す`（今の速さで応答してから probe が
@@ -102,6 +102,11 @@ npm run serve       # http://localhost:4173/ でページ
 
 ## 文書
 
+- 仕様: [oep-spec](https://github.com/Open-Embedded-Probe/oep-spec)（英語の本文が正で、`.ja.md` はその訳。食い違えば英語が
+  正しい）。まず [README](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/README.ja.md) と [レビューの手引き](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/review-guide.ja.md) から。
+  [使い始める](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/getting-started.ja.md) が最小の probe と host を作り、
+  [docs/oep-core.ja.md](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/oep-core.ja.md) がプロトコルの本体、
+  [docs/conformance.ja.md](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/conformance.ja.md) が host の適合に要ること
 - [設計](docs/design.ja.md): 層、経路、ページでできること、試験、registry、版
 - [リリースの手順](docs/release.ja.md)
 - [変更履歴](CHANGELOG.md)
