@@ -1051,7 +1051,9 @@ test('in use: no step down to a rate above one that failed its verify', { skip: 
   /** @type {() => number | null} */ let rateNow = () => 115200;
   await withLine(['--broken-rate', '230400:in'], { garble: () => breaking && rateNow() === 921600 && ++n % 3 === 0 }, async (hst) => {
     rateNow = () => hst.link.baud;
+    hst.link.timeoutMs = 3000;   // a loaded machine must not turn 230400's failed confirm into an unanswered try
     const r = await raiseSpeed(hst, [230400, 921600, 500000], { ...FAST, ...NO_PROBATION });
+    assert.ok(hst.link.failed.has(230400), JSON.stringify(r.trials.map((t) => t.why)));   // the line failed it
     assert.equal(r.chosen, 921600);
     breaking = true;
     for (let i = 0; i < 60; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
