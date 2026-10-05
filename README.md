@@ -25,6 +25,9 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
   the `oep dump` view;
 - the transports: WebSerial, WebUSB (vendor bulk), WebHID in the browser; TCP, serial ports (`serialport`) and USB (`usb`)
   in Node (the native packages optional); serial ports open 8N1 without flow control, DTR and RTS asserted (core §3.4);
+  a USB probe is found by the project's USB VID:PID `1209:4F45` alone (core §3.3: the WebUSB / WebHID choosers' default
+  filter, Node's `findUsbProbes` / `findSerialProbes`, `openUsb()` - its one CDC port when it has no vendor bulk); the
+  WebSerial chooser has no default filter, so a UART bridge or a built-in USB serial stays selectable;
 - the firmware update: USB DFU (the ESP32-P4) and the Release's firmware-<version>.json;
 - the page: connect, read what the probe declares, edit and save its settings, GPIO and UART, port_speed, a DFU update;
 - port_speed (oep-core §3.5 is the handshake; the procedure is the oep-spec host guide §17, opt-in):

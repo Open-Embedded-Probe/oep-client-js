@@ -47,12 +47,13 @@ docs/           この文書、リリースの手順
 | TCP（ローカルのブローカー、試験の fake） | - | node:net | length(u16) message |
 
 - WebUSB、WebSerial、WebHID は Chromium 系（Chrome、Edge）だけで、ページは HTTPS（か localhost）で配る必要があります。
-- probe の見分け方は core §3.3 のとおりです: 自動で見分けるのはプロジェクトの USB の VID:PID だけ（`PROJECT_VID_PIDS`。まだ無い）。
-  unit_id で名指した probe は USB の serial がそれと同じ device で、describe の unit_id も同じでなければならない（`connect({ unitId })`、
-  違えば `UnitIdMismatch`）。開いた経路には、まず confirm だけを送り、正しい応答が無ければ閉じる（`NotOepProbe`）。プロジェクトの VID:PID が
-  できるまでは、WebUSB / WebHID の選択の既定の filter（vendor の interface class 0xFF / subclass 0x4F / protocol 0x45、HID の usage page
-  0xFF4F / usage 0x45）と `temporaryClue`（iProduct が `OEP` で始まるものも）は暫定の手がかり（host 開発ガイド §1.7、規範ではない）。
-  WebSerial の選択には既定の filter を付けない（呼び出し側が自分の filter を渡せる）。probe の中の口はその interface の値で選ぶ（registry の `usb`）。
+- probe の見分け方は core §3.3 のとおりです: 自動で見分けるのはプロジェクトの USB の VID:PID `1209:4F45` だけ（`PROJECT_VID_PIDS`。
+  registry の `usb` から）。unit_id で名指した probe は USB の serial がそれと同じ device で、describe の unit_id も同じでなければならない
+  （`connect({ unitId })`、違えば `UnitIdMismatch`）。開いた経路には、まず confirm だけを送り、正しい応答が無ければ閉じる（`NotOepProbe`）。
+  WebUSB / WebHID の選択の既定の filter はこの VID:PID（`PROJECT_USB_FILTERS`。WebHID は OEP の collection、usage page 0xFF4F /
+  usage 0x45 も）。WebSerial の選択には既定の filter を付けない（UART bridge や内蔵の USB serial はこの VID:PID にならない）。
+  `PROJECT_SERIAL_FILTERS` で probe だけに絞れる。Node では `findUsbProbes` と `findSerialProbes` が、この VID:PID の device と CDC の口を
+  並べ、何も指定しない `openUsb()` はその device を、vendor bulk が無ければその CDC の口 1 つを開く。iProduct はどこも見ない。probe の中の口は interface の値で選ぶ（registry の `usb`）。
 
 ## 4. Web ページでできること（順番）
 

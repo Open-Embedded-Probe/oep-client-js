@@ -48,14 +48,16 @@ docs/           this document, the release steps
 | TCP (a local broker, the tests' fake) | - | node:net | length(u16) message |
 
 - WebUSB, WebSerial and WebHID are Chromium only (Chrome, Edge), and the page must be served over HTTPS (or localhost).
-- Probes are recognised as core §3.3 says: automatically only by the project's own USB VID:PID (`PROJECT_VID_PIDS`,
-  none listed yet); a probe named by its unit_id is the device whose USB serial it is, and describe must then say that
-  unit_id (`connect({ unitId })`, else `UnitIdMismatch`); every transport opened is probed with a confirm only first,
-  closed with `NotOepProbe` when no valid answer comes. Until the project's VID:PID exists, the WebUSB / WebHID choosers'
-  default filters (vendor interface class 0xFF / subclass 0x4F / protocol 0x45, HID usage page 0xFF4F / usage 0x45) and
-  `temporaryClue` (also an iProduct starting `OEP`) are temporary clues (host guide §1.7, not normative). WebSerial's
-  chooser gets no built-in filter; a caller may pass its own. Inside a probe the ports are chosen by those interface
-  values (registry `usb`).
+- Probes are recognised as core §3.3 says: automatically only by the project's own USB VID:PID, `1209:4F45`
+  (`PROJECT_VID_PIDS`, from the registry's `usb`); a probe named by its unit_id is the device whose USB serial it is, and
+  describe must then say that unit_id (`connect({ unitId })`, else `UnitIdMismatch`); every transport opened is probed
+  with a confirm only first, closed with `NotOepProbe` when no valid answer comes. The WebUSB / WebHID choosers' default
+  filters are that VID:PID (`PROJECT_USB_FILTERS`; WebHID with the OEP collection, usage page 0xFF4F / usage 0x45).
+  WebSerial's chooser gets no built-in filter (a UART bridge or a built-in USB serial is never on that VID:PID);
+  `PROJECT_SERIAL_FILTERS` narrows it to probes. In Node, `findUsbProbes` and `findSerialProbes` list the devices and the
+  CDC ports on that VID:PID, and `openUsb()` with nothing given opens that device, or its one CDC port when it has no
+  vendor bulk. Nothing looks at iProduct. Inside a probe the ports are chosen by the interface values
+  (registry `usb`).
 
 ## 4. What the page does (in this order)
 
