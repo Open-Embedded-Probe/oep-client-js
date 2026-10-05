@@ -274,7 +274,7 @@ export class StreamIO {
    */
   async readUntil(pattern, { timeoutMs = 5000, pollMs = 10 } = {}) {
     const pat = typeof pattern === 'string' ? utf8(pattern) : pattern;
-    const deadline = Date.now() + timeoutMs;
+    const deadline = performance.now() + timeoutMs;
     let got = new Uint8Array();
     for (;;) {
       const at = indexOf(got, pat);
@@ -282,7 +282,7 @@ export class StreamIO {
         this.pending = concat(got.slice(at + pat.length), this.pending);
         return got.slice(0, at + pat.length);
       }
-      if (Date.now() >= deadline) {
+      if (performance.now() >= deadline) {
         this.pending = concat(got, this.pending);
         throw new Timeout(`no ${JSON.stringify(typeof pattern === 'string' ? pattern : Array.from(pattern))} within ${timeoutMs} ms`);
       }
@@ -297,7 +297,7 @@ export class StreamIO {
   async write(data, { timeoutMs } = {}) {
     let rest = typeof data === 'string' ? utf8(data) : data;
     const chunk = (await this.limits())[1];
-    let since = Date.now();
+    let since = performance.now();
     while (rest.length) {
       let took = 0;
       try {
@@ -306,9 +306,9 @@ export class StreamIO {
         if (!(e instanceof Failed) || !e.result?.ran) throw e;   // accepted 0: the slot was full (completed failed)
       }
       rest = rest.slice(took);
-      if (took) since = Date.now();
+      if (took) since = performance.now();
       else {
-        if (timeoutMs !== undefined && Date.now() - since > timeoutMs) throw new Timeout(`the target took nothing for ${timeoutMs} ms`);
+        if (timeoutMs !== undefined && performance.now() - since > timeoutMs) throw new Timeout(`the target took nothing for ${timeoutMs} ms`);
         await sleep(5);   // the target has not taken the last chunk yet
       }
     }

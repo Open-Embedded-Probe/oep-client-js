@@ -192,7 +192,7 @@ export class Link {
     this.ownCorr = 0x8000;
     /** @type {Promise<boolean> | null} */ this.falling = null;
     /** @type {(() => Uint8Array) | null} a keepalive in the session (bound by Host) */ this.keepaliveFrame = null;
-    this.lastTx = Date.now();                // when the link last wrote (raised: quiet for KEEPALIVE_MS = a keepalive)
+    this.lastTx = performance.now();         // when the link last wrote (raised: quiet for KEEPALIVE_MS = a keepalive)
     /** @type {Promise<void> | null} length-prefixed: the §5.1 resync under way (new requests wait for it) */ this.resyncing = null;
     this.discarding = false;                 // ... reading and discarding until the input is quiet
     /** @type {{ corr: number, done: (ok: boolean) => void } | null} ... its confirm, waiting */ this.resyncWaiter = null;
@@ -234,7 +234,7 @@ export class Link {
 
   /** @param {Uint8Array} chunk */
   onData(chunk) {
-    const now = Date.now();
+    const now = performance.now();
     const stalled = this.framing === 'length' && !this.transport.keepsBoundaries && this.buf.length && now - this.lastRx > STALL_MS;
     this.lastRx = now;
     if (this.discarding) return;             // the resync reads and discards until the input is quiet (§5.1)
@@ -357,7 +357,7 @@ export class Link {
 
   /** @param {Uint8Array} bytes */
   async write(bytes) {
-    this.lastTx = this.lastWrite = Date.now();
+    this.lastTx = this.lastWrite = performance.now();
     this.moved(bytes.length);
     const max = this.transport.maxWrite;
     if (!max || bytes.length <= max) return this.transport.write(bytes);
@@ -505,7 +505,7 @@ export class Link {
    * probe's own gap, not completed by the confirm. */
   async settleBeforeConfirm() {
     if (this.lastWrite === null) return;
-    const left = this.lastWrite + RESYNC_WAIT_MS - Date.now();
+    const left = this.lastWrite + RESYNC_WAIT_MS - performance.now();
     if (left > 0) await new Promise((r) => setTimeout(r, left));
   }
 
@@ -525,9 +525,9 @@ export class Link {
 
   /** true once nothing has arrived for quietMs; false when limitMs passed first. @param {number} quietMs @param {number} limitMs */
   async quiet(quietMs, limitMs) {
-    const start = Date.now();
+    const start = performance.now();
     for (;;) {
-      const now = Date.now();
+      const now = performance.now();
       if (now - Math.max(start, this.lastRx) >= quietMs) return true;
       if (now - start >= limitMs || this.closed) return false;
       await new Promise((r) => setTimeout(r, Math.min(10, quietMs)));
@@ -610,13 +610,13 @@ export class Link {
    * up on the first broken one. @param {number} timeoutMs */
   async confirmRaw(timeoutMs) {
     const confirm = this.confirmBody();
-    const deadline = Date.now() + timeoutMs;
+    const deadline = performance.now() + timeoutMs;
     for (;;) {
       try {
-        await this.sendOnce(new Request(this.corrSource(), CORE_FN, OP.confirm, confirm).pack(), { timeoutMs: Math.max(1, deadline - Date.now()), resend: false });
+        await this.sendOnce(new Request(this.corrSource(), CORE_FN, OP.confirm, confirm).pack(), { timeoutMs: Math.max(1, deadline - performance.now()), resend: false });
         return true;
       } catch (e) {
-        if (e instanceof cobs.CorruptFrame && Date.now() < deadline) continue;   // a leftover read past: ask again
+        if (e instanceof cobs.CorruptFrame && performance.now() < deadline) continue;   // a leftover read past: ask again
         if (e instanceof Timeout || e instanceof cobs.CorruptFrame) return false;
         throw e;
       }
@@ -626,10 +626,10 @@ export class Link {
   /** Confirms, each waiting eachMs, until one is answered (true) or waitMs has passed (false).
    * @param {number} waitMs @param {number} eachMs */
   async confirmWithin(waitMs, eachMs) {
-    const deadline = Date.now() + waitMs;
+    const deadline = performance.now() + waitMs;
     for (;;) {
       if (await this.confirmRaw(eachMs)) return true;
-      if (Date.now() >= deadline) return false;
+      if (performance.now() >= deadline) return false;
     }
   }
 
@@ -662,8 +662,8 @@ export class Link {
    * sends nothing otherwise. true when one went out. */
   async keepAlive() {
     if (!this.raised() || !this.keepaliveFrame || !this.held()) return false;
-    if (Date.now() - this.lastTx < this.keepaliveMs) return false;
-    this.lastTx = Date.now();                // before sending: send() asks again and must not recurse
+    if (performance.now() - this.lastTx < this.keepaliveMs) return false;
+    this.lastTx = performance.now();         // before sending: send() asks again and must not recurse
     await this.send(this.keepaliveFrame());
     return true;
   }
@@ -724,7 +724,7 @@ export class Link {
     if (this.baseBaud === null || !this.held()) return;
     if (this.baud === this.baseBaud) { this.baseCounts[kind]++; return; }
     if (!this.inUse()) return;
-    const now = Date.now();
+    const now = performance.now();
     const p = this.probation;
     if (p && p.rate === this.baud) {
       p.frames++;
@@ -793,7 +793,7 @@ export class Link {
     if (this.record && this.recordKey) {
       this.record.note(this.recordKey[0], this.recordKey[1], rate, inProbation && p?.settling ? null : false, inProbation ? 'probation' : 'in_use');
     }
-    this.brokeAt = Date.now();
+    this.brokeAt = performance.now();
     this.brokeRate = rate;
   }
 

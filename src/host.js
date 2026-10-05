@@ -301,13 +301,13 @@ export class Host {
    */
   async take(leaseMs = 3000, { owner, onlyWayIn = false, waitMs = 5000, force = false } = {}) {
     if (force || onlyWayIn) return this.open(leaseMs, { force: true, owner });
-    const deadline = Date.now() + waitMs;
+    const deadline = performance.now() + waitMs;
     for (;;) {
       try {
         return await this.open(leaseMs, { owner });
       } catch (e) {
         if (!(e instanceof Locked)) throw e;
-        const left = deadline - Date.now();
+        const left = deadline - performance.now();
         if (left <= 0 || e.remainingMs > left) {
           throw new InUse(`the probe is in use by ${e.owner ?? 'another session'} (lease ${e.remainingMs} ms left, kept going)`);
         }

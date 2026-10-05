@@ -57,7 +57,7 @@ function scripted(respond = (req) => [result(req.corr, req.op === m.OP.confirm ?
         const n = data[i] | (data[i + 1] << 8);
         const req = m.Request.unpack(data.slice(i + 2, i + 2 + n));
         sent.push(req);
-        at.push(Date.now());
+        at.push(performance.now());
         const replies = t.respond(req);
         if (replies) setTimeout(() => { for (const r of replies) deliver(frame(r)); }, 1);
         i += 2 + n;
@@ -287,7 +287,7 @@ test('C-07: a resync waits 250 ms after the host\'s last write before its confir
   const link = new Link(t, { timeoutMs: 300, maxFrame: 1024 });
   await link.start();
   await link.write(link.framed(new m.Request(1, 0, m.OP.keepalive).pack()));
-  const t0 = Date.now();
+  const t0 = performance.now();
   await link.startResync();
   const i = sent.findIndex((r) => r.op === m.OP.confirm);
   assert.ok(at[i] - t0 >= RESYNC_WAIT_MS - 5, `${at[i] - t0} ms`);
@@ -297,7 +297,7 @@ test('C-07: a resync waits 250 ms after the host\'s last write before its confir
 test('C-07: the first confirm on a length-prefixed port waits for 50 ms of quiet input', async () => {
   const { t, sent, at } = scripted();
   /** @type {number[]} */ const noise = [];
-  const noisy = setInterval(() => { t.inject(Uint8Array.of(0x33)); noise.push(Date.now()); }, 10);   // left over bytes for 120 ms
+  const noisy = setInterval(() => { t.inject(Uint8Array.of(0x33)); noise.push(performance.now()); }, 10);   // left over bytes for 120 ms
   setTimeout(() => clearInterval(noisy), 120);
   const hst = await connect(t, { timeoutMs: 500 });
   assert.equal(hst.revision, 1);

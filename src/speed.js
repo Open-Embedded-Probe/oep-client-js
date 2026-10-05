@@ -523,7 +523,7 @@ async function tryRates(hst, link, report, rates, run) {
   const failed = (trial, phase) => {
     link.failed.set(trial.rate, trial.why);
     note(trial, false, phase);
-    link.brokeAt = Date.now();
+    link.brokeAt = performance.now();
     link.brokeRate = trial.rate;
   };
   /** A candidate that did not pass: revert at the rate now (its answer need not come), the boot speed, confirmed within
@@ -542,7 +542,7 @@ async function tryRates(hst, link, report, rates, run) {
     report.trials.push(trial);
     trial.why = barred(link, rate);
     if (trial.why) continue;
-    trial.settling = link.brokeAt !== null && link.brokeRate !== rate && Date.now() - link.brokeAt < run.settleMs;
+    trial.settling = link.brokeAt !== null && link.brokeRate !== rate && performance.now() - link.brokeAt < run.settleMs;
     let answer;
     try {
       answer = await speedCall(hst, link, request(at, rate, STEP.try, wait, idleMs));
@@ -610,7 +610,7 @@ async function tryRates(hst, link, report, rates, run) {
     if (run.probationBytes || run.probationMs) {
       trial.probation = 'running';
       link.probation = { rate, trial, bytes: run.probationBytes, ms: run.probationMs, threshold: Math.max(2 * link.baselineRatio, VERIFY_FLOOR),
-        started: Date.now(), settling: trial.settling, moved: 0, frames: 0, bad: 0 };
+        started: performance.now(), settling: trial.settling, moved: 0, frames: 0, bad: 0 };
     } else {
       trial.probation = 'off';
       link.probation = null;

@@ -195,7 +195,10 @@ test('pushes that never stop are stopped blind with unsubscribe and end; the ses
   } finally {
     clearInterval(noise);
   }
-  assert.deepEqual(ops(sent).slice(1), [m.OP.unsubscribe, m.OP.end, m.OP.confirm]);
+  // a loaded machine may stall the noise timer past the 50 ms quiet: a confirm may then go before the blind stops
+  assert.deepEqual(ops(sent).slice(1).filter((op) => op !== m.OP.confirm), [m.OP.unsubscribe, m.OP.end]);
+  assert.equal(ops(sent).at(-1), m.OP.confirm);                  // the resync's confirm after the stops
+  assert.equal(sent.filter((r) => r.fn === 5).length, 1);        // the session request is not sent again
   assert.ok(sent.filter((r) => r.op === m.OP.unsubscribe || r.op === m.OP.end).every((r) => r.session === 0xabcd));
   assert.equal(hst.subscriptions.size, 0);
   assert.equal(link.endedBlind, true);

@@ -280,11 +280,11 @@ export class CortexM {
 
   /** @param {number} mask @param {number} timeoutMs */
   async wait(mask, timeoutMs) {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = performance.now() + timeoutMs;
     for (;;) {
       const v = await this.mem.read32(CortexM.DHCSR);
       if (v & mask) return v;
-      if (Date.now() > deadline) throw new Timeout(`DHCSR ${hex32(v)}: waiting for 0x${mask.toString(16)}`);
+      if (performance.now() > deadline) throw new Timeout(`DHCSR ${hex32(v)}: waiting for 0x${mask.toString(16)}`);
     }
   }
 

@@ -683,25 +683,28 @@ test('a raised link keeps the line alive when quiet', { skip: !haveFake }, async
 async function deafSerial(deafMs) {
   const fake = await startFake(['--profile', 'esp32-v003'], 'cobs');
   const inner = await tcpTransport({ port: fake.port, framing: 'cobs', baudRate: 115200 });
-  const t0 = performance.now();
+  // deaf from the host's first write on: on a loaded machine the time to it varies, and the confirms counted are the
+  // ones the host made while the probe was deaf
+  /** @type {number | null} */ let t0 = null;
   let dropped = 0;
   /** @type {import('../src/link.js').Transport} */
   const transport = {
     ...inner,
     kind: 'serial',
     async write(data) {
+      t0 ??= performance.now();
       if (performance.now() - t0 < deafMs) { dropped++; return; }
       await inner.write(data);
     },
   };
-  return { fake, transport, t0, dropped: () => dropped };
+  return { fake, transport, t0: () => /** @type {number} */ (t0), dropped: () => dropped };
 }
 
 test('connect on a serial port waits out a raised rate left over', { skip: !haveFake }, async () => {
   const { fake, transport, t0, dropped } = await deafSerial(2500);
   try {
     const hst = await connect(transport, { timeoutMs: 1000 });
-    const took = performance.now() - t0;
+    const took = performance.now() - t0();
     assert.ok(took >= 2400 && took < OPEN_RETRY_MS + 2000, `took ${took}`);
     assert.ok(dropped() >= 4);                                     // confirms every 0.5 s
     assert.ok(hst.limits);
@@ -716,7 +719,7 @@ test('connect on a serial port gives up after about 4 s; other transports keep t
   const { fake, transport, t0 } = await deafSerial(60000);
   try {
     await assert.rejects(connect(transport, { timeoutMs: 1000 }), (e) => e instanceof NotOepProbe && /** @type {any} */ (e).cause instanceof Timeout);
-    const took = performance.now() - t0;
+    const took = performance.now() - t0();
     assert.ok(took >= OPEN_RETRY_MS - 100 && took < OPEN_RETRY_MS + 3000, `took ${took}`);
   } finally {
     fake.stop();
@@ -880,6 +883,30 @@ test('a long run at a raised rate waits its timeoutMs, no step down; the keepali
     assert.equal(sent.length, 2);
     assert.ok(sent[0] < sent[1], `corrs ${sent}`);
   }, 3000);
+});
+
+test('the keepalive measures quiet on a monotonic clock: the wall clock stepping back does not hold it', async () => {
+  // a time sync can step the wall clock back by seconds: a link timing quiet with Date.now() then sees no quiet for
+  // that long, and the probe's idle_ms passes with no keepalive
+  /** @type {import('../src/link.js').Transport} */
+  const transport = { framing: 'cobs', kind: 'serial', baudRate: 115200, async setBaudRate(rate) { transport.baudRate = rate; },
+    async write() {}, start() {}, async close() {} };
+  const link = new Link(transport);
+  await link.setBaud(921600);
+  link.held = () => true;
+  link.keepaliveFrame = () => Uint8Array.of(1);
+  let sent = 0;
+  link.send = async () => { sent++; return /** @type {any} */ (null); };
+  await link.write(Uint8Array.of(0));
+  const realNow = Date.now;
+  Date.now = () => realNow() - 5000;
+  try {
+    await sleep(KEEPALIVE_MS + 50);
+    assert.equal(await link.keepAlive(), true);
+    assert.equal(sent, 1);
+  } finally {
+    Date.now = realNow;
+  }
 });
 
 test('setBaud switches to the requested rate, and to the answer only when the platform refuses', async () => {
