@@ -95,7 +95,7 @@ test('i2c-target and spi-target declarations from describe', async () => {
   const t = await I2cTarget.open(hst);
   assert.deepEqual(await t.declarations(), { maxLength: 128, maxClockHz: 1_000_000, features: 0b11, queueDepth: 8, maxStretchUs: 100_000, pullupOhms: null });
   const s = await SpiTarget.open(hst);
-  assert.deepEqual(await s.declarations(), { maxLength: 64, maxClockHz: null, features: 0, queueDepth: 4 });
+  assert.deepEqual(await s.declarations(), { maxLength: 64, maxClockHz: null, features: 0, queueDepth: 4, csSetupNs: 0 });   // cs_setup_ns not declared: 0
   hst.describes.set(I2C, [tlv(0x06, new Writer().u32(0b01).done())]);
   assert.equal((await t.declarations()).maxStretchUs, null);   // no features bit1: none declared
 });

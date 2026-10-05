@@ -7,6 +7,7 @@ import { Writer, getU16, getU32 } from './bytes.js';
 import * as catalog from './catalog.js';
 import * as m from './message.js';
 import { OepError } from './errors.js';
+import { checkMaxOpMs } from './host.js';
 
 const TAG_ROLE_ASSIGNMENT = reg.CORE.tlv.plan_apply.role_assignment;   // the number 0x10; always sent critical (0x90, core §8)
 const D = reg.CORE.tlv.describe;
@@ -56,7 +57,7 @@ export async function revision(hst, name, fn) {
 }
 
 /** Every describe TLV of `fn` (0: the probe itself), paged. Declarations only (core §7.3): cached on the host while
- * the probe's boot_id stays the same.
+ * the probe's boot_id stays the same. fn 0's max_op_ms outside 1..600000 makes the probe NotUsable (C-47).
  * @param {import('./host.js').Host} hst @param {number} fn @returns {Promise<[number, Uint8Array][]>} */
 export async function describe(hst, fn = 0) {
   const cached = hst.describes.get(fn);
@@ -69,6 +70,11 @@ export async function describe(hst, fn = 0) {
     const page = m.splitTlvs(p.slice(1));
     out.push(...page);
     if (!more || !page.length) break;
+  }
+  if (fn === m.CORE_FN) {
+    const v = out.find(([tag, value]) => (tag & 0x7f) === D.max_op_ms && value.length >= 4)?.[1];
+    const why = v ? checkMaxOpMs(getU32(v)) : '';
+    if (why) hst.notUsable(why);           // not conforming: not used (core §4.4, §7.5, C-47)
   }
   hst.describes.set(fn, out);
   return [...out];
@@ -126,7 +132,7 @@ export async function probeInfo(hst) {
   return info;
 }
 
-/** Take the lock as host guide §2 says: the probe's only transport a serial port this host opened exclusively ->
+/** Take the lock as host guide §6 says: the probe's only transport a serial port this host opened exclusively ->
  * force at once; else wait out the holder's lease.
  * @param {import('./host.js').Host} hst @param {number} leaseMs @param {{ owner?: string, waitMs?: number, force?: boolean, exclusive?: boolean }} [opts] */
 export async function take(hst, leaseMs = 3000, { owner, waitMs = 5000, force = false, exclusive = false } = {}) {

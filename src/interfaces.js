@@ -94,7 +94,8 @@ export const KNOWN = {
     { roles: { 1: 'SDA', 2: 'SCL' }, features: { 0: 'preloaded tx', 1: 'clock stretching', 2: 'internal pull-ups' },
       tags: { 0x40: ['queue depth', first], 0x41: ['max stretch us', u32], 0x42: ['pull-ups ohms', u32] } }),
   'oep.fixture.spi-target': known('an SPI target the DUT can clock (ESP-IDF slave driver)',
-    { roles: { 1: 'SCK', 2: 'MOSI', 3: 'MISO', 4: 'CS' }, features: { 0: 'LSB first' } }),
+    { roles: { 1: 'SCK', 2: 'MOSI', 3: 'MISO', 4: 'CS' }, features: { 0: 'LSB first' },
+      tags: { 0x40: ['queue depth', first], 0x43: ['CS setup ns', (v) => `${u32(v)} (SCK sooner after CS: the first bit is not sure)`] } }),
 };
 
 /** [0,1,2,5,7,8] -> '0-2,5,7-8' ('-' for none).

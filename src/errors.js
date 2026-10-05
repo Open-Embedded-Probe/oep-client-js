@@ -24,6 +24,19 @@ export class Failed extends OepError {
 export class NotV1 extends OepError {}
 /** No answer in time (after the one resend). */
 export class Timeout extends OepError {}
+/** core §5.2 (C-38): a request's resend got no answer either - the transport failed. The outcome of that request, and
+ * of every request outstanding with it, is unknown. Nothing else goes out on the transport before the link has
+ * recovered with core §5.1's confirm (the next request runs it first; when no confirm is answered that request fails
+ * with TransportFailed too, `recovery` set, and the transport stays failed: close and open it again). After a recovery,
+ * read the state before repeating a state-changing request. `broken`: the resend's answer came broken (a serial port's
+ * bad frame), not missing. */
+export class TransportFailed extends Timeout {
+  /** @param {string} message @param {{ broken?: boolean, recovery?: boolean }} [opts] */
+  constructor(message, { broken = false, recovery = false } = {}) { super(message); this.broken = broken; this.recovery = recovery; }
+}
+/** The probe declared values a conforming probe never does (core §7.1 confirm's bounds, C-20; §7.5 max_op_ms, C-47):
+ * this host sends nothing more to it. The message reports the values. */
+export class NotUsable extends OepError {}
 /** A length-prefixed link lost its frame boundaries (oep-core §5.1) and could not find them again, or a request
  * waiting then could not go once more (already resent, or a session request after the resync's blind end). */
 export class FramingLost extends OepError {}

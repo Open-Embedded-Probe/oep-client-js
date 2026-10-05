@@ -504,6 +504,8 @@ export class RiscvDm extends Interface {
   static TAG_RESET_METHOD = RV.tlv.reset.method;
   static TAG_STEP_LEFT = RV.tlv.step_answer.step_left;
   static DPC = 0x07B1;
+  /** The optional ops' bits of describe features (debug §4): block (read_block / write_block), run, reset, step. */
+  static FEATURE = RV.enum.features;
 
   /** @type {number | null} bytes one block operation may move (describe max_length; never computed from max_frame) */
   maxLength = null;
@@ -521,6 +523,15 @@ export class RiscvDm extends Interface {
 
   /** The words one read_block / write_block may move, from the probe's declared max_length (NoMaxLength when none). */
   blockWords() { return blockWords(this); }
+
+  /** The optional ops this probe offers, from describe's features (debug §4, core §1.2): 'block' (read_block /
+   * write_block), 'run', 'reset', 'step'. dmi, halt and resume are always there; an op not declared here is answered
+   * unknown_operation, and the host builds the same thing from dmi. @returns {Promise<Set<string>>} */
+  async declared() {
+    const v = (await describe(this.host, this.fn)).find(([tag, value]) => (tag & 0x7f) === catalog.COMMON.features && value.length >= 4)?.[1];
+    const bits = v ? getU32(v) : 0;
+    return new Set(Object.entries(RiscvDm.FEATURE).filter(([, bit]) => bits & bit).map(([name]) => name));
+  }
 
   /** @param {string} what @param {number} op */
   async statusOnly(what, op) {
@@ -564,7 +575,9 @@ export class RiscvDm extends Interface {
     return { flags, attempts, pc };
   }
 
-  /** Reset and let it run (confirm: seen running). method: METHOD_* (critical; none: the probe chooses) (§4.3).
+  /** Reset and let it run (confirm: seen running). method: METHOD_* (critical; none or METHOD_DEFAULT: the probe's
+   * default, ndmreset in revision 1). The reset op never drives a reset line (debug §4.3): a line moves only through
+   * attach's reset TLV (`Wire.attachUnderReset`) or a fixture.
    * @param {{ confirm?: boolean, method?: number | null }} [opts] */
   reset({ confirm = true, method = null } = {}) {
     return this.resetMode(confirm ? RiscvDm.RESET_RUN_CONFIRM : RiscvDm.RESET_RUN, method);

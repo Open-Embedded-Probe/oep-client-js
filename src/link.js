@@ -18,20 +18,32 @@
 // §3.3) there is no resync: its confirms would be more than the probing rule allows.
 //
 // A request whose answer does not come in time goes once more with the same corr: the probe keeps the lock holder's
-// recent results and answers the repeat from them, so a state-changing request does not run twice (§5.2). "In time" is
+// recent results and answers the repeat from them, so a state-changing request does not run twice (§5.2). When the
+// resend gets no answer either, the transport has failed (core §5.2, C-38; host guide §8): TransportFailed is thrown
+// (the outcome of that request, and of every request outstanding with it, is unknown) and, before anything else goes
+// out, the link recovers with the §5.1 confirm - quiet input, host_resync_wait_ms since its last write, then a confirm
+// until the answer with its own corr - on a serial port too (`recoverTransport`; a length-prefixed link has just
+// resynced). A changed boot_id in that confirm reaches the host as a reboot: read the state before repeating a
+// state-changing request. "In time" is
 // never under core §4.4's floor (C-06): the time the request's arguments set (`expectMs`) + host_wait_add_ms (1000 ms)
 // + on a serial port the transfer time ((L + max_frame x (1 + notify_pending_max_frames)) x 10 / baud), counted from
-// the write or, while several are outstanding, from the answer before it. The link's own short requests (its
-// confirms, port_speed's procedure) keep their own waits.
+// the write or, while several are outstanding, from the answer before it; max_frame is min_max_frame (64) until a
+// confirm answer came on the transport, then the latest one's (core §4.4, N-1), the link's own confirms included. The
+// link's own short requests (its confirms, port_speed's procedure) keep their own waits.
 //
-// port_speed (oep-core §3.5 is the handshake, the host guide §7 the procedure; opt-in: speed.js raiseSpeed): on a
+// Frames the probe sends by itself are routed: data pushes and events are kept (`pushes`, `events`), and fn 0's
+// heartbeat also goes to the host (`onHeartbeat`), which watches its boot_id like confirm's (core §6.5, §11.2). A
+// result shorter than 5 bytes, or an event or data frame shorter than its header, is a broken frame; a request role
+// from the probe is dropped (core §2.4, C-36).
+//
+// port_speed (oep-core §3.5 is the handshake, the host guide §17 the procedure; opt-in: speed.js raiseSpeed): on a
 // serial port whose transport can change its rate (`setBaudRate`), the link knows the boot speed (`baseBaud`) and the
 // rate now (`baud`). A completed end or port_speed revert puts the link back at the boot speed at once (obligation 6);
 // a request unanswered (its resend too) while the rate is raised takes the link back to the boot speed - the probe
 // went back by itself -, confirms there (up to OPEN_RETRY_MS: port_speed_idle_max_ms + 1 s, obligation 5; none
 // answered = an Error, never back to the raised rate) and goes once more: the link never wedges at a rate the probe
 // left; while raised each wait is at most a quarter of the lease, so this ends inside it. In use the link counts the
-// frames it sees (good / broken / lost, host guide §7.3.2): at the boot speed into this session's baseline
+// frames it sees (good / broken / lost, host guide §17.3.2): at the boot speed into this session's baseline
 // (`baseCounts`), raised into the last IN_USE_WINDOW_MS (3 s) - IN_USE_MIN_FRAMES (50) or more of them with more than
 // max(2 x baseline, IN_USE_FLOOR 10 %) broken or lost step down at the next safe point: port_speed revert at the raised
 // rate, the boot speed, a confirm. A committed rate's first period is its probation (raiseSpeed's probationBytes and
@@ -55,8 +67,9 @@
 
 import * as reg from './registry.js';
 import * as cobs from './cobs.js';
-import { COMPLETED, CORE_FN, OP, ROLE_DATA, ROLE_EVENT, ROLE_RESULT, ROLE_SESSION, Request, CONFIRM_REQUEST } from './message.js';
-import { FramingLost, Timeout } from './errors.js';
+import { COMPLETED, CORE_FN, OP, ROLE_DATA, ROLE_EVENT, ROLE_RESULT, ROLE_SESSION, Request, Result, CONFIRM_REQUEST } from './message.js';
+import { FramingLost, Timeout, TransportFailed } from './errors.js';
+import { getU16, getU32, getU64, text } from './bytes.js';
 import { MAX_REVISION, MIN_REVISION } from './host.js';
 
 /** core §4.4's floor: argument time + this + the transfer time (C-06). */
@@ -79,6 +92,11 @@ export const RESYNC_TRIES = 3;
 /** The link's own confirms (the resync, confirmRaw) ask for the revisions this client handles before the first confirm
  * (core §7.1), and for the revision in use after it (bound by Host: `confirmBody`, C-15). */
 const OWN_CONFIRM = Uint8Array.from([...CONFIRM_REQUEST, MIN_REVISION, MAX_REVISION]);
+/** The shortest result, data and event frames (core §4.2, §11.1): shorter ones are broken frames (C-36). */
+const RESULT_HEADER = 5, DATA_HEADER = 5, EVENT_HEADER = 6;
+/** fn 0's heartbeat event (core §11.2): boot_id(u32) uptime_ns(u64). */
+const HEARTBEAT = reg.CORE.event.heartbeat;
+
 /** After a baud change, before the first byte at the new rate (an M5Stack ATOM's FTDI lost it at once, core §3.5). */
 export const SWITCH_SETTLE_MS = 20;
 /** A committed rate goes back after this with no good frame on the port (core §3.5; idle_ms 0 and longer mean it). */
@@ -89,7 +107,7 @@ export const KEEPALIVE_MS = 1000;
 export const OPEN_RETRY_MS = IDLE_MAX_MS + 1000;
 /** Each of those confirms waits this long (at most the link's timeout). */
 export const OPEN_TRY_MS = 500;
-/** Raised, in use: the frames of the last 3 s are judged (host guide §7.3.2 item 4) ... */
+/** Raised, in use: the frames of the last 3 s are judged (host guide §17.3.2 item 4) ... */
 export const IN_USE_WINDOW_MS = 3000;
 /** ... none under this many in the window ... */
 export const IN_USE_MIN_FRAMES = 50;
@@ -117,10 +135,11 @@ export const RAISED_WAIT_MIN_MS = 300;
  *   read on, never taken for lost boundaries (core §5.1)
  */
 
-/** @typedef {{ resolve: (b: Uint8Array) => void, reject: (e: unknown) => void, timer: any, message: Uint8Array, attempt: number, arm: () => void }} Pending */
+/** @typedef {{ resolve: (b: Uint8Array) => void, reject: (e: unknown) => void, timer: any, message: Uint8Array, attempt: number,
+ *   resent: boolean, arm: () => void }} Pending */
 
 /**
- * A committed rate's first period in use (host guide §7.3.2 item 4): ends (passed) at a good frame once `bytes` have
+ * A committed rate's first period in use (host guide §17.3.2 item 4): ends (passed) at a good frame once `bytes` have
  * moved both ways and `ms` have passed since `started`; FLOW_FAIL_MIN (3) or more of its frames broken or lost and a
  * ratio over `threshold` (max(2 x baseline, 5 %)) fail it.
  * @typedef {{ rate: number, trial: import('./speed.js').SpeedTrial, bytes: number, ms: number, threshold: number,
@@ -133,7 +152,7 @@ export const RAISED_WAIT_MIN_MS = 300;
  * @typedef {{ rates: number[], session: number | null, go: (lower: number[]) => Promise<unknown> }} SpeedPlan
  */
 
-/** In probation, a failure needs this many broken or lost frames (as a verify's flow, host guide §7.3.2 item 3-4). */
+/** In probation, a failure needs this many broken or lost frames (as a verify's flow, host guide §17.3.2 item 3-4). */
 const PROBATION_FAIL_MIN = 3;
 
 export class Link {
@@ -146,7 +165,7 @@ export class Link {
     this.framing = transport.framing;
     this.timeoutMs = timeoutMs;
     this.maxFrame = maxFrame;
-    this.stats = { retries: 0, noise: 0, corrupt: 0, stale: 0, resyncs: 0, dropped: 0 };
+    this.stats = { retries: 0, noise: 0, corrupt: 0, stale: 0, resyncs: 0, dropped: 0, heartbeats: 0, recoveries: 0 };
     /** @type {Uint8Array[]} */ this.events = [];
     /** @type {Uint8Array[]} */ this.pushes = [];
     /** @type {Set<(frame: Uint8Array) => void>} */ this.eventListeners = new Set();
@@ -166,7 +185,7 @@ export class Link {
     this.fallback = true;                    // a raised rate in use (not raiseSpeed's own trial): fall back / step down
     /** @type {[number, boolean][]} raised, in use: (when, bad) per frame of the last IN_USE_WINDOW_MS */ this.window = [];
     this.baselineRatio = 0;                  // raised, in use: the boot speed's ratio the threshold doubles
-    /** this session's frames at the boot speed (the baseline: host guide §7.3.2 item 2) */
+    /** this session's frames at the boot speed (the baseline: host guide §17.3.2 item 2) */
     this.baseCounts = { good: 0, broken: 0, lost: 0 };
     this.keepaliveMs = KEEPALIVE_MS;         // raised: a keepalive once quiet this long (set from idle_ms at a commit)
     this.stepDue = '';                       // raised, in use: why the link steps down at the next safe point
@@ -176,7 +195,7 @@ export class Link {
     /** @type {number | null} the transport index the raised rate is on (the revert names it) */ this.speedPort = null;
     /** @type {Map<number, string>} rates that broke in use in this session -> why (none at or above again) */ this.unusable = new Map();
     /** @type {Map<number, string>} every rate the line failed in this session (a step down goes below them) */ this.failed = new Map();
-    /** @type {Probation | null} raised, in use: the first period at a new rate (host guide §7.3.2 item 4) */ this.probation = null;
+    /** @type {Probation | null} raised, in use: the first period at a new rate (host guide §17.3.2 item 4) */ this.probation = null;
     /** @type {SpeedPlan | null} the candidates a step down in use may go to (the lower ones) */ this.speedPlan = null;
     /** @type {number | null} when the link was last back after a breakdown (ms) ... */ this.brokeAt = null;
     /** @type {number | null} ... at this rate (settleMs: results soon after are unknown) */ this.brokeRate = null;
@@ -195,12 +214,17 @@ export class Link {
     this.lastTx = performance.now();         // when the link last wrote (raised: quiet for KEEPALIVE_MS = a keepalive)
     /** @type {Promise<void> | null} length-prefixed: the §5.1 resync under way (new requests wait for it) */ this.resyncing = null;
     this.discarding = false;                 // ... reading and discarding until the input is quiet
-    /** @type {{ corr: number, done: (ok: boolean) => void } | null} ... its confirm, waiting */ this.resyncWaiter = null;
+    /** @type {{ corr: number, done: (ok: boolean, frame?: Uint8Array) => void } | null} ... its confirm, waiting */ this.resyncWaiter = null;
     /** @type {() => Uint8Array[]} the host's blind stops (unsubscribe every subscription, end; bound by Host) */ this.blind = () => [];
     this.endedBlind = false;                 // the last resync sent the blind end: the session is over
     this.probing = false;                    // the probing rule runs (open.js): no resync
     /** @type {number | null} when this host last wrote to the transport (null: never; core §5.1) */ this.lastWrite = null;
-    /** @type {number} the probe's max_frame once confirmed (the wait's transfer time) */ this.probeMaxFrame = reg.MIN_MAX_FRAME;
+    /** @type {number} min_max_frame until a confirm answer, then its max_frame (the wait's transfer time; §4.4, N-1) */
+    this.probeMaxFrame = reg.MIN_MAX_FRAME;
+    /** @type {(bootId: number, uptimeNs: bigint) => void} fn 0's heartbeat read off the line (bound by Host) */ this.onHeartbeat = () => {};
+    /** @type {(bootId: number) => void} the boot_id of the link's own confirms (resync, recovery; bound by Host) */ this.onBootId = () => {};
+    this.failedTransport = '';               // why: a resend went unanswered (core §5.2, C-38); recover before anything else
+    /** @type {Promise<void> | null} the recovery under way (new requests wait for it) */ this.recovering = null;
     /** @type {number} the floor's host_wait_add_ms (core §4.4) */ this.waitAddMs = WAIT_ADD_MS;
     /** @type {() => Uint8Array} the link's own confirm's payload: the revision in use once bound (Host, C-15) */
     this.confirmBody = () => OWN_CONFIRM;
@@ -211,6 +235,26 @@ export class Link {
     if (this.started) return;
     this.started = true;
     await this.transport.start((chunk) => this.onData(chunk), (error) => this.onClose(error));
+  }
+
+  /** A confirm answer's max_frame on this transport (Host.confirm, every one): until the first one the transfer time
+   * counts min_max_frame (64), then the latest's (core §4.4, N-1); a length-framed reader bounds frames by it.
+   * @param {number} maxFrame */
+  limitsSeen(maxFrame) {
+    if (!maxFrame) return;
+    this.probeMaxFrame = maxFrame;
+    if (this.framing === 'length') this.maxFrame = maxFrame;
+  }
+
+  /** A confirm answer the link read for itself (resync, recovery, confirmRaw): its boot_id to the host (`onBootId`; a
+   * change means a reboot, core §6.5) and its max_frame for the transfer time (core §4.4, N-1). @param {Uint8Array} frame */
+  ownConfirmAnswer(frame) {
+    let r;
+    try { r = Result.unpack(frame); } catch { return; }
+    const p = r.payload;
+    if (!r.succeeded || p.length < 17 || text(p.subarray(0, 4)) !== reg.CONFIRM_RESULT_MAGIC || p[4] < 1) return;
+    this.probeMaxFrame = Math.max(reg.MIN_MAX_FRAME, getU16(p, 6));
+    this.onBootId(getU32(p, 13));
   }
 
   /** @param {unknown} error */
@@ -269,7 +313,7 @@ export class Link {
         continue;
       }
       this.moved(raw.length + 2);
-      this.count('good');                   // a result or a notification that decoded (host guide §7.3.2)
+      if (!shortFrame(message)) this.count('good');   // a result or a notification that decoded (host guide §17.3.2)
       this.deliver(message);
     }
   }
@@ -290,13 +334,17 @@ export class Link {
     }
   }
 
-  /** @param {Uint8Array} frame */
+  /** One frame that decoded: a result to the request waiting for it; events and data pushes kept (fn 0's heartbeat
+   * also to `onHeartbeat`); a request role dropped (core §2.4). A frame shorter than its header is broken (C-36).
+   * @param {Uint8Array} frame */
   deliver(frame) {
+    const why = shortFrame(frame);
+    if (why) { this.broken(frame); return; }
     const role = frame[0];
-    if (role === ROLE_RESULT && frame.length >= 3) {
+    if (role === ROLE_RESULT) {
       const corr = frame[1] | (frame[2] << 8);
       if (this.resyncWaiter) {                  // the resync's confirm: any result with its corr proves the boundaries
-        if (corr === this.resyncWaiter.corr) this.resyncWaiter.done(true);
+        if (corr === this.resyncWaiter.corr) this.resyncWaiter.done(true, frame);
         else this.stats.stale++;                // read past until then
         return;
       }
@@ -312,6 +360,10 @@ export class Link {
       // several outstanding: each one's wait starts again from the answer before it (core §4.4)
       if (!this.resyncing) for (const q of this.pending.values()) { clearTimeout(q.timer); q.arm(); }
     } else if (role === ROLE_EVENT) {
+      if (frame[1] === 0 && frame[2] === 0 && frame[5] === HEARTBEAT && frame.length >= EVENT_HEADER + 12) {
+        this.stats.heartbeats++;
+        this.onHeartbeat(getU32(frame, EVENT_HEADER), getU64(frame, EVENT_HEADER + 4));
+      }
       this.events.push(frame);
       for (const l of this.eventListeners) l(frame);
     } else if (role === ROLE_DATA) {
@@ -322,8 +374,22 @@ export class Link {
     }
   }
 
+  /** A frame that decoded but cannot be read (C-36): on a length-framed link the boundaries are in doubt (the §5.1
+   * resync follows); on a serial port it is a broken frame like a bad CRC - the awaited answer while a session holds
+   * the port (resent at once, §5.2), noise otherwise. @param {Uint8Array} frame */
+  broken(frame) {
+    if (this.framing === 'length') { this.framingLost(); return; }
+    if (this.held()) {
+      this.count('broken');
+      this.resendNow();
+      return;
+    }
+    this.stats.noise += frame.length;
+  }
+
   /** A broken frame on a held port: the oldest request still waiting goes once more now (its one resend), not after
-   * its timeout. One already sent twice (or sent with resend off) fails at once with cobs.CorruptFrame. */
+   * its timeout. One sent with resend off fails at once with cobs.CorruptFrame; one already resent fails the
+   * transport (TransportFailed, `broken`; core §5.2, C-38). */
   resendNow() {
     const first = this.pending.entries().next();
     if (first.done) return;
@@ -332,10 +398,12 @@ export class Link {
     if (p.attempt !== 0) {
       clearTimeout(p.timer);
       this.pending.delete(corr);
-      p.reject(new cobs.CorruptFrame(`a broken frame for corr ${corr} on a held port`));
+      if (p.resent) p.reject(this.transportFailed(`corr ${corr}: its resend's answer came broken too`, true));
+      else p.reject(new cobs.CorruptFrame(`a broken frame for corr ${corr} on a held port`));
       return;
     }
     p.attempt = 1;
+    p.resent = true;
     this.stats.retries++;
     clearTimeout(p.timer);
     p.arm();
@@ -373,6 +441,7 @@ export class Link {
    */
   async send(message, { expectMs = 0 } = {}) {
     if (this.falling) await this.falling.catch(() => {});   // a step down or fall back under way: after it, at its rate
+    if (this.failedTransport || this.recovering) await this.recoverTransport();   // nothing else goes out before (§5.2, C-38)
     await this.keepRaised();
     const at = this.baud;
     let reply;
@@ -380,6 +449,7 @@ export class Link {
       reply = await this.sendOnce(message, { timeoutMs: this.waitMs(expectMs, message) });
     } catch (e) {
       if (!(e instanceof Timeout || e instanceof cobs.CorruptFrame) || !(await this.speedFallback(e, at))) throw e;
+      this.failedTransport = '';            // the fall back confirmed the probe at the boot speed: recovered
       reply = await this.sendOnce(message, { timeoutMs: this.waitMs(expectMs, message) });   // once more at the boot speed (the probe answers a repeat from what it kept)
     }
     if (this.baseBaud !== null && this.baud !== this.baseBaud && reverts(message, reply)) {
@@ -406,27 +476,31 @@ export class Link {
     const corr = message[1] | (message[2] << 8);
     return new Promise((resolve, reject) => {
       /** @type {Pending} */
-      const p = { resolve, reject, timer: null, message, attempt: resend ? 0 : 1, arm: () => {} };
+      const p = { resolve, reject, timer: null, message, attempt: resend ? 0 : 1, resent: false, arm: () => {} };
+      /** sent twice and no answer: the transport failed (C-38); sent once (resend off), a plain Timeout */
+      const missing = () => (p.resent && !this.probing ? this.transportFailed(`corr ${corr}: no answer to it nor to its resend`, false)
+        : new Timeout(`no result from the probe (corr ${corr})`));
       const arm = () => {
         p.timer = setTimeout(() => {
-          this.count('lost');               // no good answer within the wait (host guide §7.3.2)
+          this.count('lost');               // no good answer within the wait (host guide §17.3.2)
           if (this.framing === 'length' && !this.probing) {
             // length-prefixed: resync first (§5.1), then it goes once more (§5.2) - or, sent twice already, it fails
             if (p.attempt !== 0) {
               this.pending.delete(corr);
-              reject(new Timeout(`no result from the probe (corr ${corr})`));
+              reject(missing());
             }
             this.startResync();
             return;
           }
           if (p.attempt === 0) {
             p.attempt = 1;
+            p.resent = true;
             this.stats.retries++;
             this.write(this.framed(message)).catch(reject);
             arm();
           } else {
             this.pending.delete(corr);
-            reject(new Timeout(`no result from the probe (corr ${corr})`));
+            reject(missing());
           }
         }, timeoutMs);
       };
@@ -487,6 +561,7 @@ export class Link {
         this.buf = new Uint8Array(0);
         if (this.closed) break;
         if (await this.resyncConfirm()) {
+          this.failedTransport = '';
           await this.resendPending();
           return;
         }
@@ -534,12 +609,18 @@ export class Link {
     }
   }
 
-  /** The resync's confirm: true when a result with its corr came within the link's wait. */
+  /** The resync's confirm: true when a result with its corr came within the link's wait (its boot_id and max_frame
+   * read: `ownConfirmAnswer`). */
   resyncConfirm() {
     const corr = this.corrSource();
     return new Promise((resolve) => {
-      /** @param {boolean} ok */
-      const done = (ok) => { clearTimeout(timer); this.resyncWaiter = null; resolve(ok); };
+      /** @param {boolean} ok @param {Uint8Array} [frame] */
+      const done = (ok, frame) => {
+        clearTimeout(timer);
+        this.resyncWaiter = null;
+        if (ok && frame) this.ownConfirmAnswer(frame);
+        resolve(ok);
+      };
       const timer = setTimeout(() => done(false), this.baseWaitMs());
       this.resyncWaiter = { corr, done };
       this.write(this.framed(new Request(corr, CORE_FN, OP.confirm, this.confirmBody()).pack())).catch(() => done(false));
@@ -558,6 +639,7 @@ export class Link {
         continue;
       }
       p.attempt = 1;
+      p.resent = true;
       this.stats.retries++;
       p.arm();
       again.push(p.message);
@@ -577,6 +659,60 @@ export class Link {
       this.pending.delete(corr);
       p.reject(error);
     }
+  }
+
+  // ---- a failed transport (core §5.2, C-38) ------------------------------------------------------------------
+
+  /** A request's resend went unanswered (or came broken): the transport failed. Every other request outstanding fails
+   * with it; on a serial port nothing else goes out before `recoverTransport` (the next request runs it; a
+   * length-prefixed link has just started its §5.1 resync). -> the error for the request.
+   * @param {string} what @param {boolean} broken */
+  transportFailed(what, broken) {
+    const why = `a request and its resend got no answer (${what})`;
+    if (this.framing !== 'length') {
+      this.failedTransport = why;
+      this.failPending(new TransportFailed(`${why}: outstanding with it, its outcome is unknown`));
+    }
+    return new TransportFailed(why, { broken });
+  }
+
+  /**
+   * core §5.2 / §5.1 (C-38), on every kind of frame, COBS included: read and discard until the input is quiet (at most
+   * RESYNC_NOISY_MS), wait host_resync_wait_ms since this host's last write, then a confirm until the answer with its
+   * own corr comes (other frames read past); RESYNC_TRIES of them. The confirm's boot_id goes to the host (a reboot,
+   * core §6.5). None answered: TransportFailed (`recovery`), and the transport stays failed (close and open it again).
+   * A length-prefixed link runs its §5.1 resync. Several callers share one recovery.
+   * @param {number} [tries] @returns {Promise<void>}
+   */
+  recoverTransport(tries = RESYNC_TRIES) {
+    if (this.recovering) return this.recovering;
+    const run = async () => {
+      if (this.framing === 'length') {
+        await this.startResync();
+      } else {
+        let ok = false;
+        for (let i = 0; i < tries && !ok && !this.closed; i++) {
+          this.discarding = true;
+          this.buf = new Uint8Array(0);
+          try {
+            await this.quiet(RESYNC_QUIET_MS, RESYNC_NOISY_MS);
+            await this.settleBeforeConfirm();
+          } finally {
+            this.discarding = false;
+            this.buf = new Uint8Array(0);
+          }
+          ok = await this.confirmRaw(Math.max(this.timeoutMs, this.waitAddMs + this.transferMs()));
+        }
+        if (!ok) {
+          throw new TransportFailed(`the transport failed (${this.failedTransport || 'a resend went unanswered'}) and no confirm `
+            + `came back in ${tries} tries: close and open it again`, { recovery: true });
+        }
+      }
+      this.failedTransport = '';
+      this.stats.recoveries++;
+    };
+    this.recovering = run().finally(() => { this.recovering = null; });
+    return this.recovering;
   }
 
   // ---- port_speed (core §3.5) -------------------------------------------------------------------------------
@@ -613,7 +749,8 @@ export class Link {
     const deadline = performance.now() + timeoutMs;
     for (;;) {
       try {
-        await this.sendOnce(new Request(this.corrSource(), CORE_FN, OP.confirm, confirm).pack(), { timeoutMs: Math.max(1, deadline - performance.now()), resend: false });
+        this.ownConfirmAnswer(await this.sendOnce(new Request(this.corrSource(), CORE_FN, OP.confirm, confirm).pack(), { timeoutMs: Math.max(1, deadline - performance.now()), resend: false }));
+        this.failedTransport = '';           // a confirm answered: the transport is in step (§5.1)
         return true;
       } catch (e) {
         if (e instanceof cobs.CorruptFrame && performance.now() < deadline) continue;   // a leftover read past: ask again
@@ -710,7 +847,7 @@ export class Link {
   waitMs(expectMs = 0, request = 0) { return Math.max(this.baseWaitMs(), this.waitFloorMs(expectMs, request)); }
 
   /**
-   * One frame the host side saw while a session holds the port: `kind` good / broken / lost (host guide §7.3.2: good =
+   * One frame the host side saw while a session holds the port: `kind` good / broken / lost (host guide §17.3.2: good =
    * a result or notification that decoded, broken = a candidate that did not, lost = a request with no good answer
    * within its wait). At the boot speed it goes into this session's baseline (`baseCounts`); raised and in use into the
    * 3 s window, judged on every bad one: IN_USE_MIN_FRAMES or more in the window and a ratio over max(2 x baseline,
@@ -874,7 +1011,7 @@ export class Link {
     if (at !== null && at !== this.baseBaud && at !== this.baud && this.unusable.has(at)) return true;
     if (!this.inUse()) return false;
     const from = this.baud;
-    if (this.stepDue || !(e instanceof Timeout)) return this.leave(this.stepDue || `frames kept breaking at ${from}`, true);
+    if (this.stepDue || !(e instanceof Timeout) || (e instanceof TransportFailed && e.broken)) return this.leave(this.stepDue || `frames kept breaking at ${from}`, true);
     return this.leave(`no answer at ${from} (the probe went back by itself)`, false);
   }
 
@@ -950,6 +1087,16 @@ export class Link {
       listeners.add(listener);
     });
   }
+}
+
+/** Why a frame that decoded is too short to read (C-36): '' when it is not. @param {Uint8Array} frame */
+function shortFrame(frame) {
+  if (!frame.length) return 'an empty frame';
+  const role = frame[0];
+  if (role === ROLE_RESULT && frame.length < RESULT_HEADER) return 'a result shorter than its header';
+  if (role === ROLE_EVENT && frame.length < EVENT_HEADER) return 'an event shorter than its header';
+  if (role === ROLE_DATA && frame.length < DATA_HEADER) return 'a data frame shorter than its header';
+  return '';
 }
 
 /** The op of a core request whose answer is completed (any outcome); null for anything else.

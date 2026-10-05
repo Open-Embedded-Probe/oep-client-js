@@ -3,15 +3,22 @@
 //
 // Every open picks a random u32 session id (never a counter: after a probe reboot a counter would match an old
 // process's id). Role 0x81 (a session id in the header) goes only to a probe whose confirm answered revision 1 or
-// more. core §6.5 / §9: when the probe's boot_id changes (confirm, open, heartbeat), when the lease lapsed (rejected
-// expired, open answering resumed = 2) and when another session came in between, by force or not (rejected
-// no_session), every connection, stream and the plan this session had are gone: `epoch` counts those losses. An
-// expired session is never re-opened behind the caller's back: Expired is thrown and the caller opens again.
+// more. core §6.5 / §9: when the probe's boot_id changes (confirm, open, a heartbeat the link read, the link's own
+// confirms), when the lease lapsed (rejected expired, open answering resumed = 2), when another session came in between,
+// by force or not (rejected no_session), and when an open with the session_id this host used last is answered resumed
+// = 0 (the probe no longer knows it: a reboot that may have repeated its boot_id, or another host in between; core §6.5,
+// C-19), every connection, stream and the plan this session had are gone: `epoch` counts those losses. A reboot also
+// drops the remembered name -> fn mapping and the describes, so they are listed again. An expired session is never
+// re-opened behind the caller's back: Expired is thrown and the caller opens again (host guide §9).
+//
+// A probe whose confirm answer is outside core §7.1's bounds (max_frame under 64, window under max_frame, max_inflight
+// 0; C-20), or whose fn 0 describe declares a max_op_ms outside 1..600000 (core §4.4, §7.5; C-47), is not used:
+// NotUsable is thrown with the values, and nothing more is sent through this host.
 
 import * as reg from './registry.js';
 import { Writer, text, utf8 } from './bytes.js';
 import * as m from './message.js';
-import { Failed, InUse, Locked, NotV1, Rejected, rejection } from './errors.js';
+import { Failed, InUse, Locked, NotUsable, NotV1, Rejected, rejection } from './errors.js';
 
 export const MIN_REVISION = 1, MAX_REVISION = 1;
 const OWNER = reg.CORE.tlv.open.owner;
@@ -32,6 +39,29 @@ const CONFIRM_TRANSPORT = reg.CORE.tlv.confirm_answer.transport;
  */
 
 export const RESUMED = reg.CORE.enum.resumed;
+
+/** fn 0's describe max_op_ms is 1 to this (core §7.5, C-47). */
+export const MAX_OP_MS_MAX = reg.LIMITS.max_op_ms_max;
+
+/** core §7.1 (C-20): max_frame >= min_max_frame (64), window >= max_frame, max_inflight >= 1. -> '' or why not.
+ * @param {number} maxFrame @param {number} window @param {number} maxInflight */
+export function checkConfirm(maxFrame, window, maxInflight) {
+  if (maxFrame < reg.MIN_MAX_FRAME || window < maxFrame || maxInflight < 1) {
+    return `confirm answered max_frame ${maxFrame}, window ${window}, max_inflight ${maxInflight}: outside core §7.1 `
+      + `(max_frame >= ${reg.MIN_MAX_FRAME}, window >= max_frame, max_inflight >= 1); the transport is not used`;
+  }
+  return '';
+}
+
+/** core §4.4 / §7.5 (C-47): max_op_ms is 1 to MAX_OP_MS_MAX (600000). -> '' or why the probe is not used.
+ * @param {number} value */
+export function checkMaxOpMs(value) {
+  if (value < 1 || value > MAX_OP_MS_MAX) {
+    return `describe of fn 0 declares max_op_ms ${value}: outside 1..${MAX_OP_MS_MAX} (core §7.5), so the probe does not `
+      + 'conform and is not used';
+  }
+  return '';
+}
 
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -73,6 +103,8 @@ export class Host {
     /** @type {Map<number, [number, Uint8Array][]>} fn -> its describe TLVs (declarations: valid for one boot_id) */ this.describes = new Map();
     /** @type {number | null} */ this.bootId = null;
     /** @type {number | null} the lease the last open gave (named by Expired) */ this.leaseMs = null;
+    this.unusable = '';                      // why this probe is not used (C-20, C-47): set, nothing more is sent
+    /** @type {bigint | null} the last heartbeat's uptime_ns (core §11.2, fn 0 kind 0x01) */ this.uptimeNs = null;
     if (link && 'corrSource' in link) link.corrSource = () => this.nextCorr();   // the link's own confirms (port_speed)
     if (link && 'held' in link) link.held = () => this.session !== null;   // a held serial port: a broken frame is resent at once
     if (link && 'keepaliveFrame' in link) {   // raised (port_speed): the link keeps the line alive in this session
@@ -85,6 +117,10 @@ export class Host {
     if (link && 'sessionId' in link) link.sessionId = () => this.session;
     if (link && 'blind' in link) link.blind = () => this.blindStop();   // the §5.1 resync's stops when pushes keep coming
     if (link && 'confirmBody' in link) link.confirmBody = () => this.confirmBody();   // the link's own confirms: the revision in use (C-15)
+    if (link && 'onHeartbeat' in link) {      // fn 0's heartbeats: the boot_id watched (core §6.5, §11.2)
+      link.onHeartbeat = (/** @type {number} */ bootId, /** @type {bigint} */ uptimeNs) => this.heartbeatSeen(bootId, uptimeNs);
+    }
+    if (link && 'onBootId' in link) link.onBootId = (/** @type {number} */ bootId) => this.bootIdSeen(bootId);   // the link's own confirms (resync, recovery)
   }
 
   nextCorr() { this.corr = (this.corr % 0xffff) + 1; return this.corr; }
@@ -111,6 +147,7 @@ export class Host {
    * @param {number} fn @param {number} op @param {Uint8Array} payload @param {{ locked?: boolean, expectMs?: number }} [opts]
    */
   async request(fn, op, payload = new Uint8Array(), { locked = true, expectMs = 0 } = {}) {
+    this.requireUsable();
     const session = await this.sessionFor(locked);
     await this.beforeRequest();
     const req = new m.Request(this.nextCorr(), fn, op, payload, session);
@@ -152,11 +189,31 @@ export class Host {
     this.describes.clear();
   }
 
-  /** A boot_id from confirm, an open result or a heartbeat: a change means the probe restarted (core §6.5).
-   * @param {number} bootId */
+  /** A boot_id from confirm, an open result, a heartbeat or the link's own confirm: a change means the probe restarted
+   * (core §6.5). -> true when it changed. @param {number} bootId */
   bootIdSeen(bootId) {
-    if (this.bootId !== null && bootId !== this.bootId) this.lost();
+    const changed = this.bootId !== null && bootId !== this.bootId;
+    if (changed) this.lost();
     this.bootId = bootId;
+    return changed;
+  }
+
+  /** fn 0's heartbeat event (core §11.2: boot_id, uptime_ns), as the link reads it: the boot_id is watched like
+   * confirm's and open's, the uptime kept (`uptimeNs`). @param {number} bootId @param {bigint} uptimeNs */
+  heartbeatSeen(bootId, uptimeNs) {
+    this.bootIdSeen(bootId);
+    this.uptimeNs = uptimeNs;
+  }
+
+  /** Stop using this probe (C-20, C-47): every later request throws NotUsable with `why`. Throws it now.
+   * @param {string} why @returns {never} */
+  notUsable(why) {
+    this.unusable = why;
+    throw new NotUsable(why);
+  }
+
+  requireUsable() {
+    if (this.unusable) throw new NotUsable(this.unusable);
   }
 
   /**
@@ -165,6 +222,7 @@ export class Host {
    * @param {[number, number, Uint8Array][]} requests @param {{ locked?: boolean, expectMs?: number }} [opts]
    */
   async pipeline(requests, { locked = true, expectMs = 0 } = {}) {
+    this.requireUsable();
     const session = await this.sessionFor(locked);
     await this.beforeRequest();
     const reqs = requests.map(([fn, op, payload]) => new m.Request(this.nextCorr(), fn, op, payload, session));
@@ -225,14 +283,13 @@ export class Host {
     if (revision < minRev || revision > maxRev) throw new m.ProtocolError(`confirm answered revision ${revision}, outside ${minRev}..${maxRev}`);
     const flags = rd.u8(), maxFrame = rd.u16(), window = rd.u32(), maxInflight = rd.u8(), bootId = rd.u32();
     const tail = rd.tail();
+    const why = checkConfirm(maxFrame, window, maxInflight);
+    if (why) this.notUsable(why);            // sends nothing more and reports the values (C-20)
     this.bootIdSeen(bootId);
     this.revision = revision;
     const where = tail.get(CONFIRM_TRANSPORT);
     this.limits = { revision, flags, maxFrame, window, maxInflight, bootId, transport: where?.length ? where[0] : null, tail };
-    if (maxFrame && this.link) {
-      if ('probeMaxFrame' in this.link) this.link.probeMaxFrame = maxFrame;   // the wait's transfer time (core §4.4)
-      if (this.link.framing === 'length') this.link.maxFrame = maxFrame;
-    }
+    if (this.link && typeof this.link.limitsSeen === 'function') this.link.limitsSeen(maxFrame);   // the wait's transfer time (core §4.4, N-1)
     return this.limits;
   }
 
@@ -255,7 +312,8 @@ export class Host {
    * A new random id (never 0, core §6.1) unless `session` is given. leaseMs 0 = the probe's default; 1000..60000 are
    * taken as asked. owner: who holds the lock, shown to other hosts (`ownerText`: control characters replaced, cut to
    * 32 bytes on a character). Opened.resumed: 0 a new session, 1 the same id with its
-   * resources kept, 2 the same id after its lease lapsed swept them (core §6.4).
+   * resources kept, 2 the same id after its lease lapsed swept them (core §6.4). The id used last answered 0: the
+   * probe lost it (a reboot, or another session in between; C-19) - `epoch` moves and the fns are listed again.
    * @param {number} leaseMs @param {{ force?: boolean, session?: number, owner?: string }} [opts]
    * @returns {Promise<Opened>}
    */
@@ -265,16 +323,22 @@ export class Host {
     if (sid === 0) throw new RangeError('session_id 0 is not a session (core §6.1)');
     const w = new Writer().u32(sid).u32(leaseMs).u8(force ? 1 : 0);
     if (owner) w.raw(m.tlv(OWNER, ownerText(owner)));
+    const last = session ?? this.session;    // the id this host used last (C-19)
     const r = await this.request(m.CORE_FN, m.OP.open, w.done(), { locked: false });
     if (sid !== this.session) this.subscriptions.clear();
     this.session = sid;
     const rd = new m.Reader(r.payload);
     const lease = rd.u32(), bootId = rd.u32(), resumed = rd.u8();
     rd.tail();
-    this.bootIdSeen(bootId);
+    const rebooted = this.bootIdSeen(bootId);
     this.leaseMs = lease;
     if (resumed === RESUMED.swept) this.swept();
-    else if (resumed !== RESUMED.resumed) this.subscriptions.clear();
+    else if (resumed !== RESUMED.resumed) {
+      this.subscriptions.clear();
+      // the probe no longer knows the id this host used last: a reboot (its boot_id may have repeated) or another
+      // session in between - list again before a remembered fn is used (core §6.5, C-19)
+      if (sid === last && !rebooted) this.lost();
+    }
     return { leaseMs: lease, bootId, resumed, swept: resumed === RESUMED.swept };
   }
 
@@ -295,7 +359,7 @@ export class Host {
   }
 
   /**
-   * open() the way host guide §2 takes the lock: onlyWayIn (this link is the probe's only transport, a serial port
+   * open() the way host guide §6 takes the lock: onlyWayIn (this link is the probe's only transport, a serial port
    * opened exclusively) or force takes it at once; otherwise the holder's lease is waited out, up to waitMs.
    * @param {number} leaseMs @param {{ owner?: string, onlyWayIn?: boolean, waitMs?: number, force?: boolean }} [opts]
    */

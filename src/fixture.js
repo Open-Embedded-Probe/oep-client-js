@@ -301,6 +301,9 @@ export class FixtureUartIO extends StreamIO {
  * A fixture target's describe (fixture §3 / §4): maxLength (bytes a frame / transfer), maxClockHz (the verified bus
  * clock limit), features (bits; 0 when not declared), queueDepth (tag 0x40: frames / transfers the queue holds; i2c
  * mode 3 also the most unread preload slots). null: not declared. */
+/** @typedef {TargetDeclarations & { csSetupNs: number }} SpiTargetDeclarations
+ * csSetupNs (tag 0x43, u32; fixture §4): CS active to the first SCK edge, in ns, for MISO's first bit to be sure; 0 when
+ * not declared. */
 /** @typedef {TargetDeclarations & { maxStretchUs: number | null, pullupOhms: number | null }} I2cTargetDeclarations
  * maxStretchUs (tag 0x41, u32): the largest stretchUs stretch() accepts; null when not declared (a probe declares it
  * exactly when features has bit1). pullupOhms (tag 0x42, u32; fixture §3, P2-★3): the approximate resistance of the
@@ -374,8 +377,18 @@ export class I2cTarget extends Interface {
    * @returns {[number, number, number][]} */
   assignments(sda, scl) { return [[this.fn, I2cTarget.ROLE_SDA, sda], [this.fn, I2cTarget.ROLE_SCL, scl]]; }
 
-  /** @param {number} address  7-bit @param {number} mode */
-  async configure(address, mode) { await this.call(I2cTarget.CONFIGURE, Uint8Array.of(address, mode)); }
+  /** I2C's own reserved addresses (general call, the 10-bit prefix, ...): a probe refuses them unsupported (fixture §3).
+   * @type {ReadonlyArray<readonly [number, number]>} */
+  static RESERVED_ADDRESSES = Object.freeze([Object.freeze(/** @type {const} */ ([0x00, 0x07])), Object.freeze(/** @type {const} */ ([0x78, 0x7f]))]);
+
+  /** @param {number} address  7 bits; 0x00-0x07 and 0x78-0x7F are the I2C specification's reserved addresses, which a
+   * probe refuses unsupported (fixture §3) - refused here (RangeError) before anything is sent. @param {number} mode */
+  async configure(address, mode) {
+    if (I2cTarget.RESERVED_ADDRESSES.some(([lo, hi]) => address >= lo && address <= hi)) {
+      throw new RangeError(`I2C address 0x${address.toString(16).padStart(2, '0')} is reserved (0x00-0x07, 0x78-0x7F; fixture §3)`);
+    }
+    await this.call(I2cTarget.CONFIGURE, Uint8Array.of(address, mode));
+  }
 
   /** @param {number} length */
   async armRx(length) { await this.call(I2cTarget.ARM_RX, new Writer().u16(length).done()); }
@@ -435,15 +448,21 @@ export class SpiTarget extends Interface {
   static LSB_FIRST = 1;
   static TAG_NS = SPI.tlv.read_rx_answer.ns;
   static TAG_QUEUE_DEPTH = SPI.tlv.describe.queue_depth;
+  static TAG_CS_SETUP_NS = SPI.tlv.describe.cs_setup_ns;
   static FEATURE_LSB_FIRST = SPI.enum.features.lsb_first;
 
-  /** What the probe declares for this target (describe): maxLength, maxClockHz, features, queueDepth.
-   * @returns {Promise<TargetDeclarations>} */
+  /** What the probe declares for this target (describe): maxLength, maxClockHz, features, queueDepth, csSetupNs.
+   * @returns {Promise<SpiTargetDeclarations>} */
   async declarations() {
     const { d, own } = await targetDescribe(this);
     return { maxLength: d.maxLength, maxClockHz: d.maxClockHz, features: d.features ?? 0,
-      queueDepth: ownU8(own, SpiTarget.TAG_QUEUE_DEPTH) };
+      queueDepth: ownU8(own, SpiTarget.TAG_QUEUE_DEPTH), csSetupNs: ownU32(own, SpiTarget.TAG_CS_SETUP_NS) ?? 0 };
   }
+
+  /** The shortest CS-active-to-first-SCK time (ns) for which the probe guarantees MISO carries the first bit, under its
+   * normal load (describe tag 0x43, fixture §4); 0 when not declared (MISO is driven at once). A master that starts SCK
+   * sooner cannot rely on the first bit: show it to the user. */
+  async csSetupNs() { return (await this.declarations()).csSetupNs; }
 
   /** @type {bigint | null} when the last transaction readRx gave ended on the probe's clock (TLV ns), when it says */
   lastNs = null;
