@@ -1,14 +1,14 @@
 // @ts-check
-// port_speed (oep-core §3.5 is the handshake; the host's procedure is oep-spec docs/host-development-guide.md §17,
+// port_speed (oep-if-link §3 is the handshake, an op of the optional oep.link; the host's procedure is oep-spec docs/host-development-guide.md §17,
 // followed here): a faster UART bridge for one session, opt-in. `raiseSpeed` asks a probe that declares it for a
-// faster rate on the serial port this host opened.
+// faster rate on the serial port this host opened (it finds oep.link by name and reads port_speed in its ops).
 //
 // The minimal form (§17.2, the default): try a candidate -> switch to the requested baud (the probe's answered baud
 // only when the platform refuses it: WebSerial `open({ baudRate })`, serialport `update`) -> settle 20 ms -> confirm
 // (100 ms, up to 3) -> commit. About 50 ms, no measurement. The full form (`verify: true`, or `flows` given; §17.3): a
 // baseline at the boot speed per flow (this session's frames when 60 or more and under 10 %, else 60 measured per flow
-// at its n; over 10 % once more at n = 1), then per candidate every flow the caller will use (in = link_source, out =
-// link_sink, duplex = both interleaved, each with its in-flight n) for 16 frames at max_frame - 16, a flow failing on
+// at its n; over 10 % once more at n = 1), then per candidate every flow the caller will use (in = oep.link source,
+// out = sink, duplex = both interleaved, each with its in-flight n) for 16 frames at max_frame - 26, a flow failing on
 // broken + lost >= 3 and a ratio over max(2 x baseline, 5 %), run once more at n = 1 before giving up on it (then n = 1
 // is the link's cap), one failed flow failing the candidate; commit when every flow passed. A failed candidate: revert
 // (step 2, at the new rate), the boot speed, confirms up to port_speed_idle_max_ms + 1 s. The report (`host.link.speed`)
@@ -30,19 +30,18 @@ import { Failed, Rejected, Timeout } from './errors.js';
 import { IDLE_MAX_MS, KEEPALIVE_MS, OPEN_RETRY_MS } from './link.js';
 import { SpeedRecord, defaultStore, fileStore } from './speedrecord.js';
 
-const OP_PORT_SPEED = reg.CORE.op.port_speed;
-const STEP = reg.CORE.enum.port_speed_step;
-const PORT_SPEED_TAG = reg.CORE.tlv.describe.port_speed;
+const OP_PORT_SPEED = reg.LINK.op.port_speed;
+const STEP = reg.LINK.enum.port_speed_step;
 const UNIT_ID_TAG = reg.CORE.tlv.describe.unit_id;
 const UART_BRIDGE = reg.CORE.enum.transport_kind.uart_bridge;
 
 /** Host guide §17.2: one candidate that passed the measured bridges in small duplex use. */
 export const DEFAULT_CANDIDATES = Object.freeze([500000]);
-/** probe -> host (link_source), host -> probe (link_sink), both interleaved. */
+/** probe -> host (oep.link source), host -> probe (sink), both interleaved. */
 export const FLOWS = /** @type {const} */ (['in', 'out', 'duplex']);
 /** The probe waits this long for the commit (guide §17.2 / §17.3.2: 2000). */
 export const VERIFY_MS = 2000;
-/** After the switch: confirm, 100 ms each, up to 3 (core §3.5 obligation 2). */
+/** After the switch: confirm, 100 ms each, up to 3 (oep-if-link §3 obligation 2). */
 export const CONFIRM_TRIES = 3, CONFIRM_WAIT_MS = 100;
 /** Full form: at least this many frames per flow (guide §17.3.2 item 3-3) ... */
 export const FLOW_FRAMES = 16;
@@ -157,20 +156,25 @@ function request(port, baud, step, verifyMs, idleMs) {
   return out;
 }
 
-/** confirm's transport from a broker that answers the session ops itself (core §3.1, §7.1): no port of the probe. */
+/** confirm's transport from a broker that answers the session ops itself (transports §1, core §7.1): no port of the probe. */
 export const RELAYING_BROKER = 0xff;
 
 /** The port this host's requests come in on (the transport TLV of confirm's answer, core §7.1, C-05) when the probe
- * declares port_speed and that transport is a UART bridge; else null and why not.
- * @param {import('./host.js').Host} hst @returns {Promise<[number | null, string]>} */
+ * offers oep.link with port_speed in its ops (oep-if-link §1) and that transport is a UART bridge: [the oep.link fn,
+ * the port, '']; else nulls and why not.
+ * @param {import('./host.js').Host} hst @returns {Promise<[number | null, number | null, string]>} */
 export async function speedPort(hst) {
-  const tlvs = await core.describe(hst, 0);
-  if (!tlvs.some(([tag, v]) => (tag & 0x7f) === PORT_SPEED_TAG && v[0] === 1)) return [null, 'the probe does not declare port_speed'];
+  let fn;
+  try { fn = await core.linkFn(hst); } catch (e) {
+    if (e instanceof m.OepError && !(e instanceof Rejected)) return [null, null, 'the probe does not offer oep.link'];
+    throw e;
+  }
+  if (!(await core.offers(hst, fn, OP_PORT_SPEED))) return [null, null, 'the probe\'s oep.link does not offer port_speed (its ops)'];
   const index = (hst.limits ?? await hst.confirm()).transport;
-  if (index === null || index === undefined) return [null, 'the probe\'s confirm names no transport (core §7.1 requires it)'];
-  if (index === RELAYING_BROKER) return [null, 'a relaying broker answers the confirm (transport 0xFF): no port of this probe to raise'];
+  if (index === null || index === undefined) return [null, null, 'the probe\'s confirm names no transport (core §7.1 requires it)'];
+  if (index === RELAYING_BROKER) return [null, null, 'a relaying broker answers the confirm (transport 0xFF): no port of this probe to raise'];
   const kind = (await core.probeInfo(hst)).transports.find((t) => t.index === index)?.kind;
-  return kind === UART_BRIDGE ? [index, ''] : [null, `this host's transport (index ${index}) is not a UART bridge`];
+  return kind === UART_BRIDGE ? [fn, index, ''] : [null, null, `this host's transport (index ${index}) is not a UART bridge`];
 }
 
 /** The probe's unit_id (core §7.5, mandatory) - the record's key with the port. @param {import('./host.js').Host} hst */
@@ -183,6 +187,22 @@ export async function unitId(hst) {
 const linkError = (e) => e instanceof Timeout || e instanceof cobs.CorruptFrame;
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** A source answer that is completed success with `data` exactly (len(u16) data [TLV]), or a sink answer that is
+ * completed success: what a flow counts as good (oep-if-link §2).
+ * @param {'in' | 'out'} kind @param {Uint8Array} raw @param {Uint8Array} data */
+export function linkAnswerGood(kind, raw, data) {
+  try {
+    const r = m.Result.unpack(raw);
+    if (!r.succeeded) return false;
+    if (kind !== 'in') return true;
+    const got = core.linkSourceData(r.payload);
+    return got.length === data.length && got.every((b, k) => b === data[k]);
+  } catch (e) {
+    if (e instanceof m.ProtocolError) return false;
+    throw e;
+  }
+}
 
 /** How long one answer of a flow is waited for: four frames' worth on the line per request in flight, at least 300 ms.
  * @param {number} size @param {number} rate @param {number} n */
@@ -215,7 +235,8 @@ export async function flowRun(hst, link, flow, n, size, frames, rate) {
   const limits = await hst.confirmed();
   const inflight = Math.max(1, Math.min(n, Math.floor(limits.window / (size + 24))));   // the probe's window too
   const data = Uint8Array.from({ length: size }, (_, k) => k & 0xff);
-  const sizeBody = Uint8Array.of(size & 0xff, (size >> 8) & 0xff, (size >> 16) & 0xff, (size >>> 24) & 0xff);
+  const sizeBody = core.linkSourceRequest(size), sinkBody = core.linkSinkRequest(data);
+  const fn = /** @type {number} */ (link.speedFn ?? await core.linkFn(hst));
   const timeoutMs = answerWaitMs(size, rate, n);
   await keep(hst, link);
   let moved = 0;
@@ -224,8 +245,8 @@ export async function flowRun(hst, link, flow, n, size, frames, rate) {
     const batch = Math.min(2 * n, frames - res.frames);
     /** @type {('in' | 'out')[]} */
     const kinds = Array.from({ length: batch }, (_, k) => (flow !== 'duplex' ? flow : ((res.frames + k) % 2 === 0 ? 'in' : 'out')));
-    const msgs = kinds.map((k) => new m.Request(hst.nextCorr(), m.CORE_FN, k === 'in' ? m.OP.link_source : m.OP.link_sink,
-      k === 'in' ? sizeBody : data).pack());
+    const msgs = kinds.map((k) => new m.Request(hst.nextCorr(), fn, k === 'in' ? core.LINK_SOURCE : core.LINK_SINK,
+      k === 'in' ? sizeBody : sinkBody).pack());
     /** @type {Promise<Uint8Array>[]} */
     const answers = [];
     for (let i = 0; i < msgs.length; i++) {
@@ -240,10 +261,7 @@ export async function flowRun(hst, link, flow, n, size, frames, rate) {
         lost++;
         return;
       }
-      const r = m.Result.unpack(st.value);
-      const good = r.succeeded && (kinds[i] === 'in'
-        ? r.payload.length === size && r.payload.every((b, k) => b === (k & 0xff))
-        : r.payload.length >= 4 && getU32(r.payload) === size);
+      const good = linkAnswerGood(kinds[i], st.value, data);
       if (good) moved += size; else res.broken++;
     });
     res.lost += lost;
@@ -343,14 +361,14 @@ async function verifyFlows(hst, link, rate, trial, flows, baseline, frames, size
 }
 
 /**
- * port_speed (oep-core §3.5) on the UART bridge this host opened, by the host guide's §17 procedure: try `candidates`
+ * port_speed (oep-oep-if-link §3) on the UART bridge this host opened, by the host guide's §17 procedure: try `candidates`
  * in order and commit the first that passes. The session must be open (the rate lasts as long as it does).
  *
  * The minimal form (§17.2, the default; about 50 ms, no measurement): try -> switch to the requested baud (the probe's
  * answer only when the platform refuses it) -> 20 ms -> confirm (100 ms, up to 3) -> commit. The full form (`verify:
  * true`, or `flows` given; §17.3): first the boot speed's baseline per flow (`baseline` given, this session's frames at
  * the boot speed when 60 or more, else 60 frames measured per flow at its n - over 10 % again at n = 1, still over: not
- * raised), then per candidate every flow for `frames` (16) frames of max_frame - 16 bytes - the quick gate; a flow
+ * raised), then per candidate every flow for `frames` (16) frames of max_frame - 26 bytes - the quick gate; a flow
  * fails on broken + lost >= 3 and a ratio over max(2 x baseline, 5 %), runs again at n = 1 first (then n = 1 is the
  * link's cap), and one failed flow fails the candidate. `flows`: 'in' | 'out' | 'duplex' or [flow, n] (n 0 = the most
  * this link keeps in flight; default: all three at that n) - verify only what the session will use (§17.3.1).
@@ -396,8 +414,9 @@ export async function raiseSpeed(hst, candidates = DEFAULT_CANDIDATES, { flows =
     report.why = 'the link is not a serial port this host opened';
     return report;
   }
-  const [where, why] = await speedPort(hst);
+  const [fn, where, why] = await speedPort(hst);
   if (where === null) { report.why = why; return report; }
+  link.speedFn = fn;
   if (hst.session === null) throw new m.OepError('raiseSpeed needs an open session (the rate lasts as long as the session)');
   const at = port ?? where;
   report.supported = true;
@@ -458,7 +477,7 @@ function barred(link, rate) {
 /** A port_speed request straight on the line (no wait for a step down under way: raiseSpeed may run inside one).
  * @param {import('./host.js').Host} hst @param {import('./link.js').Link} link @param {Uint8Array} payload */
 async function speedCall(hst, link, payload) {
-  const req = new m.Request(hst.nextCorr(), m.CORE_FN, OP_PORT_SPEED, payload, hst.session);
+  const req = new m.Request(hst.nextCorr(), /** @type {number} */ (link.speedFn), OP_PORT_SPEED, payload, hst.session);
   const result = m.Result.unpack(await link.sendOnce(req.pack()));
   if (result.resolution === m.REJECTED) throw new Rejected(result);
   if (!result.succeeded) throw new Failed(result);
@@ -471,7 +490,7 @@ async function speedCall(hst, link, payload) {
  */
 async function raise(hst, link, report, candidates, run, baseline, maxTries) {
   const limits = await hst.confirmed();
-  run.size = limits.maxFrame - 16;
+  run.size = core.linkSize(limits.maxFrame);                 // what one source answer carries (oep-if-link §2)
   const nMax = link.inflightFor(limits);
   const key = link.recordKey;
   if (run.rec && key) {
@@ -530,7 +549,7 @@ async function tryRates(hst, link, report, rates, run) {
    * port_speed_idle_max_ms + 1 s (or verify_ms and a second when that is longer). @param {number} rate @param {boolean} revert */
   const back = async (rate, revert) => {
     if (revert) {
-      const msg = new m.Request(hst.nextCorr(), m.CORE_FN, OP_PORT_SPEED, request(at, rate, STEP.revert, 0, 0), hst.session).pack();
+      const msg = new m.Request(hst.nextCorr(), /** @type {number} */ (link.speedFn), OP_PORT_SPEED, request(at, rate, STEP.revert, 0, 0), hst.session).pack();
       await link.sendOnce(msg, { timeoutMs: 300, resend: false }).catch(() => {});   // lost at that rate, or the probe is back already
     }
     if (!(await link.backToBase(Math.max(OPEN_RETRY_MS, wait + 1000)))) throw new Error(`after trying ${rate}: no answer at the boot speed ${base}`);
@@ -603,7 +622,7 @@ async function tryRates(hst, link, report, rates, run) {
     link.inflightCap = trial.nCap;
     link.speedPort = at;
     link.baselineRatio = Math.max(0, ...Object.values(report.baseline));
-    link.keepaliveMs = Math.min(KEEPALIVE_MS, idleMs / 2.5);   // under half of idle_ms (core §3.5 obligation 4)
+    link.keepaliveMs = Math.min(KEEPALIVE_MS, idleMs / 2.5);   // under half of idle_ms (oep-if-link §3 obligation 4)
     link.window = [];
     link.stepDue = '';
     note(trial, true, run.verify ? 'verify' : 'confirm');

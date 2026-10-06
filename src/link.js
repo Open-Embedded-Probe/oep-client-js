@@ -6,13 +6,13 @@
 // frames 0x00 <COBS> 0x00 and the probe's raw bytes on the same line: every span between 0x00s is a candidate, and one
 // that does not decode is noise (§3.1, §3.4). Vendor bulk, HID and TCP carry length(u16) message, with no CRC: a
 // result for no request waiting, a length that cannot be right (over max_frame), a frame that stops half way, or a
-// request with no answer in time loses the boundaries, and the link finds them again as oep-core §5.1 says (`resync`):
+// request with no answer in time loses the boundaries, and the link finds them again as transports §5 says (`resync`):
 // it reads and discards until the input has been quiet for 50 ms and 250 ms have passed since this host last wrote
 // (host_resync_wait_ms: a frame left half written is then dropped by the probe's own gap), sends a confirm and waits for
 // the result with its corr (up to 3 tries; other results meanwhile are read past), then the requests still waiting go
 // once more with the same corr (§5.2; one already sent twice fails with FramingLost). A frame that stops half way is a
 // lost boundary on vendor bulk and HID only: TCP keeps its boundaries and a pause inside a frame is normal there
-// (`Transport.keepsBoundaries`, core §5.1). When pushes keep the input from going quiet for
+// (`Transport.keepsBoundaries`, transports §5). When pushes keep the input from going quiet for
 // 1 s, the host's unsubscribe and end go out once, blind (both harmless twice); the session requests waiting then are
 // not sent again (the session ended). New requests wait for the resync. While the transport is being probed (core
 // §3.3) there is no resync: its confirms would be more than the probing rule allows.
@@ -36,7 +36,7 @@
 // result shorter than 5 bytes, or an event or data frame shorter than its header, is a broken frame; a request role
 // from the probe is dropped (core §2.4, C-36).
 //
-// port_speed (oep-core §3.5 is the handshake, the host guide §17 the procedure; opt-in: speed.js raiseSpeed): on a
+// port_speed (oep-if-link §3 is the handshake, the host guide §17 the procedure; opt-in: speed.js raiseSpeed): on a
 // serial port whose transport can change its rate (`setBaudRate`), the link knows the boot speed (`baseBaud`) and the
 // rate now (`baud`). A completed end or port_speed revert puts the link back at the boot speed at once (obligation 6);
 // a request unanswered (its resend too) while the rate is raised takes the link back to the boot speed - the probe
@@ -60,14 +60,14 @@
 // connect) retries its first confirm for OPEN_RETRY_MS: a host that raised the speed and died leaves the probe at its
 // rate until then (obligation 7).
 //
-// A serial port that a session holds carries no raw bytes from the probe (oep-core §3.4): a broken candidate there is
+// A serial port that a session holds carries no raw bytes from the probe (transports §4): a broken candidate there is
 // a broken frame, most likely the reply the oldest request waits for, so that request goes once more at once (the
 // same corr, answered from the probe's retry table, §5.2) instead of after its timeout. Without a session it is the
 // port's raw bytes: noise, skipped.
 
 import * as reg from './registry.js';
 import * as cobs from './cobs.js';
-import { COMPLETED, CORE_FN, OP, ROLE_DATA, ROLE_EVENT, ROLE_RESULT, ROLE_SESSION, Request, Result, CONFIRM_REQUEST } from './message.js';
+import { COMPLETED, CORE_FN, OP, REQUEST_HEADER, ROLE_DATA, ROLE_EVENT, ROLE_RESULT, Request, Result, CONFIRM_REQUEST } from './message.js';
 import { FramingLost, Timeout, TransportFailed } from './errors.js';
 import { getU16, getU32, getU64, text } from './bytes.js';
 import { MAX_REVISION, MIN_REVISION } from './host.js';
@@ -77,13 +77,13 @@ export const WAIT_ADD_MS = reg.TIMING.host_wait_add_ms;
 /** max_frame x this of notifications may come before an answer (core §11.4): the transfer time counts them. */
 const NOTIFY_PENDING = reg.TIMING.notify_pending_max_frames;
 /** Before a resync's confirm, and the first confirm on a length-prefixed port: this long since the host's last write
- * there (core §5.1: probe_frame_gap_ms + 50). */
+ * there (transports §5: probe_frame_gap_ms + 50). */
 export const RESYNC_WAIT_MS = reg.TIMING.host_resync_wait_ms;
 
 /** a serial port's answer bytes in flight at most (Linux cdc_acm lost 8 x 1008 B answer bursts; 7 passed) */
 const ANSWER_BURST_MAX = 6144;
 const STALL_MS = reg.TIMING.probe_frame_gap_ms;   // a frame whose bytes stop this long is not coming
-/** Length-prefixed links: the resync reads and discards until the input has been quiet this long (core §5.1). */
+/** Length-prefixed links: the resync reads and discards until the input has been quiet this long (transports §5). */
 export const RESYNC_QUIET_MS = reg.TIMING.resync_quiet_ms;
 /** ... and when it is still not quiet after this, sends the blind stops (unsubscribe, end). */
 export const RESYNC_NOISY_MS = 1000;
@@ -97,13 +97,13 @@ const RESULT_HEADER = 5, DATA_HEADER = 5, EVENT_HEADER = 6;
 /** fn 0's heartbeat event (core §11.2): boot_id(u32) uptime_ns(u64). */
 const HEARTBEAT = reg.CORE.event.heartbeat;
 
-/** After a baud change, before the first byte at the new rate (an M5Stack ATOM's FTDI lost it at once, core §3.5). */
+/** After a baud change, before the first byte at the new rate (an M5Stack ATOM's FTDI lost it at once, oep-if-link §3). */
 export const SWITCH_SETTLE_MS = 20;
-/** A committed rate goes back after this with no good frame on the port (core §3.5; idle_ms 0 and longer mean it). */
+/** A committed rate goes back after this with no good frame on the port (oep-if-link §3; idle_ms 0 and longer mean it). */
 export const IDLE_MAX_MS = reg.TIMING.port_speed_idle_max_ms;
-/** Raised: a keepalive once the link has been quiet this long (under half of idle_ms, core §3.5 obligation 4). */
+/** Raised: a keepalive once the link has been quiet this long (under half of idle_ms, oep-if-link §3 obligation 4). */
 export const KEEPALIVE_MS = 1000;
-/** port_speed_idle_max_ms + 1 s: the confirm bound at the boot speed (core §3.5 obligations 5 and 7). */
+/** port_speed_idle_max_ms + 1 s: the confirm bound at the boot speed (oep-if-link §3 obligations 5 and 7). */
 export const OPEN_RETRY_MS = IDLE_MAX_MS + 1000;
 /** Each of those confirms waits this long (at most the link's timeout). */
 export const OPEN_TRY_MS = 500;
@@ -132,7 +132,7 @@ export const RAISED_WAIT_MIN_MS = 300;
  * @property {(rate: number) => Promise<void>} [setBaudRate]   a serial port this host opened: change its rate
  * @property {string} [path]              a serial port's OS device path (the port_speed record's key, with the unit_id)
  * @property {boolean} [keepsBoundaries]  length frames on a stream that keeps them (TCP): a pause inside a frame is
- *   read on, never taken for lost boundaries (core §5.1)
+ *   read on, never taken for lost boundaries (transports §5)
  */
 
 /** @typedef {{ resolve: (b: Uint8Array) => void, reject: (e: unknown) => void, timer: any, message: Uint8Array, attempt: number,
@@ -193,6 +193,7 @@ export class Link {
     /** @type {import('./speedrecord.js').SpeedRecord | null} the record raiseSpeed used, if any */ this.record = null;
     /** @type {[string | null, string] | null} its key: the port's path (null in a browser) and the unit_id */ this.recordKey = null;
     /** @type {number | null} the transport index the raised rate is on (the revert names it) */ this.speedPort = null;
+    /** @type {number | null} the probe's oep.link fn, once raiseSpeed found it (oep-if-link) */ this.speedFn = null;
     /** @type {Map<number, string>} rates that broke in use in this session -> why (none at or above again) */ this.unusable = new Map();
     /** @type {Map<number, string>} every rate the line failed in this session (a step down goes below them) */ this.failed = new Map();
     /** @type {Probation | null} raised, in use: the first period at a new rate (host guide §17.3.2 item 4) */ this.probation = null;
@@ -200,7 +201,7 @@ export class Link {
     /** @type {number | null} when the link was last back after a breakdown (ms) ... */ this.brokeAt = null;
     /** @type {number | null} ... at this rate (settleMs: results soon after are unknown) */ this.brokeRate = null;
     /** @type {number | null} the session `unusable` belongs to */ this.unusableSession = null;
-    /** @type {((op: number, payload: Uint8Array) => Uint8Array) | null} a core request in the session (bound by Host) */ this.sessionFrame = null;
+    /** @type {((op: number, payload: Uint8Array, fn?: number) => Uint8Array) | null} a request in the session (bound by Host) */ this.sessionFrame = null;
     /** @type {() => number | null} the session's lease (bound by Host; raised: bounds each wait) */ this.lease = () => null;
     /** @type {() => number | null} the session id (bound by Host) */ this.sessionId = () => null;
     this.inflightCap = 0;                    // port_speed: the in-flight requests the raised rate verified with (0: no cap)
@@ -218,7 +219,7 @@ export class Link {
     /** @type {() => Uint8Array[]} the host's blind stops (unsubscribe every subscription, end; bound by Host) */ this.blind = () => [];
     this.endedBlind = false;                 // the last resync sent the blind end: the session is over
     this.probing = false;                    // the probing rule runs (open.js): no resync
-    /** @type {number | null} when this host last wrote to the transport (null: never; core §5.1) */ this.lastWrite = null;
+    /** @type {number | null} when this host last wrote to the transport (null: never; transports §5) */ this.lastWrite = null;
     /** @type {number} min_max_frame until a confirm answer, then its max_frame (the wait's transfer time; §4.4, N-1) */
     this.probeMaxFrame = reg.MIN_MAX_FRAME;
     /** @type {(bootId: number, uptimeNs: bigint) => void} fn 0's heartbeat read off the line (bound by Host) */ this.onHeartbeat = () => {};
@@ -452,8 +453,8 @@ export class Link {
       this.failedTransport = '';            // the fall back confirmed the probe at the boot speed: recovered
       reply = await this.sendOnce(message, { timeoutMs: this.waitMs(expectMs, message) });   // once more at the boot speed (the probe answers a repeat from what it kept)
     }
-    if (this.baseBaud !== null && this.baud !== this.baseBaud && reverts(message, reply)) {
-      await this.setBaud(this.baseBaud);    // the probe went back right after this answer (core §3.5 obligation 6)
+    if (this.baseBaud !== null && this.baud !== this.baseBaud && reverts(message, reply, this.speedFn)) {
+      await this.setBaud(this.baseBaud);    // the probe went back right after this answer (oep-if-link §3 obligation 6)
       if (this.speed) { this.speed.rate = this.baseBaud; this.speed.chosen = null; }
     }
     if (coreCompleted(message, reply) === OP.open) {
@@ -511,7 +512,7 @@ export class Link {
     });
   }
 
-  // ---- the resync of length-prefixed frames (core §5.1) ------------------------------------------------------
+  // ---- the resync of length-prefixed frames (transports §5) ------------------------------------------------------
 
   /** The boundaries are lost: what was gathered is dropped. During the resync's confirm that try fails (the next one
    * reads and discards again); otherwise a resync starts (length-prefixed, not while probing).
@@ -533,7 +534,7 @@ export class Link {
     return run;
   }
 
-  /** core §5.1: read and discard until the input is quiet for RESYNC_QUIET_MS, then a confirm (a read, safe to send)
+  /** transports §5: read and discard until the input is quiet for RESYNC_QUIET_MS, then a confirm (a read, safe to send)
    * whose answer, by its corr, proves the boundaries; RESYNC_TRIES of them. Not quiet in RESYNC_NOISY_MS (pushes keep
    * coming): the host's unsubscribe and end go out once, blind. Then the requests still waiting go once more with
    * the same corr; none back: every one fails with FramingLost. Never rejects. */
@@ -575,7 +576,7 @@ export class Link {
     }
   }
 
-  /** core §5.1: before a resync's confirm, and the first confirm on a length-prefixed port, host_resync_wait_ms (250 ms
+  /** transports §5: before a resync's confirm, and the first confirm on a length-prefixed port, host_resync_wait_ms (250 ms
    * = probe_frame_gap_ms + 50) since this host last wrote there - a frame it left half written is then dropped by the
    * probe's own gap, not completed by the confirm. */
   async settleBeforeConfirm() {
@@ -584,7 +585,7 @@ export class Link {
     if (left > 0) await new Promise((r) => setTimeout(r, left));
   }
 
-  /** The first confirm on a length-prefixed port (core §5.1): read and discard until the input has been quiet for
+  /** The first confirm on a length-prefixed port (transports §5): read and discard until the input has been quiet for
    * RESYNC_QUIET_MS (at most RESYNC_NOISY_MS), and RESYNC_WAIT_MS since this host's last write there. */
   async beforeFirstConfirm() {
     if (this.framing !== 'length') return;
@@ -632,7 +633,7 @@ export class Link {
   async resendPending() {
     /** @type {Uint8Array[]} */ const again = [];
     for (const [corr, p] of [...this.pending]) {
-      if (p.attempt !== 0 || (this.endedBlind && p.message[0] & ROLE_SESSION)) {
+      if (p.attempt !== 0 || (this.endedBlind && sessionOf(p.message))) {
         this.pending.delete(corr);
         p.reject(new FramingLost(p.attempt !== 0 ? `the frame boundaries were lost again (corr ${corr}, already sent twice)`
           : `the resync ended the session blind (corr ${corr} not sent again)`));
@@ -647,7 +648,7 @@ export class Link {
     if (again.length) await this.writeAll(again);
   }
 
-  /** Each message in one write (one frame each, core §3.2), in order. @param {Uint8Array[]} messages */
+  /** Each message in one write (one frame each, transports §2), in order. @param {Uint8Array[]} messages */
   async writeAll(messages) {
     for (const msg of messages) await this.write(this.framed(msg));
   }
@@ -715,12 +716,12 @@ export class Link {
     return this.recovering;
   }
 
-  // ---- port_speed (core §3.5) -------------------------------------------------------------------------------
+  // ---- port_speed (oep-if-link §3) -------------------------------------------------------------------------------
 
   /**
    * The host side of the serial port to `rate`, settled (SWITCH_SETTLE_MS); what was gathered so far dropped. The host
    * switches to the baud it asked for; `fallback` (the probe's answer, the rate it really makes) is set only when the
-   * platform refuses `rate` (core §3.5 obligation 2). Back at the boot speed, the in-flight cap a raised rate had is
+   * platform refuses `rate` (oep-if-link §3 obligation 2). Back at the boot speed, the in-flight cap a raised rate had is
    * gone. -> the rate set.
    * @param {number} rate @param {number | null} [fallback]
    */
@@ -771,7 +772,7 @@ export class Link {
   }
 
   /** At the boot speed again, the probe confirmed there: a confirm every 250 ms up to waitMs (default
-   * port_speed_idle_max_ms + 1 s, core §3.5 obligation 5; a probe still trying waits out its verify_ms, one committed
+   * port_speed_idle_max_ms + 1 s, oep-if-link §3 obligation 5; a probe still trying waits out its verify_ms, one committed
    * reverts at the broken candidates these make - 3 in a row). @param {number} waitMs */
   async backToBase(waitMs = OPEN_RETRY_MS) {
     this.inflightCap = 0;
@@ -782,7 +783,7 @@ export class Link {
 
   /** A serial port just opened: a confirm at the boot speed, retried for OPEN_RETRY_MS (port_speed_idle_max_ms and a
    * second; at least the link's timeout) - a host that raised the speed and died leaves the probe at that rate until its
-   * idle limit runs out (core §3.5 item 6). Rejects with Timeout when none was answered. @param {number} [waitMs] */
+   * idle limit runs out (oep-if-link §3 item 6). Rejects with Timeout when none was answered. @param {number} [waitMs] */
   async waitBootSpeed(waitMs = Math.max(OPEN_RETRY_MS, this.timeoutMs)) {
     if (!(await this.confirmWithin(waitMs, Math.min(this.timeoutMs, OPEN_TRY_MS)))) {
       throw new Timeout(`no answer to confirm at ${this.baud ?? 'the port\'s rate'} for ${(waitMs / 1000).toFixed(1)} s`);
@@ -793,7 +794,7 @@ export class Link {
   raised() { return this.baseBaud !== null && this.baud !== this.baseBaud; }
 
   /** While a raised rate is in force and a session holds the port: a keepalive when the link has been quiet for
-   * `keepaliveMs` (1 s, and under half of the committed idle_ms: core §3.5 obligation 4). The probe goes back to the
+   * `keepaliveMs` (1 s, and under half of the committed idle_ms: oep-if-link §3 obligation 4). The probe goes back to the
    * boot speed after idle_ms (at most 3 s) with no good frame; every request already does this before it goes out, so
    * only a caller that sits idle for long (waiting on a person, a sleep between requests) calls it - often is fine, it
    * sends nothing otherwise. true when one went out. */
@@ -818,7 +819,7 @@ export class Link {
   inUse() { return this.fallback && this.raised(); }
 
   /** The link's own wait for one answer: the link's timeout; raised and in use, at most a quarter of the session's
-   * lease (at least RAISED_WAIT_MIN_MS) - a probe that went back by itself (broken candidates, core §3.5 item 5) hears
+   * lease (at least RAISED_WAIT_MIN_MS) - a probe that went back by itself (broken candidates, oep-if-link §3 item 5) hears
    * nothing at the raised rate, and the fall back (both waits, the confirm at the boot speed, the request again there)
    * must end inside the lease. */
   baseWaitMs() {
@@ -974,14 +975,14 @@ export class Link {
     this.window = [];
     this.falling = (async () => {
       try {
-        if (revert && this.sessionFrame && this.speedPort !== null) {
+        if (revert && this.sessionFrame && this.speedPort !== null && this.speedFn !== null) {
           const payload = new Uint8Array(12);
           payload[0] = this.speedPort;
-          payload[5] = reg.CORE.enum.port_speed_step.revert;
+          payload[5] = reg.LINK.enum.port_speed_step.revert;
           const saved = this.fallback;
           this.fallback = false;
           try {
-            await this.sendOnce(this.sessionFrame(OP.port_speed, payload), { timeoutMs: STEP_DOWN_WAIT_MS, resend: false });
+            await this.sendOnce(this.sessionFrame(reg.LINK.op.port_speed, payload, this.speedFn), { timeoutMs: STEP_DOWN_WAIT_MS, resend: false });
           } catch { /* lost: the probe goes back by itself */ } finally {
             this.fallback = saved;
           }
@@ -1099,18 +1100,27 @@ function shortFrame(frame) {
   return '';
 }
 
-/** The op of a core request whose answer is completed (any outcome); null for anything else.
- * @param {Uint8Array} message @param {Uint8Array} reply */
-function coreCompleted(message, reply) {
-  if (message.length < 6 || reply.length < 4 || reply[3] !== COMPLETED || (message[3] | (message[4] << 8)) !== CORE_FN) return null;
+/** A request's session_id (core §4.1: bytes 6-9 of the header; 0 = no session). @param {Uint8Array} message */
+function sessionOf(message) { return message.length >= REQUEST_HEADER ? getU32(message, 6) : 0; }
+
+/** The op of a request to `fn` whose answer is completed (any outcome); null for anything else.
+ * @param {Uint8Array} message @param {Uint8Array} reply @param {number | null} fn */
+function completed(message, reply, fn = CORE_FN) {
+  if (fn === null || message.length < REQUEST_HEADER || reply.length < 4 || reply[3] !== COMPLETED
+      || (message[3] | (message[4] << 8)) !== fn) return null;
   return message[5];
 }
 
-/** A completed end, or port_speed's revert: the probe is back at its boot speed once this answer is out.
+/** The op of a core request whose answer is completed (any outcome); null for anything else.
  * @param {Uint8Array} message @param {Uint8Array} reply */
-function reverts(message, reply) {
-  const op = coreCompleted(message, reply);
-  if (op === OP.end) return true;
-  const at = 6 + (message[0] & ROLE_SESSION ? 4 : 0) + 5;   // port(u8) baud(u32) step(u8)
-  return op === OP.port_speed && message.length > at && message[at] === reg.CORE.enum.port_speed_step.revert;
+function coreCompleted(message, reply) { return completed(message, reply); }
+
+/** A completed end, or port_speed's revert on oep.link (`speedFn`): the probe is back at its boot speed once this
+ * answer is out (oep-if-link §3 host obligation 6).
+ * @param {Uint8Array} message @param {Uint8Array} reply @param {number | null} speedFn */
+function reverts(message, reply, speedFn) {
+  if (coreCompleted(message, reply) === OP.end) return true;
+  const at = REQUEST_HEADER + 5;   // port(u8) baud(u32) step(u8)
+  return completed(message, reply, speedFn) === reg.LINK.op.port_speed && message.length > at
+    && message[at] === reg.LINK.enum.port_speed_step.revert;
 }
