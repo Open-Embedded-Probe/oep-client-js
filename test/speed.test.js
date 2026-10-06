@@ -29,9 +29,9 @@ const NO_PROBATION = { probationBytes: 0, probationMs: 0 };   // the window alon
 const LINK_FN = 10;               // the fake esp32-v003's oep.probe.link (oep-if-link): port_speed and the link test are its ops
 const PS = reg.PROBE_LINK.op.port_speed, SOURCE = reg.PROBE_LINK.op.source, SINK = reg.PROBE_LINK.op.sink;
 
-/** @param {string[]} args @param {(hst: import('../src/host.js').Host) => Promise<void>} body @param {object} [opts] */
+/** @param {string[]} args  esp32-v003 unless they name a --profile @param {(hst: import('../src/host.js').Host) => Promise<void>} body @param {object} [opts] */
 async function withSpeedFake(args, body, opts = {}) {
-  const fake = await startFake(['--profile', 'esp32-v003', ...args], 'cobs');
+  const fake = await startFake([...(args.includes('--profile') ? [] : ['--profile', 'esp32-v003']), ...args], 'cobs');
   const hst = await openTcp({ port: fake.port, framing: 'cobs', baudRate: 115200, timeoutMs: 1000, ...opts });
   hst.link.waitAddMs = 0;    // as withLine
   try {
@@ -1072,7 +1072,7 @@ test('in use: no step down to a rate above one that failed its verify', { skip: 
 });
 
 test('the probation fails a rate that passes the quick verify and breaks later; the next lower one passes it', { skip: !haveFake },
-  () => withSpeedFake(['--broken-rate', '921600:40:in:after3000'], async (hst) => {
+  () => withSpeedFake(['--profile', 'esp32-v003-64', '--broken-rate', '921600:40:in:after3000'], async (hst) => {   // 64-byte frames: the quick verify stays under 3000 bytes
     const rec = new SpeedRecord(memoryStore());
     const r = await raiseSpeed(hst, [921600, 500000], { flows: [['in', 1]], record: rec, probationBytes: 4096, probationMs: 300, ...FAST });
     const [t] = r.trials;

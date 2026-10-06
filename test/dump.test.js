@@ -86,13 +86,13 @@ test('unknown interfaces are shown raw', () => {
   assert.match(/** @type {string} */ (row.unusable), /0xbd/);
 });
 
-test('the core (fn 0) is described first and never listed; its describe is the probe itself', { skip: !haveFake }, () => withFake('esp32-v003', async (hst) => {
+test('the core (fn 0) is described first and never listed; its describe is the probe itself', { skip: !haveFake }, () => withFake('esp32-v003-64', async (hst) => {
   const caps = await dump.collect(hst);
   assert.ok(caps.offers.every((o) => o.entry.fn !== 0 && o.entry.name !== 'oep.core'));   // core §0, §7.2
   assert.deepEqual([caps.core.entry.fn, caps.core.entry.name], [0, '']);
   assert.equal(caps.revision, 1);
   assert.equal(caps.maxFrame, 64);
-  assert.ok(caps.requests.list > 1);                                // 64-byte frames: the list is paged
+  assert.ok(caps.requests.list > 1);                                // 64-byte frames (esp32-v003-64): the list is paged
   const row = dump.describeOffer(caps.core);
   assert.deepEqual(row.ops, ['confirm', 'list', 'describe', 'clock', 'open', 'end', 'keepalive', 'lock_state']);   // fn 0's ops by name (core §12)
   const d = /** @type {Record<string, string>} */ (row.declares);

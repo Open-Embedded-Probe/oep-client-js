@@ -192,7 +192,7 @@ test('the fake declares max_length = max_frame - 24 rounded to a word; a block p
   // oep-if-debug §4.5: a probe with block ops declares max_length (bytes, a multiple of 4) so that a read_block answer
   // (5 + 2 + 1 + words) and a write_block request (10 + 2 + 4 + 2 + words) both fit its max_frame
   /** @type {[string, number, number][]} */
-  const profiles = [['p4-x035', 1024, 1000], ['esp32-v003', 64, 40]];
+  const profiles = [['p4-x035', 1024, 1000], ['esp32-v003', 512, 488], ['esp32-v003-64', 64, 40]];   // -64: the smallest max_frame
   for (const [profile, maxFrame, declared] of profiles) {
     await withFake(['--profile', profile], async (hst) => {
       const limits = await hst.confirmed();
