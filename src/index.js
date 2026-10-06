@@ -2,7 +2,8 @@
 // oep-client-js: the host side of Open Embedded Probe (OEP) in JavaScript, for browsers and Node.
 //
 // This entry is the core, the part that depends on no environment: the frame and message shapes, the session and
-// the lock, describe, probe.config and the standard interfaces (oep-spec docs/oep-core.ja.md, docs/oep-if-*.ja.md).
+// the lock, describe, probe.config and the interfaces whose names begin with oep. (oep-spec docs/oep-core.ja.md,
+// interfaces/*.ja.md).
 // The ways to reach a probe are separate entries: "oep-client-js/browser" (WebSerial, WebUSB, WebHID) and
 // "oep-client-js/node" (serial ports, USB, TCP). See docs/design.md.
 //
@@ -19,7 +20,7 @@ export { Host } from './host.js';
 export { Link } from './link.js';
 export { raiseSpeed, speedText } from './speed.js';
 export {
-  OepError, ProtocolError, ShortPayload, Rejected, Failed, NotV1, Timeout, TransportFailed, NotUsable, NotRestarted, FramingLost, InUse,
+  OepError, ProtocolError, ShortPayload, Rejected, Failed, NotV1, Timeout, TransportFailed, NotUsable, FnNotUsable, NotRestarted, FramingLost, InUse,
   NotOepProbe, UnitIdMismatch,
   Locked, NoSession,
   Busy, NoConnection, Unsupported, Unavailable,

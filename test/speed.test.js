@@ -26,8 +26,8 @@ import { haveFake, startFake } from './fake.js';
 const FAST = { verifyMs: 900 };   // the probe's try state ends soon: a failed candidate costs under a second
 const UNIT = 'fafe00000003';      // the fake esp32-v003's unit_id
 const NO_PROBATION = { probationBytes: 0, probationMs: 0 };   // the window alone (the probation has its own tests)
-const LINK_FN = 10;               // the fake esp32-v003's oep.link (oep-if-link): port_speed and the link test are its ops
-const PS = reg.LINK.op.port_speed, SOURCE = reg.LINK.op.source, SINK = reg.LINK.op.sink;
+const LINK_FN = 10;               // the fake esp32-v003's oep.probe.link (oep-if-link): port_speed and the link test are its ops
+const PS = reg.PROBE_LINK.op.port_speed, SOURCE = reg.PROBE_LINK.op.source, SINK = reg.PROBE_LINK.op.sink;
 
 /** @param {string[]} args @param {(hst: import('../src/host.js').Host) => Promise<void>} body @param {object} [opts] */
 async function withSpeedFake(args, body, opts = {}) {
@@ -588,7 +588,7 @@ function ps(port, baud, step, verifyMs = 5000, idleMs = 0) {
 const TRY = 0, COMMIT = 1, REVERT = 2;
 /** @param {import('../src/host.js').Host} hst @param {Uint8Array} body */
 const portSpeed = (hst, body) => {
-  hst.link.speedFn = LINK_FN;   // what raiseSpeed records once it finds oep.link: a completed revert there moves the link back
+  hst.link.speedFn = LINK_FN;   // what raiseSpeed records once it finds oep.probe.link: a completed revert there moves the link back
   return hst.call(LINK_FN, PS, body);
 };
 /** @param {unknown} e */
@@ -1008,7 +1008,7 @@ test('the record is a cache: an unreadable or unwritable store is not an error; 
 
 // ---- step downs, the probation, maxTries (host guide §17.3.2 item 4) ----------------------------------------------------
 
-/** In-use traffic: oep.link source answers of `size` bytes until `until()` (at most `limitMs`).
+/** In-use traffic: oep.probe.link source answers of `size` bytes until `until()` (at most `limitMs`).
  * @param {import('../src/host.js').Host} hst @param {() => boolean} until */
 async function move(hst, until, size = 40, limitMs = 3000) {
   const deadline = performance.now() + limitMs;

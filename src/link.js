@@ -31,14 +31,14 @@
 // confirm answer came on the transport, then the latest one's (core §4.4, N-1), the link's own confirms included. The
 // link's own short requests (its confirms, port_speed's procedure) keep their own waits.
 //
-// Frames the probe sends by itself are routed: data pushes and events are kept (`pushes`, `events`), and fn 0's
-// heartbeat also goes to the host (`onHeartbeat`), which watches its boot_id like confirm's (core §6.5, §11.2). A
-// result shorter than 5 bytes, or an event or data frame shorter than its header, is a broken frame; a request role
+// Frames the probe sends by itself are routed: data pushes and events are kept (`pushes`, `events`; fn 0 sends none,
+// core §11.2). A result shorter than 5 bytes, or an event or data frame shorter than its header, is a broken frame; a request role
 // from the probe is dropped (core §2.4, C-36).
 //
 // port_speed (oep-if-link §3 is the handshake, the host guide §17 the procedure; opt-in: speed.js raiseSpeed): on a
 // serial port whose transport can change its rate (`setBaudRate`), the link knows the boot speed (`baseBaud`) and the
-// rate now (`baud`). A completed end or port_speed revert puts the link back at the boot speed at once (obligation 6);
+// rate now (`baud`). A completed end, port_speed revert or restart (on oep.probe.restart's fn, `restartFn`: the probe
+// starts again at its boot speed) puts the link back at the boot speed at once (obligation 6);
 // a request unanswered (its resend too) while the rate is raised takes the link back to the boot speed - the probe
 // went back by itself -, confirms there (up to OPEN_RETRY_MS: port_speed_idle_max_ms + 1 s, obligation 5; none
 // answered = an Error, never back to the raised rate) and goes once more: the link never wedges at a rate the probe
@@ -69,7 +69,7 @@ import * as reg from './registry.js';
 import * as cobs from './cobs.js';
 import { COMPLETED, CORE_FN, OP, REQUEST_HEADER, ROLE_DATA, ROLE_EVENT, ROLE_RESULT, Request, Result, CONFIRM_REQUEST } from './message.js';
 import { FramingLost, Timeout, TransportFailed } from './errors.js';
-import { getU16, getU32, getU64, text } from './bytes.js';
+import { getU16, getU32, text } from './bytes.js';
 import { MAX_REVISION, MIN_REVISION } from './host.js';
 
 /** core §4.4's floor: argument time + this + the transfer time (C-06). */
@@ -94,8 +94,6 @@ export const RESYNC_TRIES = 3;
 const OWN_CONFIRM = Uint8Array.from([...CONFIRM_REQUEST, MIN_REVISION, MAX_REVISION]);
 /** The shortest result, data and event frames (core §4.2, §11.1): shorter ones are broken frames (C-36). */
 const RESULT_HEADER = 5, DATA_HEADER = 5, EVENT_HEADER = 6;
-/** fn 0's heartbeat event (core §11.2): boot_id(u32) uptime_ns(u64). */
-const HEARTBEAT = reg.CORE.event.heartbeat;
 
 /** After a baud change, before the first byte at the new rate (an M5Stack ATOM's FTDI lost it at once, oep-if-link §3). */
 export const SWITCH_SETTLE_MS = 20;
@@ -165,7 +163,7 @@ export class Link {
     this.framing = transport.framing;
     this.timeoutMs = timeoutMs;
     this.maxFrame = maxFrame;
-    this.stats = { retries: 0, noise: 0, corrupt: 0, stale: 0, resyncs: 0, dropped: 0, heartbeats: 0, recoveries: 0 };
+    this.stats = { retries: 0, noise: 0, corrupt: 0, stale: 0, resyncs: 0, dropped: 0, recoveries: 0 };
     /** @type {Uint8Array[]} */ this.events = [];
     /** @type {Uint8Array[]} */ this.pushes = [];
     /** @type {Set<(frame: Uint8Array) => void>} */ this.eventListeners = new Set();
@@ -193,7 +191,8 @@ export class Link {
     /** @type {import('./speedrecord.js').SpeedRecord | null} the record raiseSpeed used, if any */ this.record = null;
     /** @type {[string | null, string] | null} its key: the port's path (null in a browser) and the unit_id */ this.recordKey = null;
     /** @type {number | null} the transport index the raised rate is on (the revert names it) */ this.speedPort = null;
-    /** @type {number | null} the probe's oep.link fn, once raiseSpeed found it (oep-if-link) */ this.speedFn = null;
+    /** @type {number | null} the probe's oep.probe.link fn, once raiseSpeed found it (oep-if-link) */ this.speedFn = null;
+    /** @type {number | null} the probe's oep.probe.restart fn, once the host sent a restart (oep-if-restart) */ this.restartFn = null;
     /** @type {Map<number, string>} rates that broke in use in this session -> why (none at or above again) */ this.unusable = new Map();
     /** @type {Map<number, string>} every rate the line failed in this session (a step down goes below them) */ this.failed = new Map();
     /** @type {Probation | null} raised, in use: the first period at a new rate (host guide §17.3.2 item 4) */ this.probation = null;
@@ -222,7 +221,6 @@ export class Link {
     /** @type {number | null} when this host last wrote to the transport (null: never; transports §5) */ this.lastWrite = null;
     /** @type {number} min_max_frame until a confirm answer, then its max_frame (the wait's transfer time; §4.4, N-1) */
     this.probeMaxFrame = reg.MIN_MAX_FRAME;
-    /** @type {(bootId: number, uptimeNs: bigint) => void} fn 0's heartbeat read off the line (bound by Host) */ this.onHeartbeat = () => {};
     /** @type {(bootId: number) => void} the boot_id of the link's own confirms (resync, recovery; bound by Host) */ this.onBootId = () => {};
     this.failedTransport = '';               // why: a resend went unanswered (core §5.2, C-38); recover before anything else
     /** @type {Promise<void> | null} the recovery under way (new requests wait for it) */ this.recovering = null;
@@ -335,8 +333,8 @@ export class Link {
     }
   }
 
-  /** One frame that decoded: a result to the request waiting for it; events and data pushes kept (fn 0's heartbeat
-   * also to `onHeartbeat`); a request role dropped (core §2.4). A frame shorter than its header is broken (C-36).
+  /** One frame that decoded: a result to the request waiting for it; events and data pushes kept; a request role
+   * dropped (core §2.4). A frame shorter than its header is broken (C-36).
    * @param {Uint8Array} frame */
   deliver(frame) {
     const why = shortFrame(frame);
@@ -361,10 +359,6 @@ export class Link {
       // several outstanding: each one's wait starts again from the answer before it (core §4.4)
       if (!this.resyncing) for (const q of this.pending.values()) { clearTimeout(q.timer); q.arm(); }
     } else if (role === ROLE_EVENT) {
-      if (frame[1] === 0 && frame[2] === 0 && frame[5] === HEARTBEAT && frame.length >= EVENT_HEADER + 12) {
-        this.stats.heartbeats++;
-        this.onHeartbeat(getU32(frame, EVENT_HEADER), getU64(frame, EVENT_HEADER + 4));
-      }
       this.events.push(frame);
       for (const l of this.eventListeners) l(frame);
     } else if (role === ROLE_DATA) {
@@ -453,7 +447,7 @@ export class Link {
       this.failedTransport = '';            // the fall back confirmed the probe at the boot speed: recovered
       reply = await this.sendOnce(message, { timeoutMs: this.waitMs(expectMs, message) });   // once more at the boot speed (the probe answers a repeat from what it kept)
     }
-    if (this.baseBaud !== null && this.baud !== this.baseBaud && reverts(message, reply, this.speedFn)) {
+    if (this.baseBaud !== null && this.baud !== this.baseBaud && reverts(message, reply, this.speedFn, this.restartFn)) {
       await this.setBaud(this.baseBaud);    // the probe went back right after this answer (oep-if-link §3 obligation 6)
       if (this.speed) { this.speed.rate = this.baseBaud; this.speed.chosen = null; }
     }
@@ -978,11 +972,11 @@ export class Link {
         if (revert && this.sessionFrame && this.speedPort !== null && this.speedFn !== null) {
           const payload = new Uint8Array(12);
           payload[0] = this.speedPort;
-          payload[5] = reg.LINK.enum.port_speed_step.revert;
+          payload[5] = reg.PROBE_LINK.enum.port_speed_step.revert;
           const saved = this.fallback;
           this.fallback = false;
           try {
-            await this.sendOnce(this.sessionFrame(reg.LINK.op.port_speed, payload, this.speedFn), { timeoutMs: STEP_DOWN_WAIT_MS, resend: false });
+            await this.sendOnce(this.sessionFrame(reg.PROBE_LINK.op.port_speed, payload, this.speedFn), { timeoutMs: STEP_DOWN_WAIT_MS, resend: false });
           } catch { /* lost: the probe goes back by itself */ } finally {
             this.fallback = saved;
           }
@@ -1115,13 +1109,14 @@ function completed(message, reply, fn = CORE_FN) {
  * @param {Uint8Array} message @param {Uint8Array} reply */
 function coreCompleted(message, reply) { return completed(message, reply); }
 
-/** A completed end or restart (core §6.6: the probe starts again at its boot speed), or port_speed's revert on oep.link
- * (`speedFn`): the probe is back at its boot speed once this answer is out (oep-if-link §3 host obligation 6).
- * @param {Uint8Array} message @param {Uint8Array} reply @param {number | null} speedFn */
-function reverts(message, reply, speedFn) {
-  const op = coreCompleted(message, reply);
-  if (op === OP.end || op === OP.restart) return true;
+/** A completed end, a completed restart on oep.probe.restart (`restartFn`: the probe starts again at its boot speed,
+ * oep-if-restart §2), or port_speed's revert on oep.probe.link (`speedFn`): the probe is back at its boot speed once this
+ * answer is out (oep-if-link §3 host obligation 6).
+ * @param {Uint8Array} message @param {Uint8Array} reply @param {number | null} speedFn @param {number | null} restartFn */
+function reverts(message, reply, speedFn, restartFn = null) {
+  if (coreCompleted(message, reply) === OP.end) return true;
+  if (completed(message, reply, restartFn) === reg.PROBE_RESTART.op.restart) return true;
   const at = REQUEST_HEADER + 5;   // port(u8) baud(u32) step(u8)
-  return completed(message, reply, speedFn) === reg.LINK.op.port_speed && message.length > at
-    && message[at] === reg.LINK.enum.port_speed_step.revert;
+  return completed(message, reply, speedFn) === reg.PROBE_LINK.op.port_speed && message.length > at
+    && message[at] === reg.PROBE_LINK.enum.port_speed_step.revert;
 }

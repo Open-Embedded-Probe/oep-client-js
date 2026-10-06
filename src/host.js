@@ -12,20 +12,22 @@
 // no_session (NoSession) while the lock is free: the host is then out of a session and the caller opens a new one.
 // What lasts is the probe's: its settings, a slot's connection (an attach on a live combination returns it), a console
 // stream per place and mechanism (an open there returns it with its position and marks). `epoch` counts the losses of
-// everything this host's session had: an end, a no_session, a changed boot_id (confirm, open, a heartbeat, the link's
-// own confirms); a reboot also drops the remembered name -> fn mapping and the describes, so they are listed again.
+// everything this host's session had: an end, a no_session, a changed boot_id (confirm, open, the link's own
+// confirms); a reboot also drops the remembered name -> fn mapping and the describes, so they are listed again.
 //
 // A probe whose confirm answer is outside core §7.1's bounds (max_frame under 64, window under max_frame, max_inflight
-// 0; C-20), or whose fn 0 describe declares a max_op_ms outside 1..600000 (core §4.4, §7.5; C-47), is not used:
-// NotUsable is thrown with the values, and nothing more is sent through this host.
+// 0; C-20), whose fn 0 describe declares a max_op_ms outside 1..600000 (core §4.4, §7.5; C-47), or whose fn 0 ops is
+// outside core §7.4's one encoding, is not used: NotUsable is thrown with the values, and nothing more is sent through
+// this host. An fn whose ops is outside it is not used (FnNotUsable), until the probe restarts.
 
 import * as reg from './registry.js';
 import { Writer, text, utf8 } from './bytes.js';
 import * as m from './message.js';
-import { Failed, InUse, Locked, NoSession, NotRestarted, NotUsable, NotV1, OepError, Rejected, Timeout, rejection } from './errors.js';
-import { restartMaxMs } from './core.js';   // core imports host too: used only inside restartProbe
+import { Failed, FnNotUsable, InUse, Locked, NoSession, NotRestarted, NotUsable, NotV1, OepError, Rejected, Timeout, rejection } from './errors.js';
+import { restartFn, restartMaxMs } from './core.js';   // core imports host too: used only inside the restart methods
 
 export const MIN_REVISION = 1, MAX_REVISION = 1;
+const RESTART_OP = reg.PROBE_RESTART.op.restart;
 const OWNER = reg.CORE.tlv.open.owner;
 /** open's owner at most this many bytes (core §6.4). */
 export const OWNER_MAX = reg.LIMITS.owner_max_bytes;
@@ -37,6 +39,12 @@ const CONFIRM_TRANSPORT = reg.CORE.tlv.confirm_answer.transport;
  * 0xFF from a relaying broker; null when the probe sent none).
  * @typedef {{ revision: number, flags: number, maxFrame: number, window: number, maxInflight: number, bootId: number,
  *   transport: number | null, tail: m.Tail }} Limits */
+/**
+ * Host.clock(): fn 0's clock read against this host's clock. hostBeforeMs / hostAfterMs: this host's `performance.now()`
+ * just before the request went and just after the answer came; roundTripMs their difference; uptimeNs the probe's
+ * clock (core §2.6a, ns since its start) read just before it built the answer - somewhere in between, so it matches
+ * the midpoint within half the round trip. bootId: the boot that clock belongs to (core §6.5).
+ * @typedef {{ hostBeforeMs: number, hostAfterMs: number, roundTripMs: number, uptimeNs: bigint, bootId: number }} ProbeClock */
 /**
  * open's answer (core §6.4): the lease the probe gave and its boot_id.
  * @typedef {{ leaseMs: number, bootId: number }} Opened
@@ -65,9 +73,9 @@ export function checkMaxOpMs(value) {
   return '';
 }
 
-/** fn 0's restart: the probe begins its restart at most this long after its answer has left (core §6.6). */
+/** oep.probe.restart: the probe begins its restart at most this long after its answer has left (oep-if-restart §2). */
 export const RESTART_AFTER_ANSWER_MS = reg.LIMITS.restart_after_answer_ms;
-/** restartProbe: the wait for a probe that declares no restart_max_ms (core §7.5). */
+/** restartProbe: the wait for a probe whose oep.probe.restart declares no restart_max_ms (oep-if-restart §1). */
 export const RESTART_WAIT_MS = 10000;
 
 /** @param {number} ms */
@@ -111,12 +119,12 @@ export class Host {
     /** @type {Map<number, [number, Uint8Array][]>} fn -> its describe TLVs (declarations: valid for one boot_id) */ this.describes = new Map();
     /** @type {number | null} */ this.bootId = null;
     /** @type {number | null} the lease the last open gave */ this.leaseMs = null;
-    this.unusable = '';                      // why this probe is not used (C-20, C-47): set, nothing more is sent
-    /** @type {bigint | null} the last heartbeat's uptime_ns (core §11.2, fn 0 kind 0x01) */ this.uptimeNs = null;
+    this.unusable = '';                      // why this probe is not used (C-20, C-47, core §7.4): set, nothing more is sent
+    /** @type {Map<number, string>} fn -> why it is not used (its ops outside core §7.4), until the probe restarts */ this.unusableFns = new Map();
     this.useLink(link);
   }
 
-  /** Bind `link` to this host (its corr source, session, keepalive, heartbeat and boot_id hooks): the constructor's,
+  /** Bind `link` to this host (its corr source, session, keepalive and boot_id hooks): the constructor's,
    * and restartProbe's for a link opened again. @param {import('./link.js').Link} link */
   useLink(link) {
     this.link = link;
@@ -125,7 +133,7 @@ export class Host {
     if (link && 'keepaliveFrame' in link) {   // raised (port_speed): the link keeps the line alive in this session
       link.keepaliveFrame = () => new m.Request(this.nextCorr(), m.CORE_FN, m.OP.keepalive, new Uint8Array(), this.session).pack();
     }
-    if (link && 'sessionFrame' in link) {   // raised: the step down's revert in this session (on oep.link's fn)
+    if (link && 'sessionFrame' in link) {   // raised: the step down's revert in this session (on oep.probe.link's fn)
       link.sessionFrame = (/** @type {number} */ op, /** @type {Uint8Array} */ payload, /** @type {number} */ fn = m.CORE_FN) =>
         new m.Request(this.nextCorr(), fn, op, payload, this.session).pack();
     }
@@ -133,9 +141,6 @@ export class Host {
     if (link && 'sessionId' in link) link.sessionId = () => this.session;
     if (link && 'blind' in link) link.blind = () => this.blindStop();   // the §5.1 resync's stops when pushes keep coming
     if (link && 'confirmBody' in link) link.confirmBody = () => this.confirmBody();   // the link's own confirms: the revision in use (C-15)
-    if (link && 'onHeartbeat' in link) {      // fn 0's heartbeats: the boot_id watched (core §6.5, §11.2)
-      link.onHeartbeat = (/** @type {number} */ bootId, /** @type {bigint} */ uptimeNs) => this.heartbeatSeen(bootId, uptimeNs);
-    }
     if (link && 'onBootId' in link) link.onBootId = (/** @type {number} */ bootId) => this.bootIdSeen(bootId);   // the link's own confirms (resync, recovery)
   }
 
@@ -166,7 +171,7 @@ export class Host {
    * @param {{ locked?: boolean, expectMs?: number, session?: number }} [opts]
    */
   async request(fn, op, payload = new Uint8Array(), { locked = true, expectMs = 0, session: sid } = {}) {
-    this.requireUsable();
+    this.requireUsable(fn);
     const session = sid ?? await this.sessionFor(locked);
     await this.beforeRequest();
     const req = new m.Request(this.nextCorr(), fn, op, payload, session);
@@ -203,15 +208,17 @@ export class Host {
     this.subscriptions.clear();
   }
 
-  /** The probe restarted: the resources, and the fn numbers with them. */
+  /** The probe restarted: the resources, and the fn numbers with them (and what their describes said). */
   lost() {
     this.swept();
     this.fns.clear();
     this.revisions.clear();
     this.describes.clear();
+    this.unusableFns.clear();
+    if (this.link && 'restartFn' in this.link) this.link.restartFn = null;
   }
 
-  /** A boot_id from confirm, an open result, a heartbeat or the link's own confirm: a change means the probe restarted
+  /** A boot_id from confirm, an open result or the link's own confirm: a change means the probe restarted
    * (core §6.5). -> true when it changed. @param {number} bootId */
   bootIdSeen(bootId) {
     const changed = this.bootId !== null && bootId !== this.bootId;
@@ -220,22 +227,25 @@ export class Host {
     return changed;
   }
 
-  /** fn 0's heartbeat event (core §11.2: boot_id, uptime_ns), as the link reads it: the boot_id is watched like
-   * confirm's and open's, the uptime kept (`uptimeNs`). @param {number} bootId @param {bigint} uptimeNs */
-  heartbeatSeen(bootId, uptimeNs) {
-    this.bootIdSeen(bootId);
-    this.uptimeNs = uptimeNs;
-  }
-
-  /** Stop using this probe (C-20, C-47): every later request throws NotUsable with `why`. Throws it now.
-   * @param {string} why @returns {never} */
+  /** Stop using this probe (C-20, C-47, an fn 0 ops outside core §7.4): every later request throws NotUsable with
+   * `why`. Throws it now. @param {string} why @returns {never} */
   notUsable(why) {
     this.unusable = why;
     throw new NotUsable(why);
   }
 
-  requireUsable() {
+  /** Stop using `fn` (its ops outside core §7.4's one encoding): every later request to it throws FnNotUsable with
+   * `why`, until the probe restarts. Throws it now. @param {number} fn @param {string} why @returns {never} */
+  fnNotUsable(fn, why) {
+    this.unusableFns.set(fn, why);
+    throw new FnNotUsable(fn, why);
+  }
+
+  /** Throws NotUsable when the probe is not used, FnNotUsable when `fn` is not. @param {number} [fn] */
+  requireUsable(fn) {
     if (this.unusable) throw new NotUsable(this.unusable);
+    const why = fn === undefined ? undefined : this.unusableFns.get(fn);
+    if (why !== undefined) throw new FnNotUsable(/** @type {number} */ (fn), why);
   }
 
   /**
@@ -245,6 +255,7 @@ export class Host {
    */
   async pipeline(requests, { locked = true, expectMs = 0 } = {}) {
     this.requireUsable();
+    for (const [fn] of requests) this.requireUsable(fn);
     const session = await this.sessionFor(locked);
     await this.beforeRequest();
     const reqs = requests.map(([fn, op, payload]) => new m.Request(this.nextCorr(), fn, op, payload, session));
@@ -317,6 +328,28 @@ export class Host {
 
   /** confirm()'s answer, asked once per host. */
   async confirmed() { return this.limits ?? this.confirm(); }
+
+  /**
+   * The probe's clock against this host's: fn 0's clock (lock-free, session_id 0; core §12) timed -> { hostBeforeMs,
+   * hostAfterMs, roundTripMs, uptimeNs, bootId } (ProbeClock). The probe read uptimeNs just before it built the answer,
+   * so it matches this host's time (hostBeforeMs + hostAfterMs) / 2 within roundTripMs / 2 - how a mark's or a segment's
+   * time (the probe's clock) is put on this host's. Comparable only within one boot_id (watched like confirm's: a
+   * change is a restart, core §6.5). Any time, in a session too: it touches no session, lock or lease.
+   * @returns {Promise<ProbeClock>}
+   */
+  async clock() {
+    await this.requireV1();
+    await this.beforeRequest();             // a raised link's keepalive first: it would land inside the round trip
+    const hostBeforeMs = performance.now();
+    const r = await this.request(m.CORE_FN, m.OP.clock, new Uint8Array(), { locked: false });
+    const hostAfterMs = performance.now();
+    if (!r.succeeded) throw new Failed(r);
+    const rd = new m.Reader(r.payload);
+    const bootId = rd.u32(), uptimeNs = rd.u64();
+    rd.tail();
+    this.bootIdSeen(bootId);
+    return { hostBeforeMs, hostAfterMs, roundTripMs: hostAfterMs - hostBeforeMs, uptimeNs, bootId };
+  }
 
   async requireV1() {
     if (this.revision === null) {
@@ -397,28 +430,37 @@ export class Host {
     }
   }
 
-  // ---- restart (core §6.6) ---------------------------------------------------------------------------------
+  // ---- restart (oep.probe.restart, oep-if-restart) ---------------------------------------------------------
 
-  /** fn 0's restart, the request alone (core §6.6): sent in this session (the op needs the lock: without a session it
-   * goes with session_id 0 and is refused session_required); completed success = the probe restarts once the answer is
-   * out. A probe without it in fn 0's ops answers unknown_operation (Rejected). Afterwards nothing of this session lasts:
-   * the session, its resources, the fn numbers. restartProbe also waits for the probe and confirms its new boot_id. */
+  /** The fn of the probe's oep.probe.restart (OepError when it lists none: the interface is optional), told to the link
+   * too: a completed restart puts a raised port_speed back at the boot speed (oep-if-link §3 host obligation 6). */
+  async restartTarget() {
+    const fn = await restartFn(this);
+    if (this.link && 'restartFn' in this.link) this.link.restartFn = fn;
+    return fn;
+  }
+
+  /** oep.probe.restart's restart, the request alone (oep-if-restart §2): sent in this session (the op needs the lock:
+   * without a session it goes with session_id 0 and is refused session_required); completed success = the probe
+   * restarts once the answer is out. A probe that lists no oep.probe.restart: OepError, nothing sent. Afterwards nothing
+   * of this session lasts: the session, its resources, the fn numbers. restartProbe also waits for the probe and
+   * confirms its new boot_id. */
   async requestRestart() {
-    await this.call(m.CORE_FN, m.OP.restart);
+    await this.call(await this.restartTarget(), RESTART_OP);
     this.session = null;
     this.lost();
   }
 
   /**
-   * Restart the probe and wait until it is back (core §6.6, host guide §5.2) -> its new boot_id. The session must hold
+   * Restart the probe and wait until it is back (oep-if-restart §3) -> its new boot_id. The session must hold
    * the lock. After the answer nothing more goes out. `reopen` (optional): opens the transport again and gives a new
    * Link, started (a serial port at its boot speed, a USB device found again once it has re-enumerated, a TCP
    * connection made again); the old link is then closed, RESTART_AFTER_ANSWER_MS waited, and reopen + confirm retried
    * until `waitMs`. Without it the link stays (a transport the restart leaves open: a UART bridge, a broker, the fake
-   * over TCP): the host waits and confirms again until `waitMs`. `waitMs` undefined: the probe's restart_max_ms (fn 0
-   * describe, core §7.5, read before the restart), or RESTART_WAIT_MS (10 s) when it declares none (a probe that does
-   * not conform); a confirm sent before then is waited for as core §4.4 says, and none answered by then means the probe
-   * is gone (the last error is thrown, core §6.6). When the answer is lost, the same: a resend the
+   * over TCP): the host waits and confirms again until `waitMs`. `waitMs` undefined: the probe's restart_max_ms
+   * (oep.probe.restart's describe, oep-if-restart §1, read before the restart), or RESTART_WAIT_MS (10 s) when it
+   * declares none (a probe that does not conform); a confirm sent before then is waited for as core §4.4 says, and none
+   * answered by then means the probe is gone (the last error is thrown, oep-if-restart §3). When the answer is lost, the same: a resend the
    * restarted probe refused no_session counts as the restart having happened. The confirm's boot_id must differ from
    * the one before (NotRestarted otherwise); everything this host remembered of the old boot is dropped (core §6.5).
    * @param {{ reopen?: () => Promise<import('./link.js').Link>, waitMs?: number }} [opts]
@@ -427,10 +469,11 @@ export class Host {
   async restartProbe({ reopen, waitMs } = {}) {
     await this.requireV1();
     const before = this.bootId ?? (await this.confirm()).bootId;
+    const fn = await this.restartTarget();
     if (waitMs === undefined) waitMs = (await restartMaxMs(this)) ?? RESTART_WAIT_MS;
     const epoch = this.epoch;
     try {
-      await this.call(m.CORE_FN, m.OP.restart);
+      await this.call(fn, RESTART_OP);
     } catch (e) {
       // the resend reached the new boot (no_session), no answer came (Timeout), or the transport went away with the
       // restart (a plain Error from the link): the confirm below tells. Any other refusal is the answer.
@@ -466,18 +509,19 @@ export class Host {
 
   // ---- notifications (§11) ---------------------------------------------------------------------------------
 
-  /** Events and data pushes from `fn` (fn 0: heartbeats `boot_id uptime_ns` every maxDelayMs, 0 = 1000 ms). Send when
-   * minBytes are ready or maxDelayMs (u32) after the first byte (0, 0: as soon as there is anything). Ends with the
-   * lock; an fn that emits nothing is rejected Unsupported (core §11.3).
+  /** Events and data pushes from `fn`: its own subscribe (op 0x30, core §11.3; the request names no target fn).
+   * Data goes when minBytes (u16) are ready or maxDelayMs (u32) after the first byte (0, 0: as soon as there is
+   * anything); events go at once and do not count. Replaces fn's last subscription; ends with the lock. An fn that sends
+   * no notifications has no subscribe in its ops and answers unknown_operation (Rejected); fn 0 sends none.
    * @param {number} fn @param {number} minBytes @param {number} maxDelayMs */
   async subscribe(fn, minBytes = 0, maxDelayMs = 0) {
-    await this.call(m.CORE_FN, m.OP.subscribe, new Writer().u16(fn).u16(minBytes).u32(maxDelayMs).done());
+    await this.call(fn, m.OP_SUBSCRIBE, new Writer().u16(minBytes).u32(maxDelayMs).done());
     this.subscriptions.add(fn);
   }
 
-  /** @param {number} fn */
+  /** fn's own unsubscribe (op 0x32, core §11.3): success when fn had no subscription. @param {number} fn */
   async unsubscribe(fn) {
-    await this.call(m.CORE_FN, m.OP.unsubscribe, new Writer().u16(fn).done());
+    await this.call(fn, m.OP_UNSUBSCRIBE);
     this.subscriptions.delete(fn);
   }
 
@@ -486,7 +530,7 @@ export class Host {
   blindStop() {
     if (this.session === null || !this.revision) return [];
     const out = [...this.subscriptions].sort((a, b) => a - b).map((fn) =>
-      new m.Request(this.nextCorr(), m.CORE_FN, m.OP.unsubscribe, new Writer().u16(fn).done(), this.session).pack());
+      new m.Request(this.nextCorr(), fn, m.OP_UNSUBSCRIBE, new Uint8Array(), this.session).pack());
     out.push(new m.Request(this.nextCorr(), m.CORE_FN, m.OP.end, new Uint8Array(), this.session).pack());
     this.subscriptions.clear();
     this.session = null;                     // the blind end ends it: nothing of it lasts (core §9)

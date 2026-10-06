@@ -34,10 +34,16 @@ export class TransportFailed extends Timeout {
   /** @param {string} message @param {{ broken?: boolean, recovery?: boolean }} [opts] */
   constructor(message, { broken = false, recovery = false } = {}) { super(message); this.broken = broken; this.recovery = recovery; }
 }
-/** The probe declared values a conforming probe never does (core §7.1 confirm's bounds, C-20; §7.5 max_op_ms, C-47):
- * this host sends nothing more to it. The message reports the values. */
+/** The probe declared values a conforming probe never does (core §7.1 confirm's bounds, C-20; §7.5 max_op_ms, C-47;
+ * §7.4 an fn 0 ops outside its one encoding): this host sends nothing more to it. The message reports the values. */
 export class NotUsable extends OepError {}
-/** Host.restartProbe (core §6.6): after the restart the probe confirmed the boot_id it had before - the restart did not
+/** One fn's describe carries an ops value outside core §7.4's one encoding: this host sends nothing more to that fn
+ * (until the probe restarts); the rest of the probe stays usable. `fn`: the fn. */
+export class FnNotUsable extends OepError {
+  /** @param {number} fn @param {string} message */
+  constructor(fn, message) { super(message); this.fn = fn; }
+}
+/** Host.restartProbe (oep-if-restart): after the restart the probe confirmed the boot_id it had before - the restart did not
  * happen as far as this host can tell (a probe whose boot_id source repeated is told apart by nothing else). */
 export class NotRestarted extends OepError {}
 /** A length-prefixed link lost its frame boundaries (transports §5) and could not find them again, or a request

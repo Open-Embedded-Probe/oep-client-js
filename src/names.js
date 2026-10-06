@@ -5,7 +5,8 @@
 // starting or ending with '-', at least two labels - 1 to 64 bytes (core §7.2, §13 rule 1). The first label says which
 // kind of namespace it is:
 //
-//   oep.                      the OEP standard (reserved; `oep` is not a real top-level domain)
+//   oep.                      the project's own interfaces (the reserved short prefix in place of a reverse-DNS name,
+//                             core §13 rule 1; `oep` is not a real top-level domain) - otherwise like any interface
 //   local.                    bench-only experiments, never published, no interoperability promise
 //   uuid.<32 hex>.            an author with no domain who still wants a unique namespace
 //   <tld>.<domain>...         reverse DNS of a domain the author owns, including hosting domains such as
@@ -21,11 +22,11 @@ const UUID = /^[0-9a-f]{32}$/;
 /** A name that breaks a rule; the message says which. */
 export class InvalidName extends Error {}
 
-/** 'standard', 'local', 'uuid' or 'domain' - after validate().
- * @param {string} name @returns {'standard' | 'local' | 'uuid' | 'domain'} */
+/** 'oep', 'local', 'uuid' or 'domain' - after validate().
+ * @param {string} name @returns {'oep' | 'local' | 'uuid' | 'domain'} */
 export function kind(name) {
   const first = name.split('.', 1)[0];
-  return first === 'oep' ? 'standard' : first === 'local' ? 'local' : first === 'uuid' ? 'uuid' : 'domain';
+  return first === 'oep' ? 'oep' : first === 'local' ? 'local' : first === 'uuid' ? 'uuid' : 'domain';
 }
 
 /** @param {string} s */

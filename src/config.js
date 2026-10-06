@@ -1,5 +1,5 @@
 // @ts-check
-// oep.probe.config revision 1 (oep-spec docs/oep-if-probe-config.ja.md): the probe's settings - plan, labels, idle
+// oep.probe.config revision 1 (oep-spec interfaces/oep-if-probe-config.ja.md): the probe's settings - plan, labels, idle
 // pins, slots, binds, fixture UART settings, disabled channels - read and set as items, removed with unset, saved when the host says so,
 // and the live slot / bind / storage state as its own lock-free operation (describe is declarations only, core §7.3).
 //
@@ -73,7 +73,7 @@ export class Plan {
   value() { return new Writer().u16(this.fn).u8(this.role).u16(this.channel).done(); }
 }
 
-/** A channel's name given by the settings (the firmware's fixed labels are oep.core's describe). */
+/** A channel's name given by the settings (the firmware's fixed labels are fn 0's describe). */
 export class Label {
   static TAG = ITEM.label;
   /** @param {{ channel: number, text: string }} o */

@@ -1,30 +1,34 @@
 // @ts-check
-// fn 0's restart (oep-spec core §6.6, op 0x14, optional) against oep-client-python's fake: the op answers completed
-// success with no payload and the probe restarts after it (no_session for the old session, a new boot_id in confirm);
-// session_id 0 is refused session_required; a probe without it in fn 0's ops answers unknown_operation;
-// Host.restartProbe waits and confirms the new boot_id, on the link it has or on one opened again.
+// oep.probe.restart's restart (oep-spec interfaces/oep-if-restart, op 0x01; the interface is optional) against
+// oep-client-python's fake: the op answers completed success with no payload and the probe restarts after it
+// (no_session for the old session, a new boot_id in confirm); session_id 0 is refused session_required; a probe that
+// lists no oep.probe.restart gets nothing sent; Host.restartProbe waits and confirms the new boot_id, on the link it has
+// or on one opened again; restart_max_ms is the interface's describe 0x40.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as reg from '../src/registry.js';
 import * as m from '../src/message.js';
 import * as core from '../src/core.js';
-import { NoSession, Rejected } from '../src/errors.js';
+import { NoSession, OepError, Rejected } from '../src/errors.js';
 import { RESTART_AFTER_ANSWER_MS, RESTART_WAIT_MS } from '../src/host.js';
 import { Link } from '../src/link.js';
 import { openTcp, tcpTransport } from '../src/node/index.js';
 import { haveFake, startFake } from './fake.js';
 
 const skip = haveFake ? false : 'needs oep-client-python (the fake probe)';
-const RESTART = reg.CORE.op.restart;
+const RESTART = reg.PROBE_RESTART.op.restart;
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** @param {unknown} e */
 const reason = (e) => (e instanceof Rejected ? e.result.detail : null);
 
-test('the registry: restart is fn 0 op 0x14, needs the lock, restart_after_answer_ms 100', () => {
-  assert.equal(RESTART, 0x14);
-  assert.equal(m.OP.restart, 0x14);
-  assert.ok(!reg.CORE.lock_free.has(RESTART));
+test('the registry: restart is oep.probe.restart op 0x01, needs the lock, restart_after_answer_ms 100; fn 0 has none', () => {
+  assert.equal(core.RESTART_NAME, 'oep.probe.restart');
+  assert.equal(RESTART, 0x01);
+  assert.equal(core.RESTART, 0x01);
+  assert.ok(!/** @type {Set<number>} */ (reg.PROBE_RESTART.lock_free).has(RESTART));
+  assert.equal(reg.PROBE_RESTART.tlv.describe.restart_max_ms, 0x40);
+  assert.ok(!('restart' in m.OP) && !('restart_max_ms' in reg.CORE.tlv.describe));   // the core keeps only what is mandatory
   assert.equal(RESTART_AFTER_ANSWER_MS, 100);
 });
 
@@ -32,11 +36,13 @@ test('restart: the answer, then no_session for the old session and a new boot_id
   const fake = await startFake(['--profile', 'p4-x035']);
   const hst = await openTcp({ port: fake.port });
   try {
-    assert.ok(await core.offers(hst, 0, RESTART));
+    const fn = await core.restartFn(hst);
+    assert.notEqual(fn, m.CORE_FN);
+    assert.ok(await core.offers(hst, fn, RESTART));
     const before = /** @type {number} */ (hst.bootId);
     await hst.open(3000);
     const sid = hst.session;
-    const r = await hst.call(m.CORE_FN, RESTART);                      // completed success, no payload
+    const r = await hst.call(fn, RESTART);                             // completed success, no payload
     assert.equal(r.payload.length, 0);
     await sleep(RESTART_AFTER_ANSWER_MS);
     hst.session = sid;                                                 // the old session's id once more
@@ -62,14 +68,18 @@ test('restart without a session: session_required', { skip }, async () => {
   }
 });
 
-test('a probe without restart in its ops: unknown_operation', { skip }, async () => {
+test('a probe without oep.probe.restart: nothing is sent', { skip }, async () => {
   const fake = await startFake(['--profile', 'p4-x035', '--no-restart']);
   const hst = await openTcp({ port: fake.port });
   try {
-    assert.equal(await core.offers(hst, 0, RESTART), false);
+    assert.equal(await core.findOptional(hst, core.RESTART_NAME), null);
     await hst.open(3000);
-    await assert.rejects(hst.requestRestart(), (e) => e instanceof Rejected && e.constructor === Rejected
-      && e.result.detail === m.REJECT.unknown_operation);
+    const send = hst.link.send.bind(hst.link);
+    /** @type {Uint8Array[]} */ const sent = [];
+    hst.link.send = (b, o) => { sent.push(b); return send(b, o); };
+    await assert.rejects(hst.requestRestart(), (e) => e instanceof OepError && !(e instanceof Rejected) && /oep\.probe\.restart/.test(e.message));
+    assert.ok(sent.every((b) => m.Request.unpack(b).fn === m.CORE_FN));   // only list asked
+    await hst.keepalive();                                             // the session goes on
   } finally {
     await hst.link.close();
     fake.stop();
@@ -119,12 +129,14 @@ test('restartProbe with reopen: the link closed, a new one opened and confirmed'
   }
 });
 
-test('restart_max_ms: fn 0 describe declares it with restart (2000 on the fake), not without', { skip }, async () => {
+test('restart_max_ms: oep.probe.restart\'s describe declares it (2000 on the fake); none without the interface', { skip }, async () => {
   let fake = await startFake(['--profile', 'p4-x035']);
   let hst = await openTcp({ port: fake.port });
   try {
     assert.equal(await core.restartMaxMs(hst), 2000);
-    assert.equal((await core.probeInfo(hst)).restartMaxMs, 2000);
+    const tlvs = await core.describe(hst, await core.restartFn(hst));
+    assert.ok(tlvs.some(([tag]) => (tag & 0x7f) === reg.PROBE_RESTART.tlv.describe.restart_max_ms));
+    assert.ok(!(await core.describe(hst, 0)).some(([tag]) => (tag & 0x7f) === 0x4f));   // not fn 0's any more
     assert.ok(2000 >= reg.LIMITS.restart_after_answer_ms);
   } finally {
     await hst.link.close();
@@ -134,7 +146,6 @@ test('restart_max_ms: fn 0 describe declares it with restart (2000 on the fake),
   hst = await openTcp({ port: fake.port });
   try {
     assert.equal(await core.restartMaxMs(hst), null);
-    assert.equal((await core.probeInfo(hst)).restartMaxMs, null);
   } finally {
     await hst.link.close();
     fake.stop();
@@ -162,9 +173,9 @@ test('restartProbe without a declared restart_max_ms falls back to RESTART_WAIT_
   const hst = await openTcp({ port: fake.port });
   try {
     assert.equal(RESTART_WAIT_MS, 10000);
-    const D = reg.CORE.tlv.describe;
-    const tlvs = await core.describe(hst, 0);
-    hst.describes.set(0, tlvs.filter(([tag]) => (tag & 0x7f) !== D.restart_max_ms));   // as from a probe that lacks it
+    const fn = await core.restartFn(hst);
+    const tlvs = await core.describe(hst, fn);
+    hst.describes.set(fn, tlvs.filter(([tag]) => (tag & 0x7f) !== reg.PROBE_RESTART.tlv.describe.restart_max_ms));   // as from a probe that lacks it
     assert.equal(await core.restartMaxMs(hst), null);
     const before = /** @type {number} */ (hst.bootId);
     await hst.open(3000);

@@ -27,7 +27,7 @@ async function withFake(profile, body, framing = 'length') {
 // ---- names ------------------------------------------------------------------------------------------------------
 
 test('valid names', () => {
-  for (const n of ['oep.core', 'oep.fixture.i2c-target', 'io.github.ch32-riscv-ug.p4.i2c-target', 'local.bench.thing',
+  for (const n of ['oep.probe.plan', 'oep.fixture.i2c-target', 'io.github.ch32-riscv-ug.p4.i2c-target', 'local.bench.thing',
     'uuid.0123456789abcdef0123456789abcdef.tool', 'jp.example.probe', `oep.${'a'.repeat(60)}`]) assert.equal(names.validate(n), n);
 });
 
@@ -46,7 +46,7 @@ test('hosting names are linted, not rejected', () => {
   assert.match(names.lint('com.github.ch32-riscv-ug.ch32rv')[0], /io\.github/);
   assert.deepEqual(names.lint('io.github.ch32-riscv-ug.ch32rv'), []);
   assert.equal(names.kind('io.github.ch32-riscv-ug.ch32rv'), 'domain');
-  assert.equal(names.kind('oep.target.flash'), 'standard');
+  assert.equal(names.kind('oep.target.flash'), 'oep');
   assert.equal(names.kind('local.x'), 'local');
 });
 
@@ -86,19 +86,25 @@ test('unknown interfaces are shown raw', () => {
   assert.match(/** @type {string} */ (row.unusable), /0xbd/);
 });
 
-test('oep.core is the first entry and describes the probe itself', { skip: !haveFake }, () => withFake('esp32-v003', async (hst) => {
+test('the core (fn 0) is described first and never listed; its describe is the probe itself', { skip: !haveFake }, () => withFake('esp32-v003', async (hst) => {
   const caps = await dump.collect(hst);
-  const first = caps.offers[0].entry;
-  assert.deepEqual([first.fn, first.name, first.revision], [0, 'oep.core', 1]);
+  assert.ok(caps.offers.every((o) => o.entry.fn !== 0 && o.entry.name !== 'oep.core'));   // core §0, §7.2
+  assert.deepEqual([caps.core.entry.fn, caps.core.entry.name], [0, '']);
   assert.equal(caps.revision, 1);
   assert.equal(caps.maxFrame, 64);
   assert.ok(caps.requests.list > 1);                                // 64-byte frames: the list is paged
-  const d = /** @type {Record<string, string>} */ (dump.describeOffer(caps.offers[0]).declares);
+  const row = dump.describeOffer(caps.core);
+  assert.deepEqual(row.ops, ['confirm', 'list', 'describe', 'clock', 'open', 'end', 'keepalive', 'lock_state']);   // fn 0's ops by name (core §12)
+  const d = /** @type {Record<string, string>} */ (row.declares);
   assert.equal(d['unit id'], 'fafe00000003');
   assert.equal(d.transport, '0 = UART bridge');
   assert.ok(d.label.includes('16 = SWIO') && d.label.includes('23 = NRST'));   // repeated tags all kept
   const cfg = dump.describeOffer(/** @type {dump.Offer} */ (caps.offers.find((o) => o.entry.name === 'oep.probe.config'))).declares;
   assert.deepEqual(cfg && [cfg.slots, cfg['bind modes']], ['1', 'last-reset, manual']);
+  const text = dump.toText(caps);
+  assert.match(text, /\ncore {9}fn 0 {3}\(no name; the probe itself\)\n {16}ops: confirm, list, describe, clock, open, end, keepalive, lock_state\n/);
+  assert.ok(!text.includes('oep.core'));
+  assert.deepEqual(dump.toData(caps).core.declares?.['unit id'], 'fafe00000003');
 }, 'cobs'));
 
 test('filters', { skip: !haveFake }, () => withFake('esp32-v003', async (hst) => {
@@ -114,10 +120,12 @@ test('filters', { skip: !haveFake }, () => withFake('esp32-v003', async (hst) =>
 test('p4 follows the agreed names; text and JSON', { skip: !haveFake }, () => withFake('p4-x035', async (hst) => {
   const caps = await dump.collect(hst);
   const byName = new Map(caps.offers.map((o) => [o.entry.name, o]));
-  assert.equal(caps.offers.length, 14);                             // oep.link the last (oep-if-link)
+  assert.equal(caps.offers.length, 15);                             // fn 0 not among them; oep.probe.plan / restart / link listed
   assert.equal(caps.requests.list, 1);
-  assert.equal(caps.requests.describe, 14);
-  assert.deepEqual(byName.get('oep.link')?.description.ops, new Set([1, 2]));   // source, sink: no UART bridge here
+  assert.equal(caps.requests.describe, 16);                         // fn 0 and every listed fn
+  assert.deepEqual(byName.get('oep.probe.link')?.description.ops, new Set([1, 2]));   // source, sink: no UART bridge here
+  assert.deepEqual(byName.get('oep.probe.plan')?.description.ops, new Set([1, 2]));   // plan_apply, plan_release (oep-if-plan)
+  assert.deepEqual(byName.get('oep.probe.restart')?.description.ops, new Set([1]));   // restart (oep-if-restart)
   assert.ok(caps.offers.every((o) => o.description.ops !== null));             // every fn carries ops (core §7.4)
   assert.deepEqual(new Set(['oep.wire.rvswd', 'oep.target.riscv-dm', 'oep.target.console'].map((n) => byName.get(n)?.entry.instance)), new Set([0]));
   assert.deepEqual(byName.get('oep.wire.rvswd')?.description.groups.get(1), [[1, 2], [2, 54]]);
@@ -125,7 +133,7 @@ test('p4 follows the agreed names; text and JSON', { skip: !haveFake }, () => wi
   assert.deepEqual(i2c.description.roles.get(1), i2c.description.roles.get(2));
   assert.ok(!i2c.description.roles.get(1)?.includes(2));           // reserved for RVSWD
   const text = dump.toText(caps);
-  assert.match(text, /^OEP revision 1, max frame 1024 bytes; 14 interfaces in 1 list and 14 describe requests\n/);
+  assert.match(text, /^OEP revision 1, max frame 1024 bytes; 15 interfaces in 1 list and 16 describe requests\n/);
   assert.ok(text.includes('instance 0') && text.includes('oep.fixture.i2c-target'));
   assert.ok(text.includes('features: preloaded tx') && !text.includes('clock stretching'));   // stretch: an op (ops)
   assert.ok(text.includes('ops: configure, arm_rx, read_rx, preload_tx, status, reset, stretch'));
@@ -133,18 +141,21 @@ test('p4 follows the agreed names; text and JSON', { skip: !haveFake }, () => wi
   assert.ok(text.includes('unit id: fafe00000035') && text.includes('chip: esp32p4 v1.0'));
   assert.ok(text.includes('oep.fixture.analog  rev 1\n'));          // known now: the capture mode is shown (P2-★6)
   assert.ok(text.includes('mode: one-shot, answers while capturing, max 65536 samples x 1 segments'));
+  assert.ok(text.includes('restart max ms: 2000') && text.includes('ops: plan_apply, plan_release'));
   assert.ok(!text.includes('MISSING'));                             // the fake gives what core §1.2 requires
   assert.deepEqual(caps.missing, []);
   const data = JSON.parse(dump.toJson(caps));
   assert.equal(data.maxFrame, 1024);
-  assert.equal(data.interfaces.length, 14);
-  assert.equal(data.interfaces[1].roles, undefined);                // rvswd declares a fixed pin set, not roles
-  assert.deepEqual(data.interfaces[1].pinGroups['1'], { SWDIO: 2, SWCLK: 54 });
+  assert.equal(data.interfaces.length, 15);
+  const rvswd = data.interfaces.find((/** @type {any} */ i) => i.name === 'oep.wire.rvswd');
+  assert.equal(rvswd.roles, undefined);                             // rvswd declares a fixed pin set, not roles
+  assert.deepEqual(rvswd.pinGroups['1'], { SWDIO: 2, SWCLK: 54 });
+  assert.equal(data.core.fn, 0);
 }));
 
 test('a board whose wire takes any pins', { skip: !haveFake }, () => withFake('rp2350-pins', async (hst) => {
   const caps = await dump.collect(hst);
-  const wire = dump.describeOffer(caps.offers[1]);
+  const wire = dump.describeOffer(/** @type {dump.Offer} */ (caps.offers.find((o) => o.entry.name === 'oep.wire.rvswd')));
   assert.equal(wire.name, 'oep.wire.rvswd');
   assert.deepEqual(wire.roles, { SWDIO: '0-18,20-29', SWCLK: '0-18,20-29', reset: '0-18,20-29' });
   assert.ok(!caps.offers.some((o) => o.entry.name === 'oep.probe.config'));

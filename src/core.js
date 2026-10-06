@@ -1,6 +1,8 @@
 // @ts-check
-// The probe's core (fn 0) as the other clients need it: finding interfaces by name, describe, the probe's labels and
-// transports, the pin plan, taking the lock - and `Interface`, the base every interface client shares.
+// The probe's core (fn 0, no name: never in list, core §0) as the other clients need it: finding interfaces by name,
+// describe (with the ops check of core §7.4), the probe's labels and transports, taking the lock; the small probe
+// interfaces found by name - oep.probe.plan (the pin plan), oep.probe.restart (its restart_max_ms), oep.probe.link (the
+// link test) - and `Interface`, the base every interface client shares.
 
 import * as reg from './registry.js';
 import { Writer, getU16, getU32 } from './bytes.js';
@@ -9,7 +11,6 @@ import * as m from './message.js';
 import { OepError, rejection } from './errors.js';
 import { checkMaxOpMs } from './host.js';
 
-const TAG_ROLE_ASSIGNMENT = reg.CORE.tlv.plan_apply.role_assignment;   // the number 0x10; always sent critical (0x90, core §8)
 const D = reg.CORE.tlv.describe;
 export const TRANSPORT_KIND = reg.CORE.enum.transport_kind;
 export const SERIAL_KINDS = new Set([TRANSPORT_KIND.uart_bridge, TRANSPORT_KIND.usb_cdc, TRANSPORT_KIND.usb_serial_jtag]);
@@ -35,7 +36,18 @@ export async function listEntries(hst, name = '', exact = false) {
 /** @param {import('./host.js').Host} hst @param {string} name */
 export async function findAll(hst, name) { return (await listEntries(hst, name, true)).map((e) => e.fn); }
 
-/** fn of the first interface with exactly this name (cached until the probe reboots).
+/** fn of the first interface with exactly this name, or null when the probe lists none (cached until the probe reboots).
+ * @param {import('./host.js').Host} hst @param {string} name @returns {Promise<number | null>} */
+export async function findOptional(hst, name) {
+  const fn = hst.fns.get(name);
+  if (fn !== undefined) return fn;
+  const fns = await findAll(hst, name);
+  if (!fns.length) return null;
+  hst.fns.set(name, fns[0]);
+  return fns[0];
+}
+
+/** fn of the first interface with exactly this name (cached until the probe reboots); throws when the probe lists none.
  * @param {import('./host.js').Host} hst @param {string} name */
 export async function find(hst, name) {
   let fn = hst.fns.get(name);
@@ -57,7 +69,9 @@ export async function revision(hst, name, fn) {
 }
 
 /** Every describe TLV of `fn` (0: the probe itself), paged. Declarations only (core §7.3): cached on the host while
- * the probe's boot_id stays the same. fn 0's max_op_ms outside 1..600000 makes the probe NotUsable (C-47).
+ * the probe's boot_id stays the same. fn 0's max_op_ms outside 1..600000 makes the probe NotUsable (C-47). An ops value
+ * outside core §7.4's one encoding (`catalog.checkOps`) makes that fn unusable (FnNotUsable, thrown here and by every
+ * later request to it) - fn 0's, the probe (NotUsable).
  * @param {import('./host.js').Host} hst @param {number} fn @returns {Promise<[number, Uint8Array][]>} */
 export async function describe(hst, fn = 0) {
   const cached = hst.describes.get(fn);
@@ -75,6 +89,12 @@ export async function describe(hst, fn = 0) {
     const v = out.find(([tag, value]) => (tag & 0x7f) === D.max_op_ms && value.length >= 4)?.[1];
     const why = v ? checkMaxOpMs(getU32(v)) : '';
     if (why) hst.notUsable(why);           // not conforming: not used (core §4.4, §7.5, C-47)
+  }
+  for (const [tag, value] of out) {
+    const why = (tag & 0x7f) === m.TAG_OPS ? catalog.checkOps(value) : '';
+    if (!why) continue;
+    if (fn === m.CORE_FN) hst.notUsable(`describe of fn 0: ${why} (core §7.4), so the probe is not used`);
+    hst.fnNotUsable(fn, `describe of fn ${fn}: ${why} (core §7.4), so that fn is not used`);
   }
   hst.describes.set(fn, out);
   return [...out];
@@ -113,7 +133,7 @@ export async function require(hst, fn, op) {
   if (!(await offers(hst, fn, op))) throw notOffered();
 }
 
-/** The longest one request may take on this probe (oep.core describe max_op_ms, core §7.5): the ceiling of run's
+/** The longest one request may take on this probe (fn 0 describe max_op_ms, core §7.5): the ceiling of run's
  * timeout_ms, a dmi list's waits, an attach's hold_ms. A probe that declares none (not v1-complete) is taken as the
  * reference firmware's 10000 ms.
  * @param {import('./host.js').Host} hst */
@@ -122,16 +142,18 @@ export async function maxOpMs(hst) {
   return reg.REFERENCE.max_op_ms;
 }
 
-/** The longest the probe takes from restart's answer until it answers confirm again on the same transport (oep.core
- * describe restart_max_ms, core §6.6, §7.5; required when restart is in fn 0's ops). null: not declared (a probe
- * without restart, or one that does not conform).
+/** The longest the probe takes from restart's answer until it answers confirm again on the same transport
+ * (oep.probe.restart describe restart_max_ms, oep-if-restart §1; required there). null: the probe lists no
+ * oep.probe.restart, or its describe declares none (a probe that does not conform).
  * @param {import('./host.js').Host} hst @returns {Promise<number | null>} */
 export async function restartMaxMs(hst) {
-  for (const [tag, v] of await describe(hst, 0)) if ((tag & 0x7f) === D.restart_max_ms && v.length >= 4) return getU32(v);
+  const fn = await findOptional(hst, RESTART_NAME);
+  if (fn === null) return null;
+  for (const [tag, v] of await describe(hst, fn)) if ((tag & 0x7f) === RESTART_MAX_MS && v.length >= 4) return getU32(v);
   return null;
 }
 
-/** The firmware's fixed channel labels from oep.core's describe (tag 0x46) as [channel, text], in describe order -
+/** The firmware's fixed channel labels from fn 0's describe (tag 0x46) as [channel, text], in describe order -
  * every one, two channels with the same text included (probe.config §1.3 step (c) finds none then). Text shown as core
  * §2.1 says (`m.shown`). @param {import('./host.js').Host} hst @returns {Promise<[number, string][]>} */
 export async function firmwareLabels(hst) {
@@ -140,10 +162,10 @@ export async function firmwareLabels(hst) {
 }
 
 /**
- * oep.core's describe decoded (core §7.5). Text values are shown as core §2.1 says (control characters replaced). labels: the firmware's fixed channel labels (0x46); the labels the settings
+ * fn 0's describe decoded (core §7.5). Text values are shown as core §2.1 says (control characters replaced). labels: the firmware's fixed channel labels (0x46); the labels the settings
  * gave are read from oep.probe.config (config.ProbeConfig.items(), Label). discoverable: the probe also enumerates with the
- * project's USB VID:PID (transports §3, core §7.5). maxOpMs: the longest one request may take. restartMaxMs: the longest
- * from restart's answer until confirm is answered again (core §6.6; null without restart).
+ * project's USB VID:PID (transports §3, core §7.5). maxOpMs: the longest one request may take. ops: fn 0's ops (core
+ * §7.4; null: none declared). plan_roles and restart_max_ms are their interfaces' (`planRoles`, `restartMaxMs`).
  * @param {import('./host.js').Host} hst
  */
 export async function probeInfo(hst) {
@@ -153,8 +175,7 @@ export async function probeInfo(hst) {
     profile: /** @type {string | null} */ (null), channels: 0,
     /** @type {number[]} */ reserved: [], /** @type {Map<string, number>} */ labels: new Map(),
     /** @type {{ index: number, kind: number, usbInterface: number }[]} */ transports: [],
-    discoverable: false, planRoles: /** @type {number | null} */ (null), maxOpMs: /** @type {number | null} */ (null),
-    restartMaxMs: /** @type {number | null} */ (null),
+    discoverable: false, maxOpMs: /** @type {number | null} */ (null), ops: /** @type {Set<number> | null} */ (null),
     /** @type {[number, Uint8Array][]} */ other: [],
   };
   for (const [tag, v] of await describe(hst, 0)) {
@@ -169,9 +190,8 @@ export async function probeInfo(hst) {
     else if (t === D.label && v.length >= 2) info.labels.set(m.shown(v.slice(2)), getU16(v));
     else if (t === D.transport && v.length >= 2) info.transports.push({ index: v[0], kind: v[1], usbInterface: v.length > 2 ? v[2] : 0xff });
     else if (t === D.discoverable) info.discoverable = v[0] === 1;
-    else if (t === D.plan_roles && v.length >= 4) info.planRoles = getU32(v);
     else if (t === D.max_op_ms && v.length >= 4) info.maxOpMs = getU32(v);
-    else if (t === D.restart_max_ms && v.length >= 4) info.restartMaxMs = getU32(v);
+    else if (t === m.TAG_OPS) info.ops = new Set([...(info.ops ?? []), ...catalog.unpackOps(v)]);
     else info.other.push([tag, v]);
   }
   return info;
@@ -186,21 +206,55 @@ export async function take(hst, leaseMs = 3000, { owner, waitMs = 5000, force = 
   return hst.take(leaseMs, { owner, onlyWayIn: only, waitMs, force });
 }
 
-/** (fn, role, channel) assignments: those fns get these plans, every other fn keeps its own (core §8).
- * @param {import('./host.js').Host} hst @param {[number, number, number][]} assignments */
-export async function planApply(hst, assignments) {
+// ---- oep.probe.plan (oep-if-plan): which channel each role of an interface uses ---------------------------------------
+export const PLAN_NAME = reg.PROBE_PLAN.name;
+export const PLAN_APPLY = reg.PROBE_PLAN.op.plan_apply, PLAN_RELEASE = reg.PROBE_PLAN.op.plan_release;
+const TAG_ROLE_ASSIGNMENT = reg.PROBE_PLAN.tlv.plan_apply.role_assignment;   // 0x10; always sent critical (0x90, oep-if-plan §2.1)
+const PLAN_ROLES = reg.PROBE_PLAN.tlv.describe.plan_roles;
+
+/** The fn of the probe's oep.probe.plan (throws when it lists none: a probe whose interfaces have no plan role).
+ * @param {import('./host.js').Host} hst */
+export function planFn(hst) { return find(hst, PLAN_NAME); }
+
+/** plan_apply's request: one role_assignment TLV, sent critical, per (fn, role, channel) (oep-if-plan §2.1).
+ * @param {[number, number, number][]} assignments */
+export function planApplyRequest(assignments) {
   const w = new Writer();
   for (const [fn, role, ch] of assignments) w.raw(m.tlv(TAG_ROLE_ASSIGNMENT, new Writer().u16(fn).u8(role).u16(ch).done(), true));
-  await hst.call(m.CORE_FN, m.OP.plan_apply, w.done());
+  return w.done();
 }
 
-/** Release the plan of these fns (none: every fn).
+/** (fn, role, channel) assignments: those fns get these plans atomically, every other fn keeps its own (oep-if-plan §2.1),
+ * on the probe's oep.probe.plan. @param {import('./host.js').Host} hst @param {[number, number, number][]} assignments */
+export async function planApply(hst, assignments) {
+  await hst.call(await planFn(hst), PLAN_APPLY, planApplyRequest(assignments));
+}
+
+/** Release the plan of these fns (none: every fn; oep-if-plan §2.2), on the probe's oep.probe.plan.
  * @param {import('./host.js').Host} hst @param {number[]} fns */
 export async function planRelease(hst, fns = []) {
   const w = new Writer().u8(fns.length);
   for (const f of fns) w.u16(f);
-  await hst.call(m.CORE_FN, m.OP.plan_release, w.done());
+  await hst.call(await planFn(hst), PLAN_RELEASE, w.done());
 }
+
+/** The most role assignments the plan holds at once, every fn together (oep.probe.plan describe plan_roles, oep-if-plan
+ * §1). null: no oep.probe.plan, or no limit declared. @param {import('./host.js').Host} hst @returns {Promise<number | null>} */
+export async function planRoles(hst) {
+  const fn = await findOptional(hst, PLAN_NAME);
+  if (fn === null) return null;
+  for (const [tag, v] of await describe(hst, fn)) if ((tag & 0x7f) === PLAN_ROLES && v.length >= 4) return getU32(v);
+  return null;
+}
+
+// ---- oep.probe.restart (oep-if-restart): the probe restarts itself, an optional interface ----------------------------
+export const RESTART_NAME = reg.PROBE_RESTART.name;
+export const RESTART = reg.PROBE_RESTART.op.restart;
+const RESTART_MAX_MS = reg.PROBE_RESTART.tlv.describe.restart_max_ms;
+
+/** The fn of the probe's oep.probe.restart (throws when it lists none: restart is optional).
+ * @param {import('./host.js').Host} hst */
+export function restartFn(hst) { return find(hst, RESTART_NAME); }
 
 /**
  * One interface client: its fn (found by name), its revision checked against the list, and calls that throw unless
@@ -255,9 +309,9 @@ export class Interface {
   offers(op) { return offers(this.host, this.fn, op); }
 }
 
-// ---- oep.link (oep-if-link): the link test and port_speed, an optional interface ------------------------------------
-export const LINK_NAME = reg.LINK.name;
-export const LINK_SOURCE = reg.LINK.op.source, LINK_SINK = reg.LINK.op.sink, LINK_PORT_SPEED = reg.LINK.op.port_speed;
+// ---- oep.probe.link (oep-if-link): the link test and port_speed, an optional interface ------------------------------
+export const LINK_NAME = reg.PROBE_LINK.name;
+export const LINK_SOURCE = reg.PROBE_LINK.op.source, LINK_SINK = reg.PROBE_LINK.op.sink, LINK_PORT_SPEED = reg.PROBE_LINK.op.port_speed;
 /** source's len is at most max_frame minus this (oep-if-link §2: header 5, len 2, the ignored room 19). */
 export const LINK_SOURCE_OVERHEAD = reg.LIMITS.link_source_overhead_bytes;
 
@@ -265,7 +319,7 @@ export const LINK_SOURCE_OVERHEAD = reg.LIMITS.link_source_overhead_bytes;
  * @param {number} maxFrame */
 export function linkSize(maxFrame) { return Math.max(1, maxFrame - LINK_SOURCE_OVERHEAD); }
 
-/** The fn of the probe's oep.link (throws when the probe offers none - the link test and port_speed are optional).
+/** The fn of the probe's oep.probe.link (throws when the probe offers none - the link test and port_speed are optional).
  * @param {import('./host.js').Host} hst */
 export function linkFn(hst) { return find(hst, LINK_NAME); }
 

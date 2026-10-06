@@ -33,8 +33,13 @@ export const TAG_FIXED = reg.TAG_RESERVED_ZERO;
 /** Every fn's describe: base(u8) bitmap - the ops it offers (core §1.2, §7.4). */
 export const TAG_OPS = reg.DESCRIBE_COMMON.ops;
 
+/** fn 0: the core (no name, never in list, core §0). */
 export const CORE_FN = 0;
+/** fn 0's ops (core §12): confirm, list, describe, open, end, keepalive, lock_state. */
 export const OP = reg.CORE.op;
+/** subscribe / unsubscribe: reserved at these numbers in every interface's op space, ops of the interface that sends the
+ * notifications (core §11.3); fn 0 sends none. */
+export const OP_SUBSCRIBE = reg.OP_SUBSCRIBE, OP_UNSUBSCRIBE = reg.OP_UNSUBSCRIBE;
 export const CONFIRM_REQUEST = utf8(reg.CONFIRM_REQUEST_MAGIC);
 export const CONFIRM_RESULT = utf8(reg.CONFIRM_RESULT_MAGIC);
 

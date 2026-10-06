@@ -187,7 +187,7 @@ test('pushes that never stop are stopped blind with unsubscribe and end; the ses
   const respond = t.respond;
   t.respond = (req) => {
     if (req.op === m.OP.end) noisy = false;                    // the lock ends, the subscription with it
-    if (req.fn === 5) return [result(50)];                     // a stray result starts the resync
+    if (req.fn === 5 && req.op === 0x01) return [result(50)];  // a stray result starts the resync
     return respond(req);
   };
   try {
@@ -196,10 +196,11 @@ test('pushes that never stop are stopped blind with unsubscribe and end; the ses
     clearInterval(noise);
   }
   // a loaded machine may stall the noise timer past the 50 ms quiet: a confirm may then go before the blind stops
-  assert.deepEqual(ops(sent).slice(1).filter((op) => op !== m.OP.confirm), [m.OP.unsubscribe, m.OP.end]);
+  const stops = sent.slice(1).filter((r) => !(r.fn === 0 && r.op === m.OP.confirm));
+  assert.deepEqual(stops.map((r) => [r.fn, r.op, r.payload.length]), [[5, m.OP_UNSUBSCRIBE, 0], [0, m.OP.end, 0]]);   // fn 5's own unsubscribe (core §11.3)
   assert.equal(ops(sent).at(-1), m.OP.confirm);                  // the resync's confirm after the stops
-  assert.equal(sent.filter((r) => r.fn === 5).length, 1);        // the session request is not sent again
-  assert.ok(sent.filter((r) => r.op === m.OP.unsubscribe || r.op === m.OP.end).every((r) => r.session === 0xabcd));
+  assert.equal(sent.filter((r) => r.fn === 5 && r.op === 0x01).length, 1);   // the session request is not sent again
+  assert.ok(stops.every((r) => r.session === 0xabcd));
   assert.equal(hst.subscriptions.size, 0);
   assert.equal(link.endedBlind, true);
 });

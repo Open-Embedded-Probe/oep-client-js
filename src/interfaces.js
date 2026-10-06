@@ -58,17 +58,22 @@ const known = (summary, { roles = {}, features = {}, tags = {} } = {}) => ({ sum
 /** @type {Record<number, string>} */
 const LOGIC_LINES = Object.fromEntries(Array.from({ length: 8 }, (_, k) => [k, `line${k}`]));
 
-/** Names from oep-spec docs/capability-name-hierarchy.ja.md (provisional, 2026-09-24).
+/** fn 0, the core (no name, never in list; core §0, §12): its describe is the probe itself (core §7.5). */
+export const CORE_KNOWN = known(
+  'confirm, list, describe, open / end / keepalive, lock state; describe = the probe itself',
+  { tags: { 0x40: ['firmware', asText], 0x41: ['model', asText], 0x42: ['unit id', asText],
+    0x43: ['channels', u16], 0x44: ['reserved', channels], 0x45: ['profile', asText],
+    0x46: ['label', label], 0x47: ['resets on open', () => 'yes'],
+    0x49: ['transport', transport], 0x4a: ['discoverable', (v) => (v[0] === 1 ? 'yes' : 'no')],
+    0x4c: ['chip', asText], 0x4d: ['max op ms', u32] } });
+
+/** The interfaces whose names begin with oep. (interfaces/README.ja.md).
  * @type {Record<string, Known>} */
 export const KNOWN = {
-  'oep.core': known(
-    'confirm, list, describe, open / end / keepalive, lock state, status, cancel; describe = the probe itself',
-    { tags: { 0x40: ['firmware', asText], 0x41: ['model', asText], 0x42: ['unit id', asText],
-      0x43: ['channels', u16], 0x44: ['reserved', channels], 0x45: ['profile', asText],
-      0x46: ['label', label], 0x47: ['resets on open', () => 'yes'],
-      0x49: ['transport', transport], 0x4a: ['discoverable', (v) => (v[0] === 1 ? 'yes' : 'no')],
-      0x4b: ['plan roles', u32], 0x4c: ['chip', asText], 0x4d: ['max op ms', u32] } }),
-  'oep.link': known('the link test (source, sink) and, when its ops offer it, port_speed on a UART bridge'),
+  'oep.probe.plan': known('which channel each plan role of an interface uses (plan_apply, plan_release)',
+    { tags: { 0x40: ['plan roles', u32] } }),
+  'oep.probe.restart': known('the probe restarts itself (restart)', { tags: { 0x40: ['restart max ms', u32] } }),
+  'oep.probe.link': known('the link test (source, sink) and, when its ops offer it, port_speed on a UART bridge'),
   'oep.wire.rvswd': known('scan, attach, detach over RVSWD (attach returns a connection)',
     { roles: { 1: 'SWDIO', 2: 'SWCLK', 3: 'reset' }, features: { 0: 'attach writes unbounded' }, tags: { 0x40: ['max connections', first] } }),
   'oep.wire.swio': known('scan, attach, detach over SWIO, one wire (attach returns a connection)',
@@ -88,10 +93,10 @@ export const KNOWN = {
   'oep.fixture.gpio': known('drive and read probe pins', { roles: { 1: 'line' }, tags: { 0x40: ['modes', bits32] } }),
   'oep.fixture.uart': known('a UART (USART, asynchronous) on probe pins', { roles: { 1: 'RX', 2: 'TX' },
     tags: { 0x40: ['formats', (v) => Array.from(v.slice(1, 1 + v[0]), (b) => `0x${b.toString(16).padStart(2, '0')}`).join(', ')] } }),
-  'oep.fixture.logic': known('sampled logic capture', { roles: LOGIC_LINES, features: { 2: 'notify' }, tags: { 0x40: ['mode', captureMode] } }),
+  'oep.fixture.logic': known('sampled logic capture', { roles: LOGIC_LINES, tags: { 0x40: ['mode', captureMode] } }),
   'oep.fixture.analog': known('sampled analog capture',
-    { roles: Object.fromEntries(Array.from({ length: 8 }, (_, k) => [k, `ch${k}`])), features: { 2: 'notify' }, tags: { 0x40: ['mode', captureMode] } }),
-  'oep.fixture.capture-group': known('captures started and stopped together', { features: { 2: 'notify' } }),
+    { roles: Object.fromEntries(Array.from({ length: 8 }, (_, k) => [k, `ch${k}`])), tags: { 0x40: ['mode', captureMode] } }),
+  'oep.fixture.capture-group': known('captures started and stopped together'),
   'oep.fixture.i2c-target': known('an I2C target the DUT can address (open-drain only, fixture §3)',
     { roles: { 1: 'SDA', 2: 'SCL' }, features: { 0: 'preloaded tx', 2: 'internal pull-ups' },
       tags: { 0x40: ['queue depth', first], 0x41: ['max stretch us', u32], 0x42: ['pull-ups ohms', u32] } }),
@@ -100,10 +105,10 @@ export const KNOWN = {
       tags: { 0x40: ['queue depth', first], 0x43: ['CS setup ns', (v) => `${u32(v)} (SCK sooner after CS: the first bit is not sure)`] } }),
 };
 
-/** The ops of an ops tag by the registry's names for interface `name` (an op it does not name: 0x.. hex).
- * @param {string} name @param {Iterable<number>} ops */
+/** The ops of an ops tag by the registry's names for interface `name` ('': fn 0, the core) - an op it does not name:
+ * 0x.. hex. @param {string} name @param {Iterable<number>} ops */
 export function opNames(name, ops) {
-  const table = /** @type {Record<string, number>} */ (/** @type {any} */ (reg.INTERFACES)[name]?.op ?? {});
+  const table = /** @type {Record<string, number>} */ (name === '' ? reg.CORE.op : /** @type {any} */ (reg.INTERFACES)[name]?.op ?? {});
   const known = Object.fromEntries(Object.entries(table).map(([k, v]) => [v, k]));
   return [...ops].sort((a, b) => a - b).map((op) => known[op] ?? `0x${op.toString(16).padStart(2, '0')}`);
 }

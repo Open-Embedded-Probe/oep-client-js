@@ -1,5 +1,5 @@
 // @ts-check
-// oep.fixture.logic / oep.fixture.analog / oep.fixture.capture-group revision 1 (oep-spec docs/oep-if-capture.ja.md:
+// oep.fixture.logic / oep.fixture.analog / oep.fixture.capture-group revision 1 (oep-spec interfaces/oep-if-capture.ja.md:
 // §1 layouts, §2 segments, §3 operations, §3.8 calibration, §4 groups). Numbers from `registry`.
 //
 // Times are the probe's one clock (ns since its boot, comparable within one boot_id, u64: BigInt): estimates with an

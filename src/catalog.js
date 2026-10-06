@@ -2,13 +2,15 @@
 // Capability discovery by name (oep-core §7.2-§7.4).
 //
 //   list request : flags(u8: bit0 exact) first(u16) prefix_len(u8) prefix
-//   list result  : total(u16) count(u8) count x entry [TLV]               oep.core (fn 0) is the first entry
+//   list result  : total(u16) count(u8) count x entry [TLV]               fn 0 (the core) has no name and is never listed
 //   list entry   : fn(u16) instance(u16) revision(u8) flags(u8) name_len(u8) name
 //   describe     : request fn(u16) first(u16); result more(u8) then TLVs (tag u8, len u16, value; tag bit 7 =
 //                  critical). A describe is declarations only (core §7.3): the host caches it while the probe's
 //                  boot_id stays the same.
 //   ops          : the common describe tag 0x09 every fn carries, base(u8) bitmap: bit i set = op base + i is offered
-//                  (core §1.2, §7.4) - the one declaration of an fn's ops, the optional ones included
+//                  (core §1.2, §7.4) - the one declaration of an fn's ops, the optional ones included. One encoding per
+//                  set: 2-33 bytes, base + 8 x bitmap bytes <= 256, bit 0 set, the last byte non-zero (`checkOps`); a
+//                  host does not use an fn whose ops breaks this, nor the probe when it is fn 0's
 //   channel_group: group(u8) n(u8) then n x (role(u8), channel(u16)): a fixed pin set (core §7.4)
 
 import * as reg from './registry.js';
@@ -46,11 +48,12 @@ export function unpackListResult(payload) {
 /** @param {number} fn @param {number} first */
 export function packDescribeRequest(fn, first) { return new Writer().u16(fn).u16(first).done(); }
 
-/** The ops tag's value (core §7.4): base = the lowest op, then the bitmap, as short as it can be; no op: base 0 alone.
+/** The ops tag's value (core §7.4): base = the lowest op, then the bitmap, as short as it can be - the one encoding of
+ * the set. An empty set has none (RangeError).
  * @param {Iterable<number>} ops */
 export function packOps(ops) {
   const list = [...new Set(ops)].sort((a, b) => a - b);
-  if (!list.length) return new Uint8Array([0]);
+  if (!list.length) throw new RangeError('an ops value declares at least one op (core §7.4)');
   if (list[0] < 0 || list[list.length - 1] > 0xff) throw new RangeError('an op is u8');
   const base = list[0];
   const out = new Uint8Array(2 + Math.floor((list[list.length - 1] - base) / 8));
@@ -59,7 +62,22 @@ export function packOps(ops) {
   return out;
 }
 
-/** The ops an ops value declares (bit i of the bitmap = op base + i; bits past 0xFF mean nothing).
+/** ops values are 2 to this many bytes: base(u8) and a 1-32 byte bitmap (core §7.4). */
+export const OPS_MAX_BYTES = 33;
+
+/** Whether an ops value is the one encoding core §7.4 allows: 2-33 bytes, base + 8 x bitmap bytes <= 256 (no bit past op
+ * 0xFF), bit 0 set (base is the lowest op), the last byte non-zero. -> '' or why not.
+ * @param {Uint8Array} v */
+export function checkOps(v) {
+  if (v.length < 2 || v.length > OPS_MAX_BYTES) return `ops is ${v.length} bytes (2 to ${OPS_MAX_BYTES})`;
+  if (v[0] + 8 * (v.length - 1) > 0x100) return `ops base 0x${v[0].toString(16)} with ${v.length - 1} bitmap bytes goes past op 0xff`;
+  if (!(v[1] & 0x01)) return 'ops bit 0 is clear (base is not the lowest op)';
+  if (v[v.length - 1] === 0) return 'ops ends with a zero byte';
+  return '';
+}
+
+/** The ops an ops value declares (bit i of the bitmap = op base + i; bits past 0xFF mean nothing). Reads any value;
+ * `checkOps` says whether it may be used.
  * @param {Uint8Array} v @returns {Set<number>} */
 export function unpackOps(v) {
   const out = new Set();
@@ -111,6 +129,8 @@ export function channelsToBitmap(channels) {
  * @property {number | null} features
  * @property {number | null} implementation
  * @property {Set<number> | null} ops
+ * @property {string} opsInvalid                    why an ops value breaks core §7.4's encoding ('' when none does): the
+ *                                                  host does not use that fn (fn 0: the probe)
  * @property {[number, Uint8Array][]} specific      tags 0x40 and up
  * @property {number[]} unknownCritical
  */
@@ -119,7 +139,7 @@ export function channelsToBitmap(channels) {
 export function decodeDescription(tlvs) {
   /** @type {Description} */
   const d = { roles: new Map(), groups: new Map(), maxClockHz: null, minClockHz: null, maxLength: null, features: null,
-    implementation: null, ops: null, specific: [], unknownCritical: [] };
+    implementation: null, ops: null, opsInvalid: '', specific: [], unknownCritical: [] };
   for (const [tag, v] of tlvs) {
     const t = tag & ~CRITICAL;
     if (t === COMMON.role_channels) {
@@ -133,7 +153,10 @@ export function decodeDescription(tlvs) {
     else if (t === COMMON.max_length) d.maxLength = getU16(v);
     else if (t === COMMON.features) d.features = getU32(v);
     else if (t === COMMON.implementation) d.implementation = v[0];
-    else if (t === COMMON.ops) d.ops = new Set([...(d.ops ?? []), ...unpackOps(v)]);
+    else if (t === COMMON.ops) {
+      d.ops = new Set([...(d.ops ?? []), ...unpackOps(v)]);
+      d.opsInvalid ||= checkOps(v);
+    }
     else if (t >= INTERFACE_TAG_FIRST) d.specific.push([tag, v]);
     else if (tag & CRITICAL) d.unknownCritical.push(tag);
   }

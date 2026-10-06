@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as cobs from '../src/cobs.js';
 import { Writer, utf8 } from '../src/bytes.js';
-import { describe, find, listEntries, maxOpMs, notOffered, offers, ops, probeInfo } from '../src/core.js';
-import { NoSession, Rejected, Unsupported } from '../src/errors.js';
+import { PLAN_APPLY, PLAN_NAME, PLAN_RELEASE, describe, find, listEntries, maxOpMs, notOffered, offers, ops, probeInfo } from '../src/core.js';
+import { NoSession, Rejected } from '../src/errors.js';
 import * as m from '../src/message.js';
 import * as reg from '../src/registry.js';
 import { openTcp } from '../src/node/index.js';
@@ -29,7 +29,7 @@ for (const framing of /** @type {const} */ (['length', 'cobs'])) {
     try {
       assert.equal(hst.revision, 1);
       const entries = await listEntries(hst);
-      assert.equal(entries[0].name, 'oep.core');
+      assert.ok(entries.every((e) => e.fn !== m.CORE_FN && e.name !== 'oep.core'));   // the core has no name: never listed (core §7.2)
       assert.ok(entries.some((e) => e.name === 'oep.fixture.logic'));
       assert.equal(await find(hst, 'oep.wire.rvswd'), 1);
       const info = await probeInfo(hst);
@@ -41,12 +41,21 @@ for (const framing of /** @type {const} */ (['length', 'cobs'])) {
       assert.equal(hst.describes.size, 1);                                // describe is cached (declarations only)
       assert.equal(hst.bootId, hst.limits?.bootId);                       // confirm tells the boot_id (core §7.1)
       const fn0 = /** @type {Set<number>} */ (await ops(hst, 0));         // the ops tag (core §1.2, §7.4)
-      assert.ok(fn0.has(m.OP.open) && fn0.has(m.OP.plan_apply) && fn0.has(m.OP.restart) && !fn0.has(0x15));   // restart: optional, offered (§6.6)
+      assert.deepEqual([...fn0].sort((a, b) => a - b), Object.values(m.OP).sort((a, b) => a - b));   // fn 0: the mandatory ops only (core §12)
+      assert.deepEqual(info.ops, fn0);
       assert.equal(await offers(hst, 0, 0x50), false);
+      const plan = await find(hst, PLAN_NAME);                           // plan_apply / plan_release on oep.probe.plan (oep-if-plan)
+      assert.ok((await offers(hst, plan, PLAN_APPLY)) && (await offers(hst, plan, PLAN_RELEASE)));
+      const t = await hst.clock();                                       // fn 0's clock against this host's (core §12)
+      assert.ok(t.uptimeNs > 0n && t.hostAfterMs >= t.hostBeforeMs && t.roundTripMs === t.hostAfterMs - t.hostBeforeMs);
+      assert.equal(t.bootId, hst.bootId);
+      assert.ok((await hst.clock()).uptimeNs > t.uptimeNs);              // the clock goes on
       const opened = await hst.open(3000, { owner: 'js test' });
       assert.deepEqual(Object.keys(opened).sort(), ['bootId', 'leaseMs']);   // no resumed (core §6.4)
       assert.equal(opened.bootId, hst.bootId);
       assert.deepEqual((await hst.lockState()).owner, 'js test');
+      assert.equal(typeof (await hst.clock()).uptimeNs, 'bigint');      // clock in the session: session_id 0, touches nothing
+      await hst.keepalive();
       const r = await hst.pipelineCalls(Array.from({ length: 8 }, () => [0, 0x13, new Uint8Array()]), { locked: false });
       assert.equal(r.length, 8);
       await hst.end();
@@ -133,23 +142,28 @@ test('a lapsed lease is no_session, never resumed: the host opens anew (core §6
   }
 });
 
-test('subscribe: max_delay_ms is u32, fn 0 heartbeats boot_id uptime_ns, an fn that emits nothing is unsupported', { skip: !haveFake }, async () => {
+test('subscribe is the emitting fn\'s own op 0x30 (min_bytes u16, max_delay_ms u32, no target fn); unsubscribe 0x32; gpio has neither', { skip: !haveFake }, async () => {
   const fake = await startFake();
   const hst = await openTcp({ port: fake.port });
   try {
     await hst.open(3000);
+    const logic = await find(hst, 'oep.fixture.logic');
+    assert.ok((await offers(hst, logic, m.OP_SUBSCRIBE)) && (await offers(hst, logic, m.OP_UNSUBSCRIBE)));
     const send = hst.link.send.bind(hst.link);
     /** @type {Uint8Array[]} */ const sent = [];
-    hst.link.send = (b) => { sent.push(b); return send(b); };
-    await hst.subscribe(0, 0, 100);
-    assert.deepEqual([...m.Request.unpack(sent[0]).payload], [0, 0, 0, 0, 100, 0, 0, 0]);
-    const hb = await hst.link.nextEvent((f) => f[1] === 0 && f[2] === 0 && f[5] === reg.CORE.event.heartbeat, 2000);
-    assert.ok(hb);
-    const rd = new m.Reader(hb.slice(6));
-    assert.equal(rd.u32(), hst.bootId);
-    assert.ok(rd.u64() > 0n);                                                                 // uptime_ns (u64)
-    await assert.rejects(hst.subscribe(await find(hst, 'oep.fixture.gpio')), Unsupported);
-    await hst.unsubscribe(5);                                                                 // nothing subscribed: ok
+    hst.link.send = (b, o) => { sent.push(b); return send(b, o); };
+    await hst.subscribe(logic, 1024, 100);
+    const sub = m.Request.unpack(sent[0]);
+    assert.deepEqual([sub.fn, sub.op, [...sub.payload]], [logic, 0x30, [0x00, 0x04, 100, 0, 0, 0]]);
+    assert.ok(hst.subscriptions.has(logic));
+    await hst.unsubscribe(logic);
+    const unsub = m.Request.unpack(sent[1]);
+    assert.deepEqual([unsub.fn, unsub.op, unsub.payload.length], [logic, 0x32, 0]);
+    await hst.unsubscribe(logic);                                                             // nothing subscribed: ok
+    const gpio = await find(hst, 'oep.fixture.gpio');
+    assert.equal(await offers(hst, gpio, m.OP_SUBSCRIBE), false);                             // sends no notifications
+    await assert.rejects(hst.subscribe(gpio), (e) => e instanceof Rejected && e.result.detail === m.REJECT.unknown_operation);
+    await assert.rejects(hst.subscribe(0), (e) => e instanceof Rejected && e.result.detail === m.REJECT.unknown_operation);   // fn 0 sends none
     await hst.end();
   } finally {
     await hst.link.close();

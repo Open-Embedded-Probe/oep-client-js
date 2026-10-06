@@ -5,7 +5,8 @@
 // requests as this host builds them, the answers as it reads them), probe.config's canonical form and hash (config.js), the refusals as the host
 // reads them, the session scenarios (sessions.json: the requests open / keepalive / end / lock_state send and the
 // answers as the host reads them) and the per-op vectors (ops.json: where this client has the op, its request byte for
-// byte and its reading of the answer). Where a vector and this code disagree, the spec's text decides (core §0 rule 4) and the vector is the
+// byte and its reading of the answer), and the ops encoding (ops_encoding.json: catalog.checkOps / unpackOps / packOps, and
+// what the host does with an ops outside it). Where a vector and this code disagree, the spec's text decides (core §0 rule 4) and the vector is the
 // one the spec corrects. Mirrors oep-client-python's tests/test_vectors.py (whose fake-side checks are the fake's).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -18,7 +19,7 @@ import * as core from '../src/core.js';
 import * as config from '../src/config.js';
 import * as m from '../src/message.js';
 import { fromHex, hex } from '../src/bytes.js';
-import { Locked, Rejected, Unsupported, rejection } from '../src/errors.js';
+import { FnNotUsable, Locked, NotUsable, Rejected, Unsupported, rejection } from '../src/errors.js';
 import * as reg from '../src/registry.js';
 import { getU32 } from '../src/bytes.js';
 import { Host } from '../src/host.js';
@@ -295,14 +296,16 @@ function scripted(answer, corr, session, sid = 0) {
   return { hst, sent };
 }
 
-test('sessions: each answer as the host reads it, and the requests it sends for open, keepalive, end and lock_state', async () => {
+test('sessions: each answer as the host reads it, and the requests it sends for open, keepalive, end, lock_state and clock', async () => {
+  let clocks = 0;
   for (const sc of SESSIONS.scenarios) {
     for (const step of sc.steps) {
       const what = `${sc.name}: ${step.note}`;
       const req = m.Request.unpack(hx(step.request_hex));
       const res = m.Result.unpack(hx(step.answer_hex));
       assert.equal(res.corr, req.corr, what);
-      const { hst, sent } = scripted(hx(step.answer_hex), req.corr, req.op === m.OP.open ? null : (req.session || null), req.session);
+      const holder = req.op === m.OP.open ? null : req.op === m.OP.clock ? S : (req.session || null);   // clock: from a host in a session too
+      const { hst, sent } = scripted(hx(step.answer_hex), req.corr, holder, req.session);
       /** @type {() => Promise<any>} */
       let call;
       if (req.op === m.OP.open) {
@@ -312,6 +315,9 @@ test('sessions: each answer as the host reads it, and the requests it sends for 
         call = () => hst.open(lease, { force: !!force, owner: owner ? new TextDecoder().decode(owner) : undefined });
       } else if (req.op === m.OP.lock_state) {
         call = () => hst.lockState();
+      } else if (req.op === m.OP.clock) {
+        if (req.session !== m.NO_SESSION_ID) continue;                // Host.clock always goes with session_id 0
+        call = () => hst.clock();
       } else {
         call = /** @type {Record<number, () => Promise<any>>} */ ({ [m.OP.keepalive]: () => hst.keepalive(), [m.OP.end]: () => hst.end() })[req.op];
       }
@@ -327,12 +333,18 @@ test('sessions: each answer as the host reads it, and the requests it sends for 
         const got = await call();
         if (req.op === m.OP.open) assert.deepEqual([got.leaseMs, got.bootId], [getU32(res.payload), getU32(res.payload, 4)], what);
         if (req.op === m.OP.lock_state) assert.deepEqual([got.locked, got.remainingMs], [res.payload[0] !== 0, getU32(res.payload, 1)], what);
+        if (req.op === m.OP.clock) {
+          assert.deepEqual([got.bootId, got.uptimeNs], [getU32(res.payload), new DataView(res.payload.buffer, res.payload.byteOffset + 4, 8).getBigUint64(0, true)], what);
+          assert.equal(hst.session, S, what);                        // sent with session_id 0, the session untouched (core §4.1)
+          clocks++;
+        }
         if (req.op === m.OP.open) assert.equal(hst.session, req.session, what);
         if (req.op === m.OP.end) assert.equal(hst.session, null, what);
       }
       assert.equal(hex(sent[0]), step.request_hex, what);
     }
   }
+  assert.ok(clocks >= 3, `${clocks} clock steps read`);
 });
 
 // ---- per-op vectors (ops.json): the client's request and its reading of the answer ------------------------------------
@@ -368,7 +380,7 @@ async function onClient(c) {
   const name = /** @type {string} */ (c.name);
   const a = m.Result.unpack(hx(c.answer_hex));
   const r = m.Request.unpack(hx(c.request_hex));
-  if (name.startsWith('core restart')) {
+  if (name.startsWith('restart')) {                                 // oep.probe.restart (oep-if-restart), found by name
     const { hst, sent } = client(c, name.includes('without a session') ? null : S);
     if (a.resolution === m.COMPLETED) {
       await hst.requestRestart();
@@ -377,6 +389,31 @@ async function onClient(c) {
     } else {
       await assert.rejects(hst.requestRestart(), (e) => e instanceof Rejected && e.result.detail === a.detail);
     }
+    return sent;
+  }
+  if (name.startsWith('plan_')) {                                    // oep.probe.plan (oep-if-plan), found by name
+    if (name.includes('n = 2 with one fn')) return null;            // the client never sends a short list
+    const { hst, sent } = client(c, name.includes('without a session') ? null : S);
+    const call = r.op === core.PLAN_APPLY
+      ? core.planApply(hst, m.splitTlvs(r.payload).map(([, v]) => /** @type {[number, number, number]} */ ([v[0] | (v[1] << 8), v[2], v[3] | (v[4] << 8)])))
+      : core.planRelease(hst, Array.from({ length: r.payload[0] }, (_, i) => r.payload[1 + 2 * i] | (r.payload[2 + 2 * i] << 8)));
+    if (a.resolution === m.COMPLETED) await call;
+    else await assert.rejects(call, (e) => e instanceof Rejected && e.result.detail === a.detail);
+    return sent;
+  }
+  if (name.includes('subscribe')) {                                 // the emitting fn's own ops 0x30 / 0x32 (core §11.3)
+    const { hst, sent } = client(c, name.includes('without a session') ? null : S);
+    if (name.startsWith('gpio')) {
+      await assert.rejects(hst.subscribe(r.fn), unknownOperation);  // gpio sends no notifications
+      return sent;
+    }
+    const lc = new LogicCapture(hst, r.fn, LogicCapture.NAME);
+    if (name.includes('without a session')) {
+      await assert.rejects(lc.subscribe(), (e) => e instanceof Rejected && e.result.detail === m.REJECT.session_required);
+    } else if (r.op === m.OP_SUBSCRIBE) {
+      await lc.subscribe(1024, 20);
+      assert.ok(hst.subscriptions.has(r.fn));
+    } else await lc.unsubscribe();
     return sent;
   }
   if (name.startsWith('link source')) {
@@ -489,6 +526,9 @@ async function onClient(c) {
 
 test('ops: where this client has the op, its request is the case\'s and its reading gives the case\'s values', async () => {
   let checked = 0;
+  for (const prefix of ['restart', 'plan_apply', 'plan_release', 'logic subscribe', 'logic unsubscribe', 'gpio subscribe']) {
+    assert.ok(OPS.some((/** @type {any} */ c) => c.name.startsWith(prefix)), `ops.json has ${prefix} cases`);
+  }
   for (const c of OPS) {
     const sent = await onClient(c);
     if (sent === null) continue;
@@ -496,4 +536,67 @@ test('ops: where this client has the op, its request is the case\'s and its read
     checked++;
   }
   assert.ok(checked >= 20, `${checked} cases checked`);
+});
+
+// ---- the ops encoding (ops_encoding.json, core §7.4) ------------------------------------------------------------------
+
+const OPS_ENCODING = load('ops_encoding.json').cases;
+
+test('ops encoding: checkOps takes the valid values and refuses the others; a valid value decodes to its set and back', () => {
+  assert.deepEqual(new Set(OPS_ENCODING.map((/** @type {any} */ c) => c.valid)), new Set([true, false]));
+  for (const c of OPS_ENCODING) {
+    const v = hx(c.value_hex);
+    assert.equal(catalog.checkOps(v) === '', c.valid, `${c.name}: ${catalog.checkOps(v)}`);
+    if (!c.valid) continue;
+    assert.deepEqual([...catalog.unpackOps(v)].sort((x, y) => x - y), c.ops, c.name);
+    assert.equal(hex(catalog.packOps(c.ops)), c.value_hex, c.name);                   // the one encoding of that set
+  }
+  assert.throws(() => catalog.packOps([]), RangeError);                                // an empty set has none
+});
+
+test('ops encoding: every ops in the discovery and ops vectors is canonical', () => {
+  let seen = 0;
+  for (const c of DISCOVERY.exchanges) {
+    const p = m.Result.unpack(hx(c.answer_hex)).payload;
+    if (!('unit_id' in c.answer)) continue;
+    for (const [tag, v] of m.splitTlvs(p.slice(1))) if ((tag & 0x7f) === m.TAG_OPS) { assert.equal(catalog.checkOps(v), '', c.name); seen++; }
+  }
+  assert.ok(seen >= 1);
+});
+
+/** A Host whose describe of fn 0 and fn 5 is `fn0` / `fn5` (paged as one answer), nothing else answered.
+ * @param {Uint8Array} fn0Ops @param {Uint8Array} fn5Ops */
+function describing(fn0Ops, fn5Ops) {
+  /** @type {m.Request[]} */ const sent = [];
+  const link = /** @type {any} */ ({ framing: 'length', maxFrame: 1024, async send(/** @type {Uint8Array} */ b) {
+    const q = m.Request.unpack(b);
+    sent.push(q);
+    const fn = q.payload[0] | (q.payload[1] << 8);
+    const body = q.op === m.OP.describe ? Uint8Array.from([0, ...m.tlv(m.TAG_OPS, fn === 0 ? fn0Ops : fn5Ops)]) : new Uint8Array();
+    return new m.Result(q.corr, m.COMPLETED, m.SUCCESS, body).pack();
+  } });
+  const hst = new Host(link);
+  hst.revision = 1;
+  return { hst, sent };
+}
+
+test('ops encoding: an fn whose ops is invalid is not used (FnNotUsable), the rest is; fn 0\'s: the probe is not (NotUsable)', async () => {
+  const good = catalog.packOps(Object.values(m.OP));
+  for (const c of OPS_ENCODING.filter((/** @type {any} */ e) => !e.valid)) {
+    let { hst, sent } = describing(good, hx(c.value_hex));
+    await assert.rejects(core.ops(hst, 5), (e) => e instanceof FnNotUsable && e.fn === 5 && /core §7\.4/.test(e.message), c.name);
+    const n = sent.length;
+    await assert.rejects(hst.request(5, 0x01), FnNotUsable, c.name);                  // nothing more goes to fn 5
+    await assert.rejects(hst.pipeline([[5, 0x01, new Uint8Array()]]), FnNotUsable, c.name);
+    assert.equal(sent.length, n, c.name);
+    await hst.request(0, m.OP.lock_state, new Uint8Array(), { locked: false });     // the probe is still used
+    hst.lost();                                                                     // a restart: the fn is asked again
+    await assert.rejects(core.ops(hst, 5), FnNotUsable, c.name);
+    ({ hst, sent } = describing(hx(c.value_hex), good));
+    await assert.rejects(core.describe(hst, 0), (e) => e instanceof NotUsable && /fn 0/.test(e.message), c.name);
+    await assert.rejects(hst.request(0, m.OP.lock_state, new Uint8Array(), { locked: false }), NotUsable, c.name);
+    assert.ok(!sent.some((q) => q.op === m.OP.lock_state), c.name);
+  }
+  const { hst } = describing(good, catalog.packOps([1, 2, 0x30, 0x32]));
+  assert.deepEqual(await core.ops(hst, 5), new Set([1, 2, 0x30, 0x32]));
 });

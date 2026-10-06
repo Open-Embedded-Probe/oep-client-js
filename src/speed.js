@@ -1,13 +1,13 @@
 // @ts-check
-// port_speed (oep-if-link §3 is the handshake, an op of the optional oep.link; the host's procedure is oep-spec docs/host-development-guide.md §17,
+// port_speed (oep-if-link §3 is the handshake, an op of the optional oep.probe.link; the host's procedure is oep-spec docs/host-development-guide.md §17,
 // followed here): a faster UART bridge for one session, opt-in. `raiseSpeed` asks a probe that declares it for a
-// faster rate on the serial port this host opened (it finds oep.link by name and reads port_speed in its ops).
+// faster rate on the serial port this host opened (it finds oep.probe.link by name and reads port_speed in its ops).
 //
 // The minimal form (§17.2, the default): try a candidate -> switch to the requested baud (the probe's answered baud
 // only when the platform refuses it: WebSerial `open({ baudRate })`, serialport `update`) -> settle 20 ms -> confirm
 // (100 ms, up to 3) -> commit. About 50 ms, no measurement. The full form (`verify: true`, or `flows` given; §17.3): a
 // baseline at the boot speed per flow (this session's frames when 60 or more and under 10 %, else 60 measured per flow
-// at its n; over 10 % once more at n = 1), then per candidate every flow the caller will use (in = oep.link source,
+// at its n; over 10 % once more at n = 1), then per candidate every flow the caller will use (in = oep.probe.link source,
 // out = sink, duplex = both interleaved, each with its in-flight n) for 16 frames at max_frame - 26, a flow failing on
 // broken + lost >= 3 and a ratio over max(2 x baseline, 5 %), run once more at n = 1 before giving up on it (then n = 1
 // is the link's cap), one failed flow failing the candidate; commit when every flow passed. A failed candidate: revert
@@ -30,14 +30,14 @@ import { Failed, Rejected, Timeout } from './errors.js';
 import { IDLE_MAX_MS, KEEPALIVE_MS, OPEN_RETRY_MS } from './link.js';
 import { SpeedRecord, defaultStore, fileStore } from './speedrecord.js';
 
-const OP_PORT_SPEED = reg.LINK.op.port_speed;
-const STEP = reg.LINK.enum.port_speed_step;
+const OP_PORT_SPEED = reg.PROBE_LINK.op.port_speed;
+const STEP = reg.PROBE_LINK.enum.port_speed_step;
 const UNIT_ID_TAG = reg.CORE.tlv.describe.unit_id;
 const UART_BRIDGE = reg.CORE.enum.transport_kind.uart_bridge;
 
 /** Host guide §17.2: one candidate that passed the measured bridges in small duplex use. */
 export const DEFAULT_CANDIDATES = Object.freeze([500000]);
-/** probe -> host (oep.link source), host -> probe (sink), both interleaved. */
+/** probe -> host (oep.probe.link source), host -> probe (sink), both interleaved. */
 export const FLOWS = /** @type {const} */ (['in', 'out', 'duplex']);
 /** The probe waits this long for the commit (guide §17.2 / §17.3.2: 2000). */
 export const VERIFY_MS = 2000;
@@ -160,16 +160,16 @@ function request(port, baud, step, verifyMs, idleMs) {
 export const RELAYING_BROKER = 0xff;
 
 /** The port this host's requests come in on (the transport TLV of confirm's answer, core §7.1, C-05) when the probe
- * offers oep.link with port_speed in its ops (oep-if-link §1) and that transport is a UART bridge: [the oep.link fn,
+ * offers oep.probe.link with port_speed in its ops (oep-if-link §1) and that transport is a UART bridge: [the oep.probe.link fn,
  * the port, '']; else nulls and why not.
  * @param {import('./host.js').Host} hst @returns {Promise<[number | null, number | null, string]>} */
 export async function speedPort(hst) {
   let fn;
   try { fn = await core.linkFn(hst); } catch (e) {
-    if (e instanceof m.OepError && !(e instanceof Rejected)) return [null, null, 'the probe does not offer oep.link'];
+    if (e instanceof m.OepError && !(e instanceof Rejected)) return [null, null, 'the probe does not offer oep.probe.link'];
     throw e;
   }
-  if (!(await core.offers(hst, fn, OP_PORT_SPEED))) return [null, null, 'the probe\'s oep.link does not offer port_speed (its ops)'];
+  if (!(await core.offers(hst, fn, OP_PORT_SPEED))) return [null, null, 'the probe\'s oep.probe.link does not offer port_speed (its ops)'];
   const index = (hst.limits ?? await hst.confirm()).transport;
   if (index === null || index === undefined) return [null, null, 'the probe\'s confirm names no transport (core §7.1 requires it)'];
   if (index === RELAYING_BROKER) return [null, null, 'a relaying broker answers the confirm (transport 0xFF): no port of this probe to raise'];

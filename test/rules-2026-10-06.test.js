@@ -1,7 +1,7 @@
 // @ts-check
 // The host side of the rules added since the 2026-10-02 rule changes (oep-spec b4b08f1, 40291a4, 2e70f40, 73a0c37):
 // confirm's bounds (C-20), max_op_ms's ceiling (C-47), the transfer time before the first confirm answer (N-1),
-// the boot_id under no resume (C-19), the heartbeat's boot_id, short answers and wrong-direction roles (C-36),
+// the boot_id under no resume (C-19), short answers and wrong-direction roles (C-36),
 // an unanswered resend fails the transport (C-38), the last page's storage (PC-9), the optional ops (C-21),
 // cs_setup_ns and i2c-target's reserved addresses. Mirrors oep-client-python's tests/test_host_rules_2026_10_06.py.
 import assert from 'node:assert/strict';
@@ -197,36 +197,6 @@ test('C-19: open answers lease_ms boot_id; a changed boot_id drops the names onc
   await hst.open(3000);
   assert.equal(hst.epoch, epoch + 1);                             // nothing more lost after an end
 });
-
-// ---- heartbeats: the boot_id watched (core §6.5, §11.2) -------------------------------------------------------------
-
-/** @param {number} bootId @param {bigint} uptimeNs */
-function heartbeat(bootId, uptimeNs) {
-  return new Writer().u8(m.ROLE_EVENT).u16(0).u16(0).u8(reg.CORE.event.heartbeat).u32(bootId).u64(uptimeNs).done();
-}
-
-test('heartbeats are read and a changed boot_id is a reboot', async () => {
-  let boot = 0x11;
-  const { t } = scripted((req) => (req.op === m.OP.confirm ? [result(req.corr, confirmPayload())]
-    : [heartbeat(boot, 5_000_000_000n), result(req.corr)]));
-  const hst = await connect(t);
-  await hst.request(0, m.OP.keepalive, new Uint8Array(), { locked: false });
-  assert.deepEqual([hst.link.stats.heartbeats, hst.uptimeNs, hst.epoch], [1, 5_000_000_000n, 0]);
-  hst.fns.set('oep.fixture.gpio', 4);
-  boot = 0x22;                                                    // the probe rebooted
-  await hst.request(0, m.OP.keepalive, new Uint8Array(), { locked: false });
-  assert.deepEqual([hst.epoch, hst.fns.size, hst.link.events.length], [1, 0, 2]);   // kept with the other events
-});
-
-test('heartbeats from the fake reach the host', { skip: !haveFake }, () => withFake([], async (hst) => {
-  await hst.open(3000);
-  await hst.subscribe(0, 0, 100);
-  for (let i = 0; i < 50 && !hst.link.stats.heartbeats; i++) await sleep(20);
-  assert.ok(hst.link.stats.heartbeats >= 1);
-  assert.equal(typeof hst.uptimeNs, 'bigint');
-  assert.equal(hst.epoch, 0);
-  await hst.end();
-}));
 
 // ---- C-36: short answers, events and data; request roles --------------------------------------------------------------
 
