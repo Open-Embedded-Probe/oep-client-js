@@ -40,7 +40,7 @@ docs/           this document, the release steps
 
 ## 3. Transports
 
-| Transport | Browser (`./browser`) | Node (`./node`) | Frames (core §3.1) |
+| Transport | Browser (`./browser`) | Node (`./node`) | Frames (transports §1) |
 |---|---|---|---|
 | USB CDC, USB-Serial/JTAG, USB-UART bridge | WebSerial | serialport | COBS + CRC |
 | vendor bulk (class 0xFF) | WebUSB | usb (WebUSB-shaped) | length(u16) message |
@@ -48,7 +48,7 @@ docs/           this document, the release steps
 | TCP (a local broker, the tests' fake) | - | node:net | length(u16) message |
 
 - WebUSB, WebSerial and WebHID are Chromium only (Chrome, Edge), and the page must be served over HTTPS (or localhost).
-- Probes are recognised as core §3.3 says: automatically only by the project's own USB VID:PID, `1209:4F45`
+- Probes are recognised as transports §3 says: automatically only by the project's own USB VID:PID, `1209:4F45`
   (`PROJECT_VID_PIDS`, from the registry's `usb`); a probe named by its unit_id is the device whose USB serial it is, and
   describe must then say that unit_id (`connect({ unitId })`, else `UnitIdMismatch`); every transport opened is probed
   with a confirm only first, closed with `NotOepProbe` when no valid answer comes. The WebUSB / WebHID choosers' default

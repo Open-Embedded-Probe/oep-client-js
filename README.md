@@ -10,28 +10,41 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 
 ## Status
 
-**A first full port, ahead of the v1 freeze: expect it to be redone as the spec settles.** What is there:
+**A first full port, ahead of the v1 freeze: expect it to be redone as the spec settles.**
+
+**The spec this implements: oep-spec commit `4bd3a87`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
+revision 1 alone does not fix the forms, so an implementation names the spec it implements). That is the 2026-10-06
+simplification (one 10-byte request header, TLV len u16, closed fixed forms, the `ops` describe tag, no resume,
+`oep.link`), the console's send queue and the reset settle wait (f0c68bf), a longer probe.config item (d34dafa) and
+oep.link source's len (4bd3a87); the same spec as oep-client-python. Until the freeze the Japanese text (`.ja.md`) is
+the specification's working text.
+
+What is there:
 
 - the core: the registry (generated from oep-spec), frames (COBS + CRC, length), messages, the link (corr matching, one
   resend, pipelining, pushes and events; every answer waited at least core §4.4's floor - argument time + 1000 ms + a
-  serial port's transfer time, `Link.waitFloorMs` -; the §5.1 resync on length frames, its confirm 250 ms after the
+  serial port's transfer time, `Link.waitFloorMs` -; the transports §5 resync on length frames, its confirm 250 ms after the
   host's last write, none for a pause inside a TCP frame; an unanswered resend fails the transport, `TransportFailed`,
   and the next request first recovers with a confirm, COBS included; a frame shorter than its header is broken; fn 0's
   heartbeats read and their boot_id watched), the host (confirm - `limits.transport`, the index this host came in on;
   later confirms ask for the revision in use; one outside core §7.1's bounds, or a max_op_ms outside 1..600000, makes the
-  probe `NotUsable` -, session - resumed 0 for the id used last lists again -, lock, subscribe), list / describe / plan;
+  probe `NotUsable` -, session - every open a new one under a new random id in the request header; end, a lapsed lease
+  or force release everything the session made, and a request of an ended session is `NoSession` (no resume) -, lock,
+  subscribe), list / describe (each fn's `ops`: `core.ops` / `offers`, `Interface.ops()` / `.offers(op)`; `core.require`
+  throws, without sending, the same `Rejected` with detail unknown_operation the probe answers) / plan;
 - the interfaces: the debug wires (rvswd, swio, swd) and riscv-dm, ARM ADI / MEM-AP / Cortex-M, the target console, the
   fixtures (gpio, uart, i2c-target, spi-target), the captures (logic, analog, capture-group, sigrok .sr), probe.config and
   the `oep dump` view;
 - the transports: WebSerial, WebUSB (vendor bulk), WebHID in the browser; TCP, serial ports (`serialport`) and USB (`usb`)
-  in Node (the native packages optional); serial ports open 8N1 without flow control, DTR and RTS asserted (core §3.4);
-  a USB probe is found by the project's USB VID:PID `1209:4F45` alone (core §3.3: the WebUSB / WebHID choosers' default
+  in Node (the native packages optional); serial ports open 8N1 without flow control, DTR and RTS asserted (transports §4);
+  a USB probe is found by the project's USB VID:PID `1209:4F45` alone (transports §3: the WebUSB / WebHID choosers' default
   filter, Node's `findUsbProbes` / `findSerialProbes` / `findProbes`, `openUsb()` - exactly one probe on it is opened, by
   vendor bulk, else its CDC port; several: `SeveralProbesError` lists them, name one); the
   WebSerial chooser has no default filter, so a UART bridge or a built-in USB serial stays selectable;
 - the firmware update: USB DFU (the ESP32-P4) and the Release's firmware-<version>.json;
 - the page: connect, read what the probe declares, edit and save its settings, GPIO and UART, port_speed, a DFU update;
-- port_speed (oep-core §3.5 is the handshake; the procedure is the oep-spec host guide §17, opt-in):
+- port_speed (oep-if-link §3 is the handshake, an op of the optional interface `oep.link` that the probe offers when its
+  ops set it; the procedure is the oep-spec host guide §17, opt-in):
   `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, idleMs, port, record })` (or
   `portSpeed: true | [candidates]` with `flows` / `verify` / `record` on `connect` / `openWebSerial` / `openSerial`) runs
   a UART bridge faster for the session. The **minimal form** (the default, about 50 ms, no measurement): each candidate
@@ -39,8 +52,8 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
   probe's answered baud only when the platform refuses it) -> 20 ms -> a `confirm` (100 ms, up to 3) -> `commit`. The
   **full form** (`verify: true`, or `flows` given): a baseline at the boot speed per flow (this session's frames, or 60
   measured), then for each candidate every flow the session will use - `flows` of `'in' | 'out' | 'duplex'` or
-  `[flow, n]` (in = link_source probe -> host, out = link_sink host -> probe, duplex = both interleaved; `n` in flight,
-  0 = the most the link keeps) - 16 frames at max_frame - 16, counting broken and lost and measuring KB/s; a flow fails
+  `[flow, n]` (in = oep.link source probe -> host, out = oep.link sink host -> probe, duplex = both interleaved; `n` in flight,
+  0 = the most the link keeps) - 16 frames at max_frame - 26 (oep-if-link §2), counting broken and lost and measuring KB/s; a flow fails
   on broken + lost >= 3 over max(2 x baseline, 5 %), runs once more at n = 1 first (then n = 1 is the link's cap,
   `inflightCap`), and one failed flow fails the candidate. A failed candidate reverts (step 2) and goes back to the boot
   speed, confirmed there. The first candidate that passes is kept; a rate the probe's UART cannot make is skipped. The
@@ -66,6 +79,13 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
   candidate failed: the slowest is tried once, `report.retried`); an `x-` unit_id (core §7.5) keys nothing. The port
   raised is the one this host came in on (confirm's transport TLV) when that is a UART bridge. The same procedure as
   oep-client-python.
+- the console (oep-if-console): a write goes into the stream's send queue (describe 0x41, `Console.sendQueue()`, at least
+  64 bytes) and is answered with what fitted; `ConsoleIO` writes a send queue at a time and goes on from each
+  `accepted`. A stream is the probe's per connection and mechanism: a closed one stays readable until the next open,
+  which gives the same number back.
+- resets that settle (oep-if-debug §3, §4.3): `Wire.attachMs(reset)` adds hold_ms + reset_settle_ms (700) to
+  attach_budget_ms when the attach carries the reset TLV, `RiscvDm.resetMs()` is reset_settle_ms - the argument time of
+  the host's wait.
 - block operations: riscv-dm / arm-adi `readBlock` / `writeBlock` are bounded by the probe's declared `max_length`
   (`RiscvDm` / `ArmAdi` `.maxLength` bytes, `.maxWords`; oep-if-debug §4.5 / §6) - `MemAp` chunks by it, and a probe
   with block ops that declares none throws `riscv.NoMaxLength`; nothing is derived from max_frame.
@@ -84,11 +104,11 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
   length frames); `Wire.searchRetries`, `riscv.StepError` (`stepLeft`), `I2cTarget.pullupOhms()`, the capture mode with
   its background in describe.
 
-The wire is oep-spec's zero-base rewrite of 2026-10-01 (every answer carries its lengths, TLVs have a long form, confirm
-answers the boot_id, `expired`, probe.config's `state` / `unset` / `uart`, the attach reset TLV, capture generations, the
-gpio drive and the slot's boot_reset), with the rule changes of 2026-10-02 (see the changelog). Tested against
-oep-client-python's fake probe and scripted devices (249 tests, oep-spec's test vectors among them); the browser transports,
-DFU and the page are not yet checked on hardware.
+The wire is oep-spec's 2026-10-06 simplification of the zero-base rewrite of 2026-10-01 (one request header with
+session_id, one TLV form, sequences without element lengths, closed fixed forms, the `ops` tag, no resume, `oep.link`;
+see the changelog). Tested against oep-client-python's fake probe and scripted devices (281 tests, oep-spec's test
+vectors among them, sessions.json and ops.json included); the browser transports, DFU and the page are not yet checked on
+hardware.
 
 Until the v1 freeze the spec may break and this package follows it at once, with the probe firmware
 ([OpenEmbeddedProbe](https://github.com/Open-Embedded-Probe/oep-probe-arduino)) and

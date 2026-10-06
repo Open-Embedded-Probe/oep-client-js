@@ -39,7 +39,7 @@ docs/           この文書、リリースの手順
 
 ## 3. 経路
 
-| 経路 | ブラウザ（`./browser`） | Node（`./node`） | フレーム（core §3.1） |
+| 経路 | ブラウザ（`./browser`） | Node（`./node`） | フレーム（transports §1） |
 |---|---|---|---|
 | USB CDC、USB-Serial/JTAG、USB-UART bridge | WebSerial | serialport | COBS + CRC |
 | vendor bulk（class 0xFF） | WebUSB | usb（WebUSB と同じ形） | length(u16) message |
@@ -47,7 +47,7 @@ docs/           この文書、リリースの手順
 | TCP（ローカルのブローカー、試験の fake） | - | node:net | length(u16) message |
 
 - WebUSB、WebSerial、WebHID は Chromium 系（Chrome、Edge）だけで、ページは HTTPS（か localhost）で配る必要があります。
-- probe の見分け方は core §3.3 のとおりです: 自動で見分けるのはプロジェクトの USB の VID:PID `1209:4F45` だけ（`PROJECT_VID_PIDS`。
+- probe の見分け方は transports §3 のとおりです: 自動で見分けるのはプロジェクトの USB の VID:PID `1209:4F45` だけ（`PROJECT_VID_PIDS`。
   registry の `usb` から）。unit_id で名指した probe は USB の serial がそれと同じ device で、describe の unit_id も同じでなければならない
   （`connect({ unitId })`、違えば `UnitIdMismatch`）。開いた経路には、まず confirm だけを送り、正しい応答が無ければ閉じる（`NotOepProbe`）。
   WebUSB / WebHID の選択の既定の filter はこの VID:PID（`PROJECT_USB_FILTERS`。WebHID は OEP の collection、usage page 0xFF4F /
