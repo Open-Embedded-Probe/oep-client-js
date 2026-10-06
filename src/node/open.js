@@ -2,8 +2,9 @@
 // Hosts on Node's transports, confirmed and ready.
 import { connect } from '../open.js';
 import { tcpTransport } from './tcp.js';
-import { findSerialProbes, serialTransport } from './serial.js';
-import { usbTransport } from './usb.js';
+import { serialTransport } from './serial.js';
+import { chooseProbe, describeProbe, findProbes, usbTransport } from './usb.js';
+import { PROJECT_PID, PROJECT_VID, vendorTransport } from '../usbvendor.js';
 
 /** `unitId`: describe must say this unit_id, else closed (UnitIdMismatch, core §3.3).
  * @param {import('../open.js').SpeedOptions & { host?: string, port: number, framing?: 'length' | 'cobs', timeoutMs?: number, baudRate?: number, leaseMs?: number, owner?: string, unitId?: string }} opts */
@@ -17,20 +18,32 @@ export async function openSerial(opts) { return connect(await serialTransport(op
 
 /** A Host on a USB device's vendor bulk interface. `unitId`: the device whose USB serial it is (no other check), and
  * fn 0's describe must then say the same unit_id (else closed, UnitIdMismatch). Probed with a confirm first (connect).
- * With nothing given it is the device with the project's VID:PID (core §3.3); when no such device can be opened by
- * vendor bulk (a probe with only a CDC port, RP2040 / RP2350), the one serial port with that VID:PID is opened instead
- * (findSerialProbes; none or several: the USB error stands - name the port, openSerial), as oep-client-python's bare
- * `usb` target does.
- * @param {{ unitId?: string, vendorId?: number, productId?: number, timeoutMs?: number }} opts */
+ * With nothing given it looks at every device with the project's VID:PID (core §3.3; findProbes, one device counted
+ * once whatever ways in it has; `probes`: that list, if already made): exactly one -> it is opened, by vendor bulk,
+ * else its CDC port (one; several: name it); several -> SeveralProbesError listing each (unit id, ways in), nothing
+ * opened - name one (`unitId`, or openSerial with its port); none -> the USB error. As oep-client-python's bare `usb`.
+ * @param {{ unitId?: string, vendorId?: number, productId?: number, timeoutMs?: number, probes?: import('./usb.js').UsbProbe[] }} opts */
 export async function openUsb(opts = {}) {
-  let transport;
-  try {
-    transport = await usbTransport(opts);
-  } catch (e) {
-    if (opts.unitId != null || opts.vendorId != null || opts.productId != null) throw e;
-    const ports = await findSerialProbes().catch(() => []);
-    if (ports.length !== 1) throw e;
-    return openSerial({ path: ports[0].path, timeoutMs: opts.timeoutMs });
+  const { probes, ...rest } = opts;
+  if (opts.unitId != null || opts.vendorId != null || opts.productId != null) {
+    return connect(await usbTransport(rest), { timeoutMs: opts.timeoutMs, unitId: opts.unitId });
   }
-  return connect(transport, { timeoutMs: opts.timeoutMs, unitId: opts.unitId });
+  const one = chooseProbe(probes ?? await findProbes());
+  if (!one) return connect(await usbTransport(rest), { timeoutMs: opts.timeoutMs });   // the "no device" error
+  if (one.device && one.ways.includes('vendor')) {
+    let transport = null;
+    try {
+      transport = await vendorTransport(one.device);
+    } catch (e) {
+      if (!one.ports.length) throw e;                      // not openable by vendor bulk (access, busy): its CDC port
+    }
+    if (transport) return connect(transport, { timeoutMs: opts.timeoutMs });
+  }
+  const where = `the probe on ${hex(PROJECT_VID)}:${hex(PROJECT_PID)} (${describeProbe(one)})`;
+  if (one.ports.length > 1) throw new Error(`${where} has ${one.ports.length} serial ports: name one (openSerial({ path }))`);
+  if (!one.ports.length) throw new Error(`${where} has no way in this host opens (vendor bulk or a serial port)`);
+  return openSerial({ path: one.ports[0], timeoutMs: opts.timeoutMs });
 }
+
+/** @param {number} n */
+const hex = (n) => n.toString(16).padStart(4, '0');

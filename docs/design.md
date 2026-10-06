@@ -55,8 +55,9 @@ docs/           this document, the release steps
   filters are that VID:PID (`PROJECT_USB_FILTERS`; WebHID with the OEP collection, usage page 0xFF4F / usage 0x45).
   WebSerial's chooser gets no built-in filter (a UART bridge or a built-in USB serial is never on that VID:PID);
   `PROJECT_SERIAL_FILTERS` narrows it to probes. In Node, `findUsbProbes` and `findSerialProbes` list the devices and the
-  CDC ports on that VID:PID, and `openUsb()` with nothing given opens that device, or its one CDC port when it has no
-  vendor bulk. Nothing looks at iProduct. Inside a probe the ports are chosen by the interface values
+  CDC ports on that VID:PID, `findProbes` lists each device once whatever ways in it has, and `openUsb()` with nothing
+  given opens the one probe there (vendor bulk, else its CDC port); with several it opens none and `SeveralProbesError`
+  lists them (unit id, ways in) - name one. Nothing looks at iProduct. Inside a probe the ports are chosen by the interface values
   (registry `usb`).
 
 ## 4. What the page does (in this order)

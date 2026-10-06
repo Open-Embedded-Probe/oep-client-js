@@ -26,7 +26,8 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 - 経路: ブラウザは WebSerial、WebUSB（vendor bulk）、WebHID。Node は TCP、シリアルの口（`serialport`）、USB（`usb`）
   （ネイティブの package は任意）。シリアルの口は 8N1、フロー制御なし、DTR と RTS を立てて開く（core §3.4）。USB の probe は
   プロジェクトの USB の VID:PID `1209:4F45` だけで見つける（core §3.3: WebUSB / WebHID の選択の既定の filter、Node の
-  `findUsbProbes` / `findSerialProbes`、`openUsb()` ― vendor bulk が無ければその CDC の口 1 つ）。WebSerial の選択には既定の
+  `findUsbProbes` / `findSerialProbes` / `findProbes`、`openUsb()` ― この VID:PID のプローブがちょうど 1 つならそれを vendor bulk で、
+  無ければその CDC の口で開く。2 つ以上なら `SeveralProbesError` が並べるので 1 つを指定する）。WebSerial の選択には既定の
   filter を付けないので、UART bridge や内蔵の USB serial も選べる
 - firmware の更新: USB の DFU（ESP32-P4）と、Release の firmware-<version>.json
 - ページ: つなぐ、probe の宣言を読む、設定の編集と保存、GPIO と UART、port_speed、DFU での更新

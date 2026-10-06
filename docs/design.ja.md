@@ -53,7 +53,7 @@ docs/           この文書、リリースの手順
   WebUSB / WebHID の選択の既定の filter はこの VID:PID（`PROJECT_USB_FILTERS`。WebHID は OEP の collection、usage page 0xFF4F /
   usage 0x45 も）。WebSerial の選択には既定の filter を付けない（UART bridge や内蔵の USB serial はこの VID:PID にならない）。
   `PROJECT_SERIAL_FILTERS` で probe だけに絞れる。Node では `findUsbProbes` と `findSerialProbes` が、この VID:PID の device と CDC の口を
-  並べ、何も指定しない `openUsb()` はその device を、vendor bulk が無ければその CDC の口 1 つを開く。iProduct はどこも見ない。probe の中の口は interface の値で選ぶ（registry の `usb`）。
+  並べ、`findProbes` は口の種類にかかわらず device ごとに 1 つを並べる。何も指定しない `openUsb()` はそこにプローブがちょうど 1 つならそれを（vendor bulk、無ければその CDC の口）開き、2 つ以上なら何も開かず `SeveralProbesError` が各プローブ（unit id、口）を並べるので 1 つを指定する。iProduct はどこも見ない。probe の中の口は interface の値で選ぶ（registry の `usb`）。
 
 ## 4. Web ページでできること（順番）
 

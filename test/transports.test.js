@@ -5,6 +5,9 @@ import { findVendorReports, packHidReports, unpackHidReport, webHidTransport } f
 import { PROJECT_SERIAL_FILTERS, PROJECT_USB_FILTERS, PROJECT_VID_PIDS, findVendorInterface, isProjectDevice, usbCandidate, usbUnitId, vendorTransport } from '../src/usbvendor.js';
 import * as usbvendor from '../src/usbvendor.js';
 import { findSerialProbes } from '../src/node/serial.js';
+import { SeveralProbesError, chooseProbe, describeProbe, findProbes } from '../src/node/usb.js';
+import { openUsb } from '../src/node/open.js';
+import { NotOepProbe } from '../src/errors.js';
 import { requestUsbProbe } from '../src/browser/webusb.js';
 import { requestHidProbe } from '../src/browser/webhid.js';
 import { requestSerialPort } from '../src/browser/webserial.js';
@@ -225,4 +228,64 @@ test('the choosers: WebUSB by the project\'s VID:PID, WebHID by it with the OEP 
     ['serial', {}],                                               // bridges and built-in USB serials stay selectable
     ['serial', { filters: [{ usbVendorId: 0x1209, usbProductId: 0x4f45 }] }],
   ]);
+});
+
+/** A probe as findProbes lists it. @param {string | null} unitId @param {string[]} ways @param {string[]} [ports] @param {any} [device] */
+const probe = (unitId, ways, ports = [], device = null) => ({ unitId, ways, ports, device });
+
+test('findProbes: every device on the project\'s VID:PID once, whatever its ways in (vendor, HID, CDC)', async () => {
+  const all = mockUsbDevice();                                              // CDC + vendor (+ DFU)
+  const hidOnly = { ...mockUsbDevice(), serialNumber: 'aa01', configurations: [{ configurationValue: 1, interfaces: [
+    { interfaceNumber: 0, alternates: [{ alternateSetting: 0, interfaceClass: 3, interfaceSubclass: 0, interfaceProtocol: 0, endpoints: [] }] }] }] };
+  const other = { ...mockUsbDevice(), vendorId: 0x303a, productId: 0x1001, serialNumber: 'zz' };   // not ours
+  const ports = [
+    { path: '/dev/ttyACM0', vendorId: '1209', productId: '4f45', serialNumber: '30EDA0E31108' },    // the same device as `all`
+    { path: '/dev/ttyACM1', vendorId: '1209', productId: '4f45', serialNumber: '9489dd2ae0953650' }, // CDC only
+    { path: '/dev/ttyUSB0', vendorId: '0403', productId: '6001', serialNumber: 'A10K' },
+  ];
+  const got = await findProbes({ devices: /** @type {any[]} */ ([all, hidOnly, other]), ports });
+  assert.deepEqual(got.map((p) => [p.unitId, p.ways, p.ports]), [
+    ['30eda0e31108', ['vendor', 'cdc'], ['/dev/ttyACM0']],
+    ['aa01', ['hid'], []],
+    ['9489dd2ae0953650', ['cdc'], ['/dev/ttyACM1']],
+  ]);
+  assert.equal(got[0].device, all);
+  assert.equal(got[2].device, null);
+  assert.equal(describeProbe(got[0]), '30eda0e31108: vendor, cdc /dev/ttyACM0');
+  assert.equal(describeProbe(probe(null, ['vendor'])), 'no USB serial: vendor');
+  assert.deepEqual(await findProbes({ devices: [], ports: [] }), []);
+});
+
+test('chooseProbe: none -> null, one (vendor only, CDC only, all three) -> it, several -> SeveralProbesError', () => {
+  assert.equal(chooseProbe([]), null);
+  for (const one of [probe('a1', ['vendor']), probe('a2', ['cdc'], ['/dev/ttyACM2']), probe('a3', ['vendor', 'hid', 'cdc'], ['/dev/ttyACM3'])]) {
+    assert.equal(chooseProbe([one]), one);
+  }
+  const several = [probe('30eda0e343c6', ['vendor', 'hid', 'cdc'], ['/dev/ttyACM0']), probe('9489dd2ae0953650', ['cdc'], ['/dev/ttyACM1']),
+    probe('a1', ['vendor']), probe('a2', ['hid'])];
+  assert.throws(() => chooseProbe(several), (/** @type {any} */ e) => {
+    assert.ok(e instanceof SeveralProbesError);
+    assert.equal(e.probes, several);
+    assert.equal(e.message, '4 probes on 1209:4f45 (30eda0e343c6: vendor, hid, cdc /dev/ttyACM0; 9489dd2ae0953650: cdc /dev/ttyACM1; '
+      + 'a1: vendor; a2: hid); not choosing one: name one with openUsb({ unitId }) or openSerial({ path })');
+    return true;
+  });
+});
+
+test('openUsb() with nothing given: several probes -> nothing opened, one -> its vendor bulk, else its CDC port', async () => {
+  const a = mockUsbDevice();
+  const b = mockUsbDevice();
+  await assert.rejects(openUsb({ probes: [probe('30eda0e31108', ['vendor', 'cdc'], ['/dev/ttyACM0'], a), probe('9489dd2ae0953650', ['cdc'], ['/dev/ttyACM1'])] }),
+    /^SeveralProbesError: 2 probes on 1209:4f45 \(30eda0e31108: vendor, cdc \/dev\/ttyACM0; 9489dd2ae0953650: cdc \/dev\/ttyACM1\)/);
+  assert.deepEqual(a.log, []);                                              // not even opened
+  // one probe, vendor + CDC: its vendor bulk (a silent device: confirm only, then NotOepProbe)
+  await assert.rejects(openUsb({ timeoutMs: 100, probes: [probe('30eda0e31108', ['vendor', 'cdc'], ['/dev/ttyACM0'], b)] }), NotOepProbe);
+  assert.ok(b.log.includes('open') && b.log.includes('claim 4'));
+  // one probe, CDC only: its serial port (openSerial; here without the serialport package, its error)
+  await assert.rejects(openUsb({ probes: [probe('9489dd2ae0953650', ['cdc'], ['/dev/ttyACM1'])] }), /serialport|ttyACM1/);
+  await assert.rejects(openUsb({ probes: [probe('9489dd2ae0953650', ['cdc'], ['/dev/ttyACM1', '/dev/ttyACM2'])] }),
+    /the probe on 1209:4f45 \(9489dd2ae0953650: cdc \/dev\/ttyACM1 \/dev\/ttyACM2\) has 2 serial ports: name one/);
+  await assert.rejects(openUsb({ probes: [probe('aa01', ['hid'])] }), /has no way in this host opens/);
+  // none: the USB error (no device; here without the usb package, its error)
+  await assert.rejects(openUsb({ probes: [] }), /optional package "usb"|no USB OEP probe/);
 });
