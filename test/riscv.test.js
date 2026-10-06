@@ -156,14 +156,16 @@ test('no connection after the connection is gone', { skip: !haveFake }, () => wi
 
 test('dmi counts its steps and a poll that gives up stops the list with its last value', { skip: !haveFake }, () => withFake(X035, async (hst) => {
   const { dm } = await attached(hst);
-  const steps = [RiscvDm.stepWrite(0x11, 0x382), RiscvDm.stepRead(0x11), RiscvDm.stepDelay(5),
-    RiscvDm.stepPoll(0x16, 0x1000, 0, 10), RiscvDm.stepPollTime(0x16, 0x1000, 0, 1000)];
+  // DMSTATUS (0x11) and ABSTRACTCS's busy are read-only and its cmderr write-1-to-clear (RISC-V Debug, as the fake has
+  // them): a value written to be read back or to keep a poll waiting goes in PROGBUF0 (0x20) and DATA0 (0x04)
+  const steps = [RiscvDm.stepWrite(0x20, 0x382), RiscvDm.stepRead(0x20), RiscvDm.stepDelay(5),
+    RiscvDm.stepPoll(0x16, 0x1000, 0, 10), RiscvDm.stepPollTime(0x16, 0x1000, 0, 1000)];   // busy clear: done at once
   assert.deepEqual(await dm.dmi(steps), { done: 5, values: [0x382, 0, 0] });
   const raw = await dm.request(RiscvDm.DMI, Uint8Array.from([2, 0, ...steps[0], ...steps[1]]));
   assert.deepEqual([...raw.payload.slice(0, 5)], [2, 0, 0, 1, 0]);          // done status nvals(u16) values [TLV]
   assert.deepEqual(await dm.dmi(Uint8Array.from([...steps[0], ...steps[1]])), { done: 2, values: [0x382] });
-  await dm.dmi([RiscvDm.stepWrite(0x16, 0x1000)]);
-  const err = await dm.dmi([RiscvDm.stepRead(0x11), RiscvDm.stepPoll(0x16, 0x1000, 0, 3), RiscvDm.stepRead(0x11)]).catch((e) => e);
+  await dm.dmi([RiscvDm.stepWrite(0x04, 0x1000)]);                       // bit 12 stays set: the poll gives up
+  const err = await dm.dmi([RiscvDm.stepRead(0x20), RiscvDm.stepPoll(0x04, 0x1000, 0, 3), RiscvDm.stepRead(0x20)]).catch((e) => e);
   assert.ok(err instanceof StepListError);
   assert.equal(err.done, 1);
   assert.equal(err.status, rv.TIMEOUT);

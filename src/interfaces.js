@@ -60,7 +60,7 @@ const LOGIC_LINES = Object.fromEntries(Array.from({ length: 8 }, (_, k) => [k, `
 
 /** fn 0, the core (no name, never in list; core §0, §12): its describe is the probe itself (core §7.5). */
 export const CORE_KNOWN = known(
-  'confirm, list, describe, open / end / keepalive, lock state; describe = the probe itself',
+  'confirm, list, describe, clock, open / end / keepalive, lock state; describe = the probe itself',
   { tags: { 0x40: ['firmware', asText], 0x41: ['model', asText], 0x42: ['unit id', asText],
     0x43: ['channels', u16], 0x44: ['reserved', channels], 0x45: ['profile', asText],
     0x46: ['label', label], 0x47: ['resets on open', () => 'yes'],

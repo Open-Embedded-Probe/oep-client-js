@@ -102,7 +102,8 @@ test('the core (fn 0) is described first and never listed; its describe is the p
   const cfg = dump.describeOffer(/** @type {dump.Offer} */ (caps.offers.find((o) => o.entry.name === 'oep.probe.config'))).declares;
   assert.deepEqual(cfg && [cfg.slots, cfg['bind modes']], ['1', 'last-reset, manual']);
   const text = dump.toText(caps);
-  assert.match(text, /\ncore {9}fn 0 {3}\(no name; the probe itself\)\n {16}ops: confirm, list, describe, clock, open, end, keepalive, lock_state\n/);
+  // the core block reads like every other: its heading, the summary, then what it declares
+  assert.match(text, /\ncore {9}fn 0 {3}\(no name; the probe itself\)\n {14}confirm, list, describe, clock, open \/ end \/ keepalive, lock state; describe = the probe itself\n {16}ops: confirm, list, describe, clock, open, end, keepalive, lock_state\n/);
   assert.ok(!text.includes('oep.core'));
   assert.deepEqual(dump.toData(caps).core.declares?.['unit id'], 'fafe00000003');
 }, 'cobs'));
