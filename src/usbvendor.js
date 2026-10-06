@@ -1,5 +1,5 @@
 // @ts-check
-// The vendor bulk transport on a WebUSB-shaped device (oep-core §3.1, §3.3): the OEP vendor interface's bulk IN / OUT
+// The vendor bulk transport on a WebUSB-shaped device (transports §1, §3): the OEP vendor interface's bulk IN / OUT
 // pair (class 0xFF, subclass 0x4F 'O', protocol 0x45 'E' - chosen by those, not the first bulk pair: a CDC has one
 // too, and another vendor interface may), length(u16) frames. Shared by the browser (WebUSB) and Node (the `usb`
 // package's WebUSB class); nothing here touches either environment.
@@ -8,30 +8,30 @@ import * as reg from './registry.js';
 
 /** @typedef {import('./usbtypes.js').UsbDevice} UsbDevice */
 
-/** The OEP vendor interface: bInterfaceClass 0xFF, bInterfaceSubClass 0x4F, bInterfaceProtocol 0x45 (core §3.3). */
+/** The OEP vendor interface: bInterfaceClass 0xFF, bInterfaceSubClass 0x4F, bInterfaceProtocol 0x45 (transports §3). */
 export const VENDOR_CLASS = reg.USB.vendor_bulk_class;
 export const VENDOR_SUBCLASS = reg.USB.vendor_bulk_subclass;
 export const VENDOR_PROTOCOL = reg.USB.vendor_bulk_protocol;
-/** The OEP HID collection: usage page 0xFF4F, usage 0x45 (core §3.3). */
+/** The OEP HID collection: usage page 0xFF4F, usage 0x45 (transports §3). */
 export const HID_USAGE_PAGE = reg.USB.hid_usage_page;
 
-/** The project's own USB VID:PID, 1209:4F45 (registry usb, core §3.3). */
+/** The project's own USB VID:PID, 1209:4F45 (registry usb, transports §3). */
 export const PROJECT_VID = reg.USB.project_vid;
 export const PROJECT_PID = reg.USB.project_pid;
 
 /**
- * The project's own USB VID:PID pairs (core §3.3): the only automatic identification of an OEP probe.
+ * The project's own USB VID:PID pairs (transports §3): the only automatic identification of an OEP probe.
  * @type {ReadonlyArray<readonly [number, number]>}
  */
 export const PROJECT_VID_PIDS = Object.freeze([/** @type {readonly [number, number]} */ (Object.freeze([PROJECT_VID, PROJECT_PID]))]);
 
-/** core §3.3: the device has the project's VID:PID (PROJECT_VID_PIDS). Nothing else (iProduct, interface class values)
+/** transports §3: the device has the project's VID:PID (PROJECT_VID_PIDS). Nothing else (iProduct, interface class values)
  * identifies an OEP probe. @param {number} vendorId @param {number} productId */
 export function isProjectDevice(vendorId, productId) {
   return PROJECT_VID_PIDS.some(([v, p]) => v === vendorId && p === productId);
 }
 
-/** A device found without being named: one with the project's VID:PID (core §3.3).
+/** A device found without being named: one with the project's VID:PID (transports §3).
  * @param {UsbDevice} device */
 export function usbCandidate(device) {
   return isProjectDevice(device.vendorId, device.productId);
@@ -42,7 +42,7 @@ export const PROJECT_USB_FILTERS = Object.freeze(PROJECT_VID_PIDS.map(([vendorId
 /** WebSerial chooser filters for the project's VID:PID (a probe's USB CDC ports). */
 export const PROJECT_SERIAL_FILTERS = Object.freeze(PROJECT_VID_PIDS.map(([usbVendorId, usbProductId]) => Object.freeze({ usbVendorId, usbProductId })));
 
-/** The probe's unit id: its USB serial number (core §3.3, §7.5): how a probe named by its unit id is found (the serial
+/** The probe's unit id: its USB serial number (transports §3, core §7.5): how a probe named by its unit id is found (the serial
  * alone decides; after confirm, describe's unit_id must match, open.js connect `unitId`).
  * @param {{ serialNumber?: string | null }} device */
 export function usbUnitId(device) {
@@ -131,7 +131,7 @@ export async function vendorTransport(device, { readSize = 16384, depth = 4 } = 
     async write(data) {
       const r = await device.transferOut(vi.endpointOut, data);
       if (r.status !== 'ok') throw new Error(`USB bulk OUT: ${r.status}`);
-      // a write whose length is a whole number of packets is ended with a zero-length packet (core §3.1)
+      // a write whose length is a whole number of packets is ended with a zero-length packet (transports §1)
       if (data.length && data.length % vi.packetSizeOut === 0) await device.transferOut(vi.endpointOut, new Uint8Array(0));
     },
     start(onData, onClose) {

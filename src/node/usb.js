@@ -33,15 +33,15 @@ export async function usbDevices() {
 function matches(d, { unitId, vendorId, productId }) {
   if (vendorId != null && d.vendorId !== vendorId) return false;
   if (productId != null && d.productId !== productId) return false;
-  // a unit id names the device by its serial alone (core §3.3: checked by describe after confirm, open.js connect)
+  // a unit id names the device by its serial alone (transports §3: checked by describe after confirm, open.js connect)
   if (unitId) return (usbUnitId(d) ?? '').toLowerCase() === unitId.toLowerCase();
-  // a VID:PID given names the device; otherwise the project's VID:PID (core §3.3) - probed by confirm first either way
+  // a VID:PID given names the device; otherwise the project's VID:PID (transports §3) - probed by confirm first either way
   if (vendorId == null && !usbCandidate(d)) return false;
   return true;
 }
 
 /**
- * The USB devices with the project's VID:PID (core §3.3), with their unit id (the USB serial). Nothing is sent here;
+ * The USB devices with the project's VID:PID (transports §3), with their unit id (the USB serial). Nothing is sent here;
  * opening one (openUsb) probes it with a confirm first. A probe with only a CDC port (RP2040 / RP2350) is opened as a
  * serial port: findSerialProbes; findProbes lists both, each device once.
  * @returns {Promise<{ unitId: string | null, vendorId: number, productId: number, product: string | null, device: UsbDevice }[]>}
@@ -52,7 +52,7 @@ export async function findUsbProbes() {
     .map((d) => ({ unitId: usbUnitId(d), vendorId: d.vendorId, productId: d.productId, product: d.productName ?? null, device: d }));
 }
 
-/** A device's ways in, in the order a bare openUsb tries them (core §3.3; Node opens vendor bulk and CDC, a browser's
+/** A device's ways in, in the order a bare openUsb tries them (transports §3; Node opens vendor bulk and CDC, a browser's
  * WebHID the HID one). */
 export const WAYS_IN = Object.freeze(['vendor', 'hid', 'cdc']);
 
@@ -86,7 +86,7 @@ export function describeProbe(p) {
 }
 
 /**
- * Every device with the project's VID:PID (core §3.3), each once whatever ways in it has: the USB devices (vendor bulk,
+ * Every device with the project's VID:PID (transports §3), each once whatever ways in it has: the USB devices (vendor bulk,
  * HID, CDC from their interfaces) and the serial ports on that VID:PID (findSerialProbes), the same device when their
  * USB serials match (case aside). A source whose optional package is missing adds nothing. Nothing is sent here.
  * `devices` / `ports`: the lists to use (default: usbDevices() / listSerialPorts() now).

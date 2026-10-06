@@ -6,7 +6,7 @@ import * as reg from './registry.js';
 import { Writer, getU16, getU32 } from './bytes.js';
 import * as catalog from './catalog.js';
 import * as m from './message.js';
-import { OepError } from './errors.js';
+import { OepError, rejection } from './errors.js';
 import { checkMaxOpMs } from './host.js';
 
 const TAG_ROLE_ASSIGNMENT = reg.CORE.tlv.plan_apply.role_assignment;   // the number 0x10; always sent critical (0x90, core §8)
@@ -80,6 +80,39 @@ export async function describe(hst, fn = 0) {
   return [...out];
 }
 
+/** The ops fn's describe declares in its ops tag (core §1.2, §7.4: the one declaration of every op an fn offers, the
+ * optional ones included); null when the describe carries none (a probe that does not conform: the host sends and lets
+ * the probe answer).
+ * @param {import('./host.js').Host} hst @param {number} fn @returns {Promise<Set<number> | null>} */
+export async function ops(hst, fn = 0) {
+  /** @type {Set<number> | null} */
+  let found = null;
+  for (const [tag, v] of await describe(hst, fn)) {
+    if ((tag & 0x7f) === m.TAG_OPS) found = new Set([...(found ?? []), ...catalog.unpackOps(v)]);
+  }
+  return found;
+}
+
+/** Whether fn offers op by its ops tag (true when the describe declares no ops: unknown, the probe decides).
+ * @param {import('./host.js').Host} hst @param {number} fn @param {number} op */
+export async function offers(hst, fn, op) {
+  const declared = await ops(hst, fn);
+  return declared === null || declared.has(op);
+}
+
+/** What a request for an op the fn's ops tag does not set gets from the probe (core §1.2, §4.3 order 1): the same
+ * Rejected with detail unknown_operation the host throws for that answer - a host that checks ops before sending
+ * throws this instead of sending. @returns {import('./errors.js').Rejected} */
+export function notOffered() {
+  return rejection(new m.Result(0, m.REJECTED, m.REJECT.unknown_operation));
+}
+
+/** Throw `notOffered()` when fn's ops tag does not set op (nothing is sent then).
+ * @param {import('./host.js').Host} hst @param {number} fn @param {number} op */
+export async function require(hst, fn, op) {
+  if (!(await offers(hst, fn, op))) throw notOffered();
+}
+
 /** The longest one request may take on this probe (oep.core describe max_op_ms, core §7.5): the ceiling of run's
  * timeout_ms, a dmi list's waits, an attach's hold_ms. A probe that declares none (not v1-complete) is taken as the
  * reference firmware's 10000 ms.
@@ -100,7 +133,7 @@ export async function firmwareLabels(hst) {
 /**
  * oep.core's describe decoded (core §7.5). Text values are shown as core §2.1 says (control characters replaced). labels: the firmware's fixed channel labels (0x46); the labels the settings
  * gave are read from oep.probe.config (config.ProbeConfig.items(), Label). discoverable: the probe also enumerates with the
- * project's USB VID:PID (core §3.3, §7.5). maxOpMs: the longest one request may take.
+ * project's USB VID:PID (transports §3, core §7.5). maxOpMs: the longest one request may take.
  * @param {import('./host.js').Host} hst
  */
 export async function probeInfo(hst) {
@@ -145,7 +178,7 @@ export async function take(hst, leaseMs = 3000, { owner, waitMs = 5000, force = 
  * @param {import('./host.js').Host} hst @param {[number, number, number][]} assignments */
 export async function planApply(hst, assignments) {
   const w = new Writer();
-  for (const [fn, role, ch] of assignments) w.u8(TAG_ROLE_ASSIGNMENT | m.TAG_CRITICAL).u8(5).u16(fn).u8(role).u16(ch);
+  for (const [fn, role, ch] of assignments) w.raw(m.tlv(TAG_ROLE_ASSIGNMENT, new Writer().u16(fn).u8(role).u16(ch).done(), true));
   await hst.call(m.CORE_FN, m.OP.plan_apply, w.done());
 }
 
@@ -204,4 +237,36 @@ export class Interface {
   /** The raw (fn, op, payload) of one operation, for Host.pipeline.
    * @param {number} op @param {Uint8Array} body @returns {[number, number, Uint8Array]} */
   req(op, body = new Uint8Array()) { return [this.fn, op, this.withPrefix(body)]; }
+  /** The ops this fn's describe declares (core §1.2, §7.4; null: no ops tag). */
+  ops() { return ops(this.host, this.fn); }
+  /** Whether this fn offers op by its ops tag (an optional op is offered exactly when set). @param {number} op */
+  offers(op) { return offers(this.host, this.fn, op); }
+}
+
+// ---- oep.link (oep-if-link): the link test and port_speed, an optional interface ------------------------------------
+export const LINK_NAME = reg.LINK.name;
+export const LINK_SOURCE = reg.LINK.op.source, LINK_SINK = reg.LINK.op.sink, LINK_PORT_SPEED = reg.LINK.op.port_speed;
+/** source's len is at most max_frame minus this (oep-if-link §2: header 5, len 2, the ignored room 19). */
+export const LINK_SOURCE_OVERHEAD = reg.LIMITS.link_source_overhead_bytes;
+
+/** The most one source answer carries and one sink request may (oep-if-link §2): max_frame - 26.
+ * @param {number} maxFrame */
+export function linkSize(maxFrame) { return Math.max(1, maxFrame - LINK_SOURCE_OVERHEAD); }
+
+/** The fn of the probe's oep.link (throws when the probe offers none - the link test and port_speed are optional).
+ * @param {import('./host.js').Host} hst */
+export function linkFn(hst) { return find(hst, LINK_NAME); }
+
+/** source's request: length(u32). @param {number} size */
+export function linkSourceRequest(size) { return new Writer().u32(size).done(); }
+
+/** sink's request: count(u16) data. @param {Uint8Array} data */
+export function linkSinkRequest(data) { return new Writer().u16(data.length).raw(data).done(); }
+
+/** source's answer: len(u16) data [TLV] -> data (byte k = k & 0xFF). @param {Uint8Array} payload */
+export function linkSourceData(payload) {
+  const rd = new m.Reader(payload);
+  const data = rd.counted(2);
+  rd.tail();
+  return data;
 }

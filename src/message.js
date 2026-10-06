@@ -1,22 +1,24 @@
 // @ts-check
 // v1 messages (oep-core §2-§5) and the rules for what follows a payload's fixed part.
 //
-//   request : role(0x01) corr(u16) fn(u16) op(u8) payload
-//             role(0x81) corr(u16) fn(u16) op(u8) session_id(u32) payload     role bit 7 = session_id present
+//   request : role(0x01) corr(u16) fn(u16) op(u8) session_id(u32) payload     10 bytes; session_id 0 = no session
 //   result  : role(0x02) corr(u16) resolution(u8) detail(u8) payload
 //
-// After a result's fixed part (and any counted list or length-prefixed data) come TLVs (tag u8, len u8, value; a len
-// byte of 0xFF means a u16 len follows, for values of 255 bytes and more - core §2.2); a host skips tags it does not
-// know. A request may end with TLVs; tag bit 7 = critical. Fixed forms grow at their end and readers skip what they do
-// not know (core §2.3); an answer list puts each element's length first; every container knows its length.
+// Every fixed form (a fixed part, a TLV's value, a sequence's element, a probe.config item) is fixed by (name, revision)
+// and never extended at its end; a sequence is count x element with no element length (core §2.3). After a result's
+// fixed part (and any counted list or length-prefixed data) come TLVs (tag u8, len u16, value - core §2.2, one form
+// whatever the length); a host skips tags it does not know. A request may end with TLVs; tag bit 7 = critical.
 
 import * as reg from './registry.js';
 import { getI32, getU16, getU32, getU64, text, utf8 } from './bytes.js';
 
 export const ROLE_REQUEST = reg.ROLES.request, ROLE_RESULT = reg.ROLES.result;
 export const ROLE_EVENT = reg.ROLES.event, ROLE_DATA = reg.ROLES.data;
-export const ROLE_SESSION = reg.ROLE_SESSION_FLAG;
-export const REQUEST_HEADER = 6, RESULT_HEADER = 5;
+export const REQUEST_HEADER = 10, RESULT_HEADER = 5;      // core §4.1 / §4.2
+/** A request's session_id when it belongs to no session (core §4.1). */
+export const NO_SESSION_ID = 0;
+/** tag(u8) len(u16) (core §2.2). */
+export const TLV_HEADER = 3;
 
 export const REJECTED = reg.RESOLUTIONS.rejected, COMPLETED = reg.RESOLUTIONS.completed, ACCEPTED = reg.RESOLUTIONS.accepted;
 export const SUCCESS = reg.OUTCOMES.success, FAILED = reg.OUTCOMES.failed, PARTIAL = reg.OUTCOMES.partial;
@@ -28,8 +30,8 @@ export const REJECT_NAMES = Object.fromEntries(Object.entries(REJECT).map(([k, v
 export const TAG_CRITICAL = reg.TAG_CRITICAL, TAG_IGNORED = reg.TAG_IGNORED, TAG_INVALID = reg.TAG_INVALID;
 /** The rejected unsupported payload's first byte for a fixed-part value (core §4.3); never a TLV tag. */
 export const TAG_FIXED = reg.TAG_RESERVED_ZERO;
-/** The len byte that says a u16 len follows (core §2.2), and the longest value the short form carries. */
-export const TLV_LEN_LONG = reg.TLV_LEN_LONG, TLV_SHORT_MAX = reg.TLV_LEN_LONG - 1;
+/** Every fn's describe: base(u8) bitmap - the ops it offers (core §1.2, §7.4). */
+export const TAG_OPS = reg.DESCRIBE_COMMON.ops;
 
 export const CORE_FN = 0;
 export const OP = reg.CORE.op;
@@ -41,25 +43,23 @@ export class OepError extends Error {}
 export class ProtocolError extends OepError {}
 /** A payload shorter than its fixed part, or a truncated TLV (a broken result). */
 export class ShortPayload extends ProtocolError {}
-/** A TLV that is not encoded the one way core §2.2 allows (a value under 255 bytes in the long form). */
-export class BadTlv extends ProtocolError {}
-
+/** One request (core §4.1). `session`: the session_id in the header - 0 (null is taken as 0) for a request that
+ * belongs to no session, which only an op that needs no lock may be. */
 export class Request {
   /** @param {number} corr @param {number} fn @param {number} op @param {Uint8Array} payload @param {number | null} session */
-  constructor(corr, fn, op, payload = new Uint8Array(), session = null) {
-    this.corr = corr; this.fn = fn; this.op = op; this.payload = payload; this.session = session;
+  constructor(corr, fn, op, payload = new Uint8Array(), session = NO_SESSION_ID) {
+    this.corr = corr; this.fn = fn; this.op = op; this.payload = payload; this.session = session ?? NO_SESSION_ID;
   }
 
   pack() {
-    const s = this.session !== null;
-    const out = new Uint8Array(REQUEST_HEADER + (s ? 4 : 0) + this.payload.length);
+    const out = new Uint8Array(REQUEST_HEADER + this.payload.length);
     const v = new DataView(out.buffer);
-    v.setUint8(0, s ? ROLE_REQUEST | ROLE_SESSION : ROLE_REQUEST);
+    v.setUint8(0, ROLE_REQUEST);
     v.setUint16(1, this.corr, true);
     v.setUint16(3, this.fn, true);
     v.setUint8(5, this.op);
-    if (s) v.setUint32(6, /** @type {number} */ (this.session) >>> 0, true);
-    out.set(this.payload, REQUEST_HEADER + (s ? 4 : 0));
+    v.setUint32(6, this.session >>> 0, true);
+    out.set(this.payload, REQUEST_HEADER);
     return out;
   }
 
@@ -67,13 +67,8 @@ export class Request {
   static unpack(data) {
     if (data.length < REQUEST_HEADER) throw new ProtocolError('request shorter than its header');
     const role = data[0];
-    if ((role & ~ROLE_SESSION) !== ROLE_REQUEST) throw new ProtocolError(`not a request: role 0x${role.toString(16)}`);
-    const corr = getU16(data, 1), fn = getU16(data, 3), op = data[5];
-    if (role & ROLE_SESSION) {
-      if (data.length < REQUEST_HEADER + 4) throw new ProtocolError('session flag set but no session id');
-      return new Request(corr, fn, op, data.slice(REQUEST_HEADER + 4), getU32(data, REQUEST_HEADER));
-    }
-    return new Request(corr, fn, op, data.slice(REQUEST_HEADER), null);
+    if (role !== ROLE_REQUEST) throw new ProtocolError(`not a request: role 0x${role.toString(16)}`);
+    return new Request(getU16(data, 1), getU16(data, 3), data[5], data.slice(REQUEST_HEADER), getU32(data, 6));
   }
 }
 
@@ -112,38 +107,31 @@ export class Result {
 
 // ---- TLVs ---------------------------------------------------------------------------------------------------
 
-/** One TLV in the one encoding core §2.2 allows: `tag len(u8) value` up to 254 bytes, `tag 0xFF len(u16) value` from
- * 255 on. `critical` sets tag bit 7 (a request argument the probe must honour or refuse).
+/** One TLV, `tag(u8) len(u16) value` (core §2.2: one form for every length). `critical` sets tag bit 7 (a request
+ * argument the probe must honour or refuse).
  * @param {number} tag @param {Uint8Array | number[]} value @param {boolean} critical */
 export function tlv(tag, value, critical = false) {
   if (value.length > 0xffff) throw new RangeError(`TLV 0x${tag.toString(16)}: value of ${value.length} bytes does not fit a u16 length`);
   if ((tag & 0x7f) === TAG_IGNORED || tag === TAG_FIXED) throw new RangeError('tags 0x00 and 0x7F are reserved (the unsupported marker, the ignored list)');
-  const long = value.length > TLV_SHORT_MAX;
-  const out = new Uint8Array((long ? 4 : 2) + value.length);
+  const out = new Uint8Array(TLV_HEADER + value.length);
   out[0] = tag | (critical ? TAG_CRITICAL : 0);
-  if (long) { out[1] = TLV_LEN_LONG; out[2] = value.length & 0xff; out[3] = value.length >> 8; } else out[1] = value.length;
-  out.set(value, long ? 4 : 2);
+  out[1] = value.length & 0xff; out[2] = value.length >> 8;
+  out.set(value, TLV_HEADER);
   return out;
 }
 
-/** TLVs in order, both forms (core §2.2). A truncated TLV throws ShortPayload (the result is broken); the long form
- * carrying a value the short form would hold throws BadTlv (not the one encoding).
+/** TLVs in order (core §2.2). A truncated TLV - a header cut short, or a len past the end - throws ShortPayload (the
+ * result is broken).
  * @param {Uint8Array} data @returns {[number, Uint8Array][]} */
 export function splitTlvs(data) {
   /** @type {[number, Uint8Array][]} */
   const out = [];
   let pos = 0;
   while (pos < data.length) {
-    if (pos + 2 > data.length) throw new ShortPayload('TLV: truncated header');
+    if (pos + TLV_HEADER > data.length) throw new ShortPayload('TLV: truncated header');
     const tag = data[pos];
-    let n = data[pos + 1];
-    pos += 2;
-    if (n === TLV_LEN_LONG) {
-      if (pos + 2 > data.length) throw new ShortPayload(`TLV 0x${tag.toString(16)}: truncated long length`);
-      n = getU16(data, pos);
-      pos += 2;
-      if (n <= TLV_SHORT_MAX) throw new BadTlv(`TLV 0x${tag.toString(16)}: a ${n}-byte value in the long form`);
-    }
+    const n = getU16(data, pos + 1);
+    pos += TLV_HEADER;
     if (pos + n > data.length) throw new ShortPayload(`TLV 0x${tag.toString(16)}: truncated value`);
     out.push([tag, data.slice(pos, pos + n)]);
     pos += n;
@@ -177,16 +165,6 @@ export class Tail {
   }
 }
 
-/** An answer list's element as sent: len(u8) then the element (core §2.3).
- * @param {Uint8Array} body */
-export function element(body) {
-  if (body.length > 255) throw new RangeError('a list element is at most 255 bytes');
-  const out = new Uint8Array(1 + body.length);
-  out[0] = body.length;
-  out.set(body, 1);
-  return out;
-}
-
 /** Reads a result payload's fixed part front to back; too short -> ShortPayload. */
 export class Reader {
   /** @param {Uint8Array} data */
@@ -207,12 +185,10 @@ export class Reader {
    * data has since core §2.3 put a length on every container. @param {1 | 2 | 4} width */
   counted(width = 2) { return this.bytes(width === 1 ? this.u8() : width === 4 ? this.u32() : this.u16()); }
   get left() { return this.data.length - this.at; }
-  /** The rest as bytes: fn 0's link_source only, the one answer that ends with a list of unknown length (core §12). */
+  /** The rest as bytes (an answer that is a TLV list itself: probe.config get). */
   rest() { const v = this.data.slice(this.at); this.at = this.data.length; return v; }
   /** The TLVs after the known part (core §2.3). */
   tail() { return Tail.parse(this.rest()); }
-  /** One element of an answer's list: len(u8) then the element; read what you know of it (core §2.3). */
-  element() { return new Reader(this.bytes(this.u8())); }
 }
 
 /** Text from an answer, made safe to show (core §2.1): invalid UTF-8 replaced, and every C0 control character

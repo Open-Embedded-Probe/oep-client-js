@@ -2,11 +2,13 @@
 // Capability discovery by name (oep-core §7.2-§7.4).
 //
 //   list request : flags(u8: bit0 exact) first(u16) prefix_len(u8) prefix
-//   list result  : total(u16) count(u8) count x (len(u8) entry) [TLV]     oep.core (fn 0) is the first entry
+//   list result  : total(u16) count(u8) count x entry [TLV]               oep.core (fn 0) is the first entry
 //   list entry   : fn(u16) instance(u16) revision(u8) flags(u8) name_len(u8) name
-//   describe     : request fn(u16) first(u16); result more(u8) then TLVs (tag u8, len u8 or 0xFF + u16, value;
-//                  tag bit 7 = critical). A describe is declarations only (core §7.3): the host caches it while the
-//                  probe's boot_id stays the same.
+//   describe     : request fn(u16) first(u16); result more(u8) then TLVs (tag u8, len u16, value; tag bit 7 =
+//                  critical). A describe is declarations only (core §7.3): the host caches it while the probe's
+//                  boot_id stays the same.
+//   ops          : the common describe tag 0x09 every fn carries, base(u8) bitmap: bit i set = op base + i is offered
+//                  (core §1.2, §7.4) - the one declaration of an fn's ops, the optional ones included
 //   channel_group: group(u8) n(u8) then n x (role(u8), channel(u16)): a fixed pin set (core §7.4)
 
 import * as reg from './registry.js';
@@ -33,10 +35,9 @@ export function unpackListResult(payload) {
   const total = rd.u16(), count = rd.u8();
   /** @type {ListEntry[]} */
   const entries = [];
-  for (let i = 0; i < count; i++) {
-    const e = rd.element();
-    const fn = e.u16(), instance = e.u16(), revision = e.u8(), flags = e.u8(), n = e.u8();
-    entries.push({ fn, instance, revision, flags, name: e.text(n) });
+  for (let i = 0; i < count; i++) {                    // count x entry, no element length (core §2.3)
+    const fn = rd.u16(), instance = rd.u16(), revision = rd.u8(), flags = rd.u8(), n = rd.u8();
+    entries.push({ fn, instance, revision, flags, name: rd.text(n) });
   }
   rd.tail();
   return { total, entries };
@@ -44,6 +45,31 @@ export function unpackListResult(payload) {
 
 /** @param {number} fn @param {number} first */
 export function packDescribeRequest(fn, first) { return new Writer().u16(fn).u16(first).done(); }
+
+/** The ops tag's value (core §7.4): base = the lowest op, then the bitmap, as short as it can be; no op: base 0 alone.
+ * @param {Iterable<number>} ops */
+export function packOps(ops) {
+  const list = [...new Set(ops)].sort((a, b) => a - b);
+  if (!list.length) return new Uint8Array([0]);
+  if (list[0] < 0 || list[list.length - 1] > 0xff) throw new RangeError('an op is u8');
+  const base = list[0];
+  const out = new Uint8Array(2 + Math.floor((list[list.length - 1] - base) / 8));
+  out[0] = base;
+  for (const op of list) out[1 + Math.floor((op - base) / 8)] |= 1 << ((op - base) % 8);
+  return out;
+}
+
+/** The ops an ops value declares (bit i of the bitmap = op base + i; bits past 0xFF mean nothing).
+ * @param {Uint8Array} v @returns {Set<number>} */
+export function unpackOps(v) {
+  const out = new Set();
+  if (!v.length) return out;
+  const base = v[0];
+  for (let i = 1; i < v.length; i++) {
+    for (let b = 0; b < 8; b++) if ((v[i] >> b) & 1 && base + (i - 1) * 8 + b <= 0xff) out.add(base + (i - 1) * 8 + b);
+  }
+  return out;
+}
 
 /** A channel_group value (core §7.4: group(u8) n(u8) n x (role(u8) channel(u16))) -> { group, pins }.
  * @param {Uint8Array} v @returns {{ group: number, pins: [number, number][] }} */
@@ -74,7 +100,8 @@ export function channelsToBitmap(channels) {
 }
 
 /**
- * The common describe tags decoded; interface-specific and unknown ones kept raw, in order.
+ * The common describe tags decoded; interface-specific and unknown ones kept raw, in order. ops: the ops tag (core §7.4),
+ * null when the describe carries none.
  * @typedef {object} Description
  * @property {Map<number, number[]>} roles         role -> the channels it may take
  * @property {Map<number, [number, number][]>} groups  group -> (role, channel) of a fixed pin set
@@ -83,6 +110,7 @@ export function channelsToBitmap(channels) {
  * @property {number | null} maxLength
  * @property {number | null} features
  * @property {number | null} implementation
+ * @property {Set<number> | null} ops
  * @property {[number, Uint8Array][]} specific      tags 0x40 and up
  * @property {number[]} unknownCritical
  */
@@ -91,7 +119,7 @@ export function channelsToBitmap(channels) {
 export function decodeDescription(tlvs) {
   /** @type {Description} */
   const d = { roles: new Map(), groups: new Map(), maxClockHz: null, minClockHz: null, maxLength: null, features: null,
-    implementation: null, specific: [], unknownCritical: [] };
+    implementation: null, ops: null, specific: [], unknownCritical: [] };
   for (const [tag, v] of tlvs) {
     const t = tag & ~CRITICAL;
     if (t === COMMON.role_channels) {
@@ -105,6 +133,7 @@ export function decodeDescription(tlvs) {
     else if (t === COMMON.max_length) d.maxLength = getU16(v);
     else if (t === COMMON.features) d.features = getU32(v);
     else if (t === COMMON.implementation) d.implementation = v[0];
+    else if (t === COMMON.ops) d.ops = new Set([...(d.ops ?? []), ...unpackOps(v)]);
     else if (t >= INTERFACE_TAG_FIRST) d.specific.push([tag, v]);
     else if (tag & CRITICAL) d.unknownCritical.push(tag);
   }

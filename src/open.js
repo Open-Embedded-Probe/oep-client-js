@@ -7,17 +7,17 @@ import * as reg from './registry.js';
 import { NotOepProbe, UnitIdMismatch } from './errors.js';
 import { DEFAULT_CANDIDATES, raiseSpeed } from './speed.js';
 
-/** The probing rule's wait for confirm's answer (core §3.3, §4.4: confirm sets no time, so 1000 ms). */
+/** The probing rule's wait for confirm's answer (transports §3, core §4.4: confirm sets no time, so 1000 ms). */
 export const PROBE_WAIT_MS = reg.TIMING.host_wait_add_ms;
 
 /**
- * The probing rule (core §3.3): every transport this client opens - one it has not identified, and a project VID:PID
+ * The probing rule (transports §3): every transport this client opens - one it has not identified, and a project VID:PID
  * device too - gets a confirm first, and nothing else until a valid answer (completed, the same corr, a
  * payload starting OEP!) came back. None: the link is closed and NotOepProbe thrown. Vendor bulk / HID: one confirm
  * and its one §5.2 resend, each waiting PROBE_WAIT_MS. A serial port (COBS) first runs Link.waitBootSpeed's confirms
- * (core §3.5 host obligation 7: about 4 s at the boot speed, a raised rate a host that died left over going back),
+ * (oep-if-link §3 host obligation 7: about 4 s at the boot speed, a raised rate a host that died left over going back),
  * confirms only. TCP (a host-side broker, which opens the probe itself) keeps the link's timeout. On length frames
- * (vendor bulk, HID, TCP) the input is first read and discarded until quiet (core §5.1).
+ * (vendor bulk, HID, TCP) the input is first read and discarded until quiet (transports §5).
  * @param {Link} link @param {Host} host @param {import('./link.js').Transport} transport
  */
 async function probe(link, host, transport) {
@@ -26,14 +26,14 @@ async function probe(link, host, transport) {
   try {
     if (transport.framing === 'cobs' && transport.kind === 'serial') await link.waitBootSpeed();
     else if (transport.kind !== 'tcp') link.timeoutMs = PROBE_WAIT_MS;
-    // core §5.1: the first confirm on a length-prefixed port waits for 50 ms of quiet input and for
+    // transports §5: the first confirm on a length-prefixed port waits for 50 ms of quiet input and for
     // host_resync_wait_ms (250 ms) since this host last wrote there
     await link.beforeFirstConfirm();
     return await host.confirm();
   } catch (e) {
     link.timeoutMs = saved;
     try { await link.close(); } catch { /* already gone */ }
-    const err = new NotOepProbe(`${transport.kind ?? 'transport'}: no valid confirm answer (${e instanceof Error ? e.message : e}); closed, nothing else sent (core §3.3)`);
+    const err = new NotOepProbe(`${transport.kind ?? 'transport'}: no valid confirm answer (${e instanceof Error ? e.message : e}); closed, nothing else sent (transports §3)`);
     /** @type {any} */ (err).cause = e;
     throw err;
   } finally {
@@ -43,7 +43,7 @@ async function probe(link, host, transport) {
 }
 
 /**
- * A device opened by its named unit id (core §3.3): after confirm, fn 0's describe must say that unit_id; otherwise the
+ * A device opened by its named unit id (transports §3): after confirm, fn 0's describe must say that unit_id; otherwise the
  * link is closed and UnitIdMismatch thrown (nothing else is sent).
  * @param {Host} host @param {string} unitId
  */
@@ -64,11 +64,11 @@ export async function checkUnitId(host, unitId) {
 }
 
 /**
- * portSpeed: the candidates to try, in order (opt-in, oep-core §3.5, speed.js; true = raiseSpeed's default, 500000):
+ * portSpeed: the candidates to try, in order (opt-in, oep-if-link §3, speed.js; true = raiseSpeed's default, 500000):
  * the lock is taken (core.take, `leaseMs`, `owner`) and left open for the caller - who goes on in that session, never
  * opening another (a new session would end this one, and the rate with it) - and `raiseSpeed(host, candidates, {
  * flows, verify, record })` runs (the minimal form unless `verify` / `flows` ask for the full one; `record` off by
- * default); its report is `host.link.speed`. The transport is probed first (core §3.3, `probe` above): a confirm only,
+ * default); its report is `host.link.speed`. The transport is probed first (transports §3, `probe` above): a confirm only,
  * and no valid answer closes it (NotOepProbe); on a serial port (COBS) the first confirm is retried for about 4 s
  * (Link.waitBootSpeed): a raised rate a host that died left over goes back by then. `unitId`: the unit the device was
  * opened as (by its USB serial): fn 0's describe must say the same unit_id, else the link is closed (UnitIdMismatch).

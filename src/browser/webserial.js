@@ -1,6 +1,6 @@
 // @ts-check
 // WebSerial: a serial port (USB CDC, USB-Serial/JTAG, a USB-UART bridge). COBS frames and the port's raw bytes on
-// one line (oep-core §3.1, §3.4). Opened 8N1 without flow control, DTR and RTS asserted (core §3.4, C-09): WebSerial
+// one line (transports §1, §4). Opened 8N1 without flow control, DTR and RTS asserted (transports §4, C-09): WebSerial
 // cannot name DTR / RTS before the open (the browser asserts both when it opens the port), so `setSignals` asserts
 // them right after every open; a browser without setSignals keeps what the open gave.
 
@@ -26,7 +26,7 @@ const serialApi = () => {
 /**
  * Ask the user for a serial port. `filters`: the caller's WebSerial filters (by VID:PID) to narrow the chooser; none
  * offers every port - a UART bridge or a built-in USB serial is never on the project's VID:PID, so the default does not
- * narrow. PROJECT_SERIAL_FILTERS (usbvendor.js) offers only probes on the project's VID:PID (core §3.3).
+ * narrow. PROJECT_SERIAL_FILTERS (usbvendor.js) offers only probes on the project's VID:PID (transports §3).
  * @param {{ filters?: SerialPortFilter[] }} [opts]
  * @returns {Promise<SerialPortLike>}
  */
@@ -34,10 +34,10 @@ export function requestSerialPort({ filters } = {}) {
   return serialApi().requestPort(filters ? { filters } : {});
 }
 
-/** WebSerial's open options as core §3.4 asks (C-09): 8N1, no flow control. */
+/** WebSerial's open options as transports §4 asks (C-09): 8N1, no flow control. */
 export const SERIAL_LINE = Object.freeze({ dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
 
-/** DTR and RTS asserted together (core §3.4, C-09); a browser without setSignals keeps what the open gave.
+/** DTR and RTS asserted together (transports §4, C-09); a browser without setSignals keeps what the open gave.
  * @param {SerialPortLike} port */
 async function assertSignals(port) {
   try { await port.setSignals?.({ dataTerminalReady: true, requestToSend: true }); } catch { /* no signals */ }
@@ -47,11 +47,11 @@ async function assertSignals(port) {
 export function getSerialPorts() { return serialApi().getPorts(); }
 
 /**
- * A serial port as a transport, opened 8N1 without flow control with DTR and RTS asserted (core §3.4, C-09).
+ * A serial port as a transport, opened 8N1 without flow control with DTR and RTS asserted (transports §4, C-09).
  * `setBaudRate` changes the rate the way esptool-js does over WebSerial: the same SerialPort closed and opened again at
  * the new baudRate (the page keeps its permission), DTR and RTS then asserted together at once (a UART bridge's
  * auto-reset circuit resets the board when they differ), and the reader started again - what arrived meanwhile is
- * gone, which port_speed expects (oep-core §3.5).
+ * gone, which port_speed expects (oep-if-link §3).
  * @param {SerialPortLike} port
  * @param {{ baudRate?: number, bufferSize?: number }} [opts]  baudRate matters only on a UART bridge
  * @returns {Promise<import('../link.js').Transport>}

@@ -1,6 +1,6 @@
 // @ts-check
 // WebUSB: the probe's vendor bulk interface (class 0xFF, subclass 0x4F, protocol 0x45, one bulk IN / OUT pair;
-// length(u16) frames, oep-core §3.1, §3.3). The same code runs in Node through the `usb` package (src/usbvendor.js).
+// length(u16) frames, transports §1, §3). The same code runs in Node through the `usb` package (src/usbvendor.js).
 import { PROJECT_USB_FILTERS, isProjectDevice, requireUnitName, usbCandidate, usbUnitId, vendorTransport } from '../usbvendor.js';
 
 export { usbUnitId, isProjectDevice, usbCandidate };
@@ -24,7 +24,7 @@ export function webUsbTransport(device, opts) {
 }
 
 /**
- * Ask the user for a probe's USB device. The default chooser filter is the project's VID:PID (core §3.3); a caller's
+ * Ask the user for a probe's USB device. The default chooser filter is the project's VID:PID (transports §3); a caller's
  * `filters` (another implementation's VID:PID) offer devices the user then chooses, which connect (openWebUsb) probes
  * with a confirm first and closes when no valid answer comes.
  * @param {{ filters?: object[] }} [opts]
@@ -36,7 +36,7 @@ export async function requestUsbProbe({ filters } = {}) {
 
 /**
  * The devices this page was given before (no chooser). With `unitId`: the one whose USB serial is that unit id, by the
- * serial alone (core §3.3; connect's `unitId` then checks describe). Without: the devices with the project's VID:PID,
+ * serial alone (transports §3; connect's `unitId` then checks describe). Without: the devices with the project's VID:PID,
  * each still probed by confirm when opened. An `x-` unit id
  * names no unit (core §7.5): RangeError.
  * @param {{ unitId?: string }} [opts]

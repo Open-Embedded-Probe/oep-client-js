@@ -6,19 +6,19 @@ import { serialTransport } from './serial.js';
 import { chooseProbe, describeProbe, findProbes, usbTransport } from './usb.js';
 import { PROJECT_PID, PROJECT_VID, vendorTransport } from '../usbvendor.js';
 
-/** `unitId`: describe must say this unit_id, else closed (UnitIdMismatch, core §3.3).
+/** `unitId`: describe must say this unit_id, else closed (UnitIdMismatch, transports §3).
  * @param {import('../open.js').SpeedOptions & { host?: string, port: number, framing?: 'length' | 'cobs', timeoutMs?: number, baudRate?: number, leaseMs?: number, owner?: string, unitId?: string }} opts */
 export async function openTcp(opts) { return connect(await tcpTransport(opts), opts); }
 
-/** portSpeed: the candidates to try once connected (port_speed, oep-core §3.5; true = the default 500000; the lock is
+/** portSpeed: the candidates to try once connected (port_speed, oep-if-link §3; true = the default 500000; the lock is
  * taken and kept, see connect), `flows` / `verify` for the full form, `record` for the record of passed / failed rates.
- * `unitId`: describe must say this unit_id, else closed (UnitIdMismatch, core §3.3).
+ * `unitId`: describe must say this unit_id, else closed (UnitIdMismatch, transports §3).
  * @param {import('../open.js').SpeedOptions & { path: string, baudRate?: number, timeoutMs?: number, leaseMs?: number, owner?: string, unitId?: string }} opts */
 export async function openSerial(opts) { return connect(await serialTransport(opts), opts); }
 
 /** A Host on a USB device's vendor bulk interface. `unitId`: the device whose USB serial it is (no other check), and
  * fn 0's describe must then say the same unit_id (else closed, UnitIdMismatch). Probed with a confirm first (connect).
- * With nothing given it looks at every device with the project's VID:PID (core §3.3; findProbes, one device counted
+ * With nothing given it looks at every device with the project's VID:PID (transports §3; findProbes, one device counted
  * once whatever ways in it has; `probes`: that list, if already made): exactly one -> it is opened, by vendor bulk,
  * else its CDC port (one; several: name it); several -> SeveralProbesError listing each (unit id, ways in), nothing
  * opened - name one (`unitId`, or openSerial with its port); none -> the USB error. As oep-client-python's bare `usb`.

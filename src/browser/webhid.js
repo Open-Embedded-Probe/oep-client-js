@@ -1,6 +1,6 @@
 // @ts-check
-// WebHID: the probe's vendor HID interface (usage page 0xFF4F, usage 0x45 - core §3.3, registry usb). Each report
-// carries count(u16 LE) and then that many bytes of the length(u16) frame stream, the rest zero (oep-core §3.1). The
+// WebHID: the probe's vendor HID interface (usage page 0xFF4F, usage 0x45 - transports §3, registry usb). Each report
+// carries count(u16 LE) and then that many bytes of the length(u16) frame stream, the rest zero (transports §1). The
 // report ID, when the descriptor declares one, is WebHID's business: sendReport takes it apart, an inputreport gives
 // it apart.
 import * as reg from '../registry.js';
@@ -102,7 +102,7 @@ const hidApi = () => {
 
 /**
  * Ask the user for a probe's HID interface. The default chooser filter is the project's VID:PID with the OEP collection
- * (usage page 0xFF4F, usage 0x45; core §3.3); a caller's `filters` offer devices the user then chooses, which connect
+ * (usage page 0xFF4F, usage 0x45; transports §3); a caller's `filters` offer devices the user then chooses, which connect
  * (openWebHid) probes with a confirm first and closes when no valid answer comes. WebHID may give several HIDDevice
  * objects for one USB device: the one with the OEP collection is taken.
  * @param {{ filters?: object[] }} [opts]

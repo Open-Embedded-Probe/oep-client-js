@@ -1,7 +1,7 @@
 // @ts-check
 // Serial ports (USB CDC, USB-Serial/JTAG, a USB-UART bridge) through the optional `serialport` package: COBS frames
-// and the port's raw bytes on one line (oep-core §3.1, §3.4). Opened exclusively (lock: true), 8 data bits, no parity,
-// 1 stop bit, no flow control, DTR and RTS asserted from the open on and while it stays open (core §3.4, C-09: a UART
+// and the port's raw bytes on one line (transports §1, §4). Opened exclusively (lock: true), 8 data bits, no parity,
+// 1 stop bit, no flow control, DTR and RTS asserted from the open on and while it stays open (transports §4, C-09: a UART
 // bridge may wire them to the probe's reset; what a probe does with DTR deasserted is not defined). serialport has no
 // option to give DTR / RTS at open: the OS asserts both when the port opens (POSIX termios, Windows DTR_CONTROL_ENABLE /
 // RTS_CONTROL_ENABLE), and `set({ dtr: true, rts: true })` right after the open makes it explicit.
@@ -30,7 +30,7 @@ export async function listSerialPorts() {
 }
 
 /**
- * The serial ports of devices with the project's VID:PID (core §3.3: every CDC of an OEP probe is a serial port), with
+ * The serial ports of devices with the project's VID:PID (transports §3: every CDC of an OEP probe is a serial port), with
  * their unit id (the USB serial). How a probe with only a CDC port (RP2040 / RP2350) is found without naming the port;
  * still probed by confirm when opened. A UART bridge or a built-in USB serial is never on that VID:PID: its port is
  * chosen by the user. `ports`: a list as listSerialPorts gives it (default: the OS's now).
@@ -43,10 +43,10 @@ export async function findSerialProbes(ports) {
     .map((p) => ({ path: p.path, unitId: p.serialNumber || null }));
 }
 
-/** The port's options as core §3.4 asks (C-09), for a check: 8N1, no flow control. */
+/** The port's options as transports §4 asks (C-09), for a check: 8N1, no flow control. */
 export const SERIAL_LINE = Object.freeze({ dataBits: 8, parity: 'none', stopBits: 1, rtscts: false, xon: false, xoff: false, xany: false });
 
-/** DTR and RTS asserted (core §3.4, C-09); a port that cannot set them (a pty, a driver without modem lines) keeps what
+/** DTR and RTS asserted (transports §4, C-09); a port that cannot set them (a pty, a driver without modem lines) keeps what
  * the open gave. @param {any} port */
 export function assertLines(port) {
   return new Promise((resolve) => {
@@ -70,7 +70,7 @@ export async function serialTransport({ path, baudRate = 115200 }) {
     kind: 'serial',
     path,
     baudRate,
-    // port_speed (oep-core §3.5): the rate changed in place (serialport's update)
+    // port_speed (oep-if-link §3): the rate changed in place (serialport's update)
     setBaudRate: (rate) => new Promise((resolve, reject) => port.update({ baudRate: rate }, (/** @type {Error | null} */ e) => {
       if (e) return reject(e);
       transport.baudRate = rate;

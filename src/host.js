@@ -2,14 +2,18 @@
 // The host side of the v1 session rules (oep-core §5, §6), over a Link.
 //
 // Every open picks a random u32 session id (never a counter: after a probe reboot a counter would match an old
-// process's id). Role 0x81 (a session id in the header) goes only to a probe whose confirm answered revision 1 or
-// more. core §6.5 / §9: when the probe's boot_id changes (confirm, open, a heartbeat the link read, the link's own
-// confirms), when the lease lapsed (rejected expired, open answering resumed = 2), when another session came in between,
-// by force or not (rejected no_session), and when an open with the session_id this host used last is answered resumed
-// = 0 (the probe no longer knows it: a reboot that may have repeated its boot_id, or another host in between; core §6.5,
-// C-19), every connection, stream and the plan this session had are gone: `epoch` counts those losses. A reboot also
-// drops the remembered name -> fn mapping and the describes, so they are listed again. An expired session is never
-// re-opened behind the caller's back: Expired is thrown and the caller opens again (host guide §9).
+// process's id). Every request carries a session_id in its header (core §4.1): this session's id for a request sent
+// locked while one is open, 0 for a lock-free one outside it; a session's requests go only to a probe whose confirm
+// answered revision 1 or more.
+//
+// No resume (core §6.2, §6.4, §9): when a session's lock ends - end, lease expiry, another session's force - the probe
+// releases everything the session created (its plan, its shares of connections and streams, its subscriptions);
+// nothing passes to the next session and an ended session never continues. A request of an ended session is rejected
+// no_session (NoSession) while the lock is free: the host is then out of a session and the caller opens a new one.
+// What lasts is the probe's: its settings, a slot's connection (an attach on a live combination returns it), a console
+// stream per place and mechanism (an open there returns it with its position and marks). `epoch` counts the losses of
+// everything this host's session had: an end, a no_session, a changed boot_id (confirm, open, a heartbeat, the link's
+// own confirms); a reboot also drops the remembered name -> fn mapping and the describes, so they are listed again.
 //
 // A probe whose confirm answer is outside core §7.1's bounds (max_frame under 64, window under max_frame, max_inflight
 // 0; C-20), or whose fn 0 describe declares a max_op_ms outside 1..600000 (core §4.4, §7.5; C-47), is not used:
@@ -33,12 +37,9 @@ const CONFIRM_TRANSPORT = reg.CORE.tlv.confirm_answer.transport;
  * @typedef {{ revision: number, flags: number, maxFrame: number, window: number, maxInflight: number, bootId: number,
  *   transport: number | null, tail: m.Tail }} Limits */
 /**
- * open's answer. resumed (core §6.4): 0 a new session, 1 the same id with its resources kept, 2 the same id after its
- * lease lapsed and the probe swept them (`swept`: the host rebuilds its plan and connections; `epoch` moved).
- * @typedef {{ leaseMs: number, bootId: number, resumed: number, swept: boolean }} Opened
+ * open's answer (core §6.4): the lease the probe gave and its boot_id.
+ * @typedef {{ leaseMs: number, bootId: number }} Opened
  */
-
-export const RESUMED = reg.CORE.enum.resumed;
 
 /** fn 0's describe max_op_ms is 1 to this (core §7.5, C-47). */
 export const MAX_OP_MS_MAX = reg.LIMITS.max_op_ms_max;
@@ -93,6 +94,7 @@ export class Host {
   constructor(link) {
     this.link = link;
     /** @type {number | null} */ this.session = null;
+    /** where open's session ids come from: a random non-zero u32 (core §6.4; a test may fix it) */ this.newSession = randomSession;
     /** @type {number | null} */ this.revision = null;
     /** @type {Limits | null} */ this.limits = null;
     this.epoch = 0;
@@ -102,7 +104,7 @@ export class Host {
     /** @type {Map<number, number>} fn -> interface revision from list */ this.revisions = new Map();
     /** @type {Map<number, [number, Uint8Array][]>} fn -> its describe TLVs (declarations: valid for one boot_id) */ this.describes = new Map();
     /** @type {number | null} */ this.bootId = null;
-    /** @type {number | null} the lease the last open gave (named by Expired) */ this.leaseMs = null;
+    /** @type {number | null} the lease the last open gave */ this.leaseMs = null;
     this.unusable = '';                      // why this probe is not used (C-20, C-47): set, nothing more is sent
     /** @type {bigint | null} the last heartbeat's uptime_ns (core §11.2, fn 0 kind 0x01) */ this.uptimeNs = null;
     if (link && 'corrSource' in link) link.corrSource = () => this.nextCorr();   // the link's own confirms (port_speed)
@@ -110,8 +112,9 @@ export class Host {
     if (link && 'keepaliveFrame' in link) {   // raised (port_speed): the link keeps the line alive in this session
       link.keepaliveFrame = () => new m.Request(this.nextCorr(), m.CORE_FN, m.OP.keepalive, new Uint8Array(), this.session).pack();
     }
-    if (link && 'sessionFrame' in link) {   // raised: the step down's revert in this session
-      link.sessionFrame = (/** @type {number} */ op, /** @type {Uint8Array} */ payload) => new m.Request(this.nextCorr(), m.CORE_FN, op, payload, this.session).pack();
+    if (link && 'sessionFrame' in link) {   // raised: the step down's revert in this session (on oep.link's fn)
+      link.sessionFrame = (/** @type {number} */ op, /** @type {Uint8Array} */ payload, /** @type {number} */ fn = m.CORE_FN) =>
+        new m.Request(this.nextCorr(), fn, op, payload, this.session).pack();
     }
     if (link && 'lease' in link) link.lease = () => (this.session !== null ? this.leaseMs : null);   // raised: bounds each wait
     if (link && 'sessionId' in link) link.sessionId = () => this.session;
@@ -131,9 +134,10 @@ export class Host {
     if (this.link && typeof this.link.keepRaised === 'function') await this.link.keepRaised();
   }
 
-  /** @param {boolean} locked */
+  /** The header's session_id (core §4.1): this session's id for a request sent `locked` while one is open, else 0 (a
+   * lock-free request outside the session: no session check, the lease untouched). @param {boolean} locked */
   async sessionFor(locked) {
-    if (!locked || this.session === null) return null;
+    if (!locked || this.session === null) return m.NO_SESSION_ID;
     await this.requireV1();
     return this.session;
   }
@@ -144,18 +148,20 @@ export class Host {
    * budget, a save; core §4.4, §6.1: the probe does not count the lease meanwhile): the link waits at least that +
    * host_wait_add_ms (1000 ms) + a serial port's transfer time for its answer (core §4.4's floor, C-06), also at a
    * raised port_speed rate (where an ordinary request waits a quarter of the lease, never under the floor).
-   * @param {number} fn @param {number} op @param {Uint8Array} payload @param {{ locked?: boolean, expectMs?: number }} [opts]
+   * session: the id to send instead (open: the id it opens).
+   * @param {number} fn @param {number} op @param {Uint8Array} payload
+   * @param {{ locked?: boolean, expectMs?: number, session?: number }} [opts]
    */
-  async request(fn, op, payload = new Uint8Array(), { locked = true, expectMs = 0 } = {}) {
+  async request(fn, op, payload = new Uint8Array(), { locked = true, expectMs = 0, session: sid } = {}) {
     this.requireUsable();
-    const session = await this.sessionFor(locked);
+    const session = sid ?? await this.sessionFor(locked);
     await this.beforeRequest();
     const req = new m.Request(this.nextCorr(), fn, op, payload, session);
     const result = m.Result.unpack(await this.link.send(req.pack(), expectMs ? { expectMs } : undefined));
     if (result.corr !== req.corr) throw new m.ProtocolError(`result for correlation ${result.corr}, expected ${req.corr}`);
     if (result.resolution === m.REJECTED) {
       this.rejected(result);
-      throw rejection(result, this.leaseMs);
+      throw rejection(result);
     }
     return result;
   }
@@ -170,9 +176,12 @@ export class Host {
 
   /** @param {m.Result} result */
   rejected(result) {
-    // expired: the lease lapsed and the probe swept this session's resources (core §9). no_session: another session
-    // opened in between (a force among them) and took them over. Either way they are not ours.
-    if (result.detail === m.REJECT.no_session || result.detail === m.REJECT.expired) this.swept();
+    // no session holds the lock: this one ended (lease expiry, or a force and then the forcing session's end) and the
+    // probe released what it created (core §6.2, §9). The host is out of a session.
+    if (result.detail === m.REJECT.no_session && this.session !== null) {
+      this.session = null;
+      this.swept();
+    }
   }
 
   /** This session's resources (plan, connections, streams, subscriptions) are gone; the probe is the same. */
@@ -241,7 +250,7 @@ export class Host {
   async pipelineCalls(requests, opts = {}) {
     const results = await this.pipeline(requests, opts);
     for (const r of results) {
-      if (r.resolution === m.REJECTED) throw rejection(r, this.leaseMs);
+      if (r.resolution === m.REJECTED) throw rejection(r);
       if (!r.succeeded) throw new Failed(r);
     }
     return results;
@@ -309,42 +318,37 @@ export class Host {
   // ---- the session and the lock (§6) -----------------------------------------------------------------------
 
   /**
-   * A new random id (never 0, core §6.1) unless `session` is given. leaseMs 0 = the probe's default; 1000..60000 are
-   * taken as asked. owner: who holds the lock, shown to other hosts (`ownerText`: control characters replaced, cut to
-   * 32 bytes on a character). Opened.resumed: 0 a new session, 1 the same id with its
-   * resources kept, 2 the same id after its lease lapsed swept them (core §6.4). The id used last answered 0: the
-   * probe lost it (a reboot, or another session in between; C-19) - `epoch` moves and the fns are listed again.
-   * @param {number} leaseMs @param {{ force?: boolean, session?: number, owner?: string }} [opts]
+   * Open a new session under a new random id (core §6.4; the id goes in the header, never 0). leaseMs 0 = the probe's
+   * default; 1000..60000 are taken as asked. owner: who holds the lock, shown to other hosts (`ownerText`: control
+   * characters replaced, cut to 32 bytes on a character). force: take the lock from another session (its resources are
+   * released first). A session this host had open is left behind. The answer's boot_id is watched (core §6.5).
+   * @param {number} leaseMs @param {{ force?: boolean, owner?: string }} [opts]
    * @returns {Promise<Opened>}
    */
-  async open(leaseMs = 0, { force = false, session, owner } = {}) {
+  async open(leaseMs = 0, { force = false, owner } = {}) {
     await this.requireV1();
-    const sid = session ?? randomSession();
-    if (sid === 0) throw new RangeError('session_id 0 is not a session (core §6.1)');
-    const w = new Writer().u32(sid).u32(leaseMs).u8(force ? 1 : 0);
+    const sid = this.newSession();
+    const w = new Writer().u32(leaseMs).u8(force ? 1 : 0);
     if (owner) w.raw(m.tlv(OWNER, ownerText(owner)));
-    const last = session ?? this.session;    // the id this host used last (C-19)
-    const r = await this.request(m.CORE_FN, m.OP.open, w.done(), { locked: false });
-    if (sid !== this.session) this.subscriptions.clear();
-    this.session = sid;
+    const r = await this.request(m.CORE_FN, m.OP.open, w.done(), { session: sid });
     const rd = new m.Reader(r.payload);
-    const lease = rd.u32(), bootId = rd.u32(), resumed = rd.u8();
+    const lease = rd.u32(), bootId = rd.u32();
     rd.tail();
-    const rebooted = this.bootIdSeen(bootId);
+    const rebooted = this.bootId !== null && bootId !== this.bootId;
+    if (this.session !== null && !rebooted) this.swept();   // nothing of the last session is ours (core §9)
+    this.subscriptions.clear();
+    this.session = sid;
+    this.bootIdSeen(bootId);                                // a reboot: one loss, and the names listed again
     this.leaseMs = lease;
-    if (resumed === RESUMED.swept) this.swept();
-    else if (resumed !== RESUMED.resumed) {
-      this.subscriptions.clear();
-      // the probe no longer knows the id this host used last: a reboot (its boot_id may have repeated) or another
-      // session in between - list again before a remembered fn is used (core §6.5, C-19)
-      if (sid === last && !rebooted) this.lost();
-    }
-    return { leaseMs: lease, bootId, resumed, swept: resumed === RESUMED.swept };
+    return { leaseMs: lease, bootId };
   }
 
+  /** End the session: the probe releases the lock and everything the session created (core §6.4, §9). A resent end is
+   * answered from the probe's resend table (core §5.2). */
   async end() {
     await this.request(m.CORE_FN, m.OP.end);
-    this.subscriptions.clear();
+    this.session = null;
+    this.swept();
   }
 
   async keepalive() { await this.request(m.CORE_FN, m.OP.keepalive); }
@@ -397,7 +401,7 @@ export class Host {
     this.subscriptions.delete(fn);
   }
 
-  /** The requests a resync may send without confirming (core §5.1): unsubscribe every subscription and end the
+  /** The requests a resync may send without confirming (transports §5): unsubscribe every subscription and end the
    * session - both harmless when run twice - for when pushes keep the input from going quiet. */
   blindStop() {
     if (this.session === null || !this.revision) return [];
@@ -405,6 +409,8 @@ export class Host {
       new m.Request(this.nextCorr(), m.CORE_FN, m.OP.unsubscribe, new Writer().u16(fn).done(), this.session).pack());
     out.push(new m.Request(this.nextCorr(), m.CORE_FN, m.OP.end, new Uint8Array(), this.session).pack());
     this.subscriptions.clear();
+    this.session = null;                     // the blind end ends it: nothing of it lasts (core §9)
+    this.epoch++;
     return out;
   }
 }

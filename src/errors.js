@@ -3,9 +3,9 @@
 
 import * as reg from './registry.js';
 import { getU16, getU32 } from './bytes.js';
-import { OepError, ProtocolError, ShortPayload, BadTlv, REJECT, TAG_FIXED, splitTlvs, shown, Tail } from './message.js';
+import { OepError, ProtocolError, ShortPayload, REJECT, TAG_FIXED, splitTlvs, shown, Tail } from './message.js';
 
-export { OepError, ProtocolError, ShortPayload, BadTlv };
+export { OepError, ProtocolError, ShortPayload };
 
 /** The probe refused the request (resolution rejected). */
 export class Rejected extends OepError {
@@ -26,7 +26,7 @@ export class NotV1 extends OepError {}
 export class Timeout extends OepError {}
 /** core §5.2 (C-38): a request's resend got no answer either - the transport failed. The outcome of that request, and
  * of every request outstanding with it, is unknown. Nothing else goes out on the transport before the link has
- * recovered with core §5.1's confirm (the next request runs it first; when no confirm is answered that request fails
+ * recovered with transports §5's confirm (the next request runs it first; when no confirm is answered that request fails
  * with TransportFailed too, `recovery` set, and the transport stays failed: close and open it again). After a recovery,
  * read the state before repeating a state-changing request. `broken`: the resend's answer came broken (a serial port's
  * bad frame), not missing. */
@@ -37,15 +37,15 @@ export class TransportFailed extends Timeout {
 /** The probe declared values a conforming probe never does (core §7.1 confirm's bounds, C-20; §7.5 max_op_ms, C-47):
  * this host sends nothing more to it. The message reports the values. */
 export class NotUsable extends OepError {}
-/** A length-prefixed link lost its frame boundaries (oep-core §5.1) and could not find them again, or a request
+/** A length-prefixed link lost its frame boundaries (transports §5) and could not find them again, or a request
  * waiting then could not go once more (already resent, or a session request after the resync's blind end). */
 export class FramingLost extends OepError {}
 /** The lock is held by someone who keeps it going. */
 export class InUse extends OepError {}
-/** A device or port this host had not identified gave no valid confirm answer (core §3.3 probing rule): it was closed
+/** A device or port this host had not identified gave no valid confirm answer (transports §3 probing rule): it was closed
  * and nothing else was sent to it. */
 export class NotOepProbe extends OepError {}
-/** The device opened by its named unit id (its USB serial) says another unit_id in describe (core §3.3): closed. */
+/** The device opened by its named unit id (its USB serial) says another unit_id in describe (transports §3): closed. */
 export class UnitIdMismatch extends OepError {}
 
 const OWNER = reg.CORE.tlv.locked_payload.owner;
@@ -60,25 +60,10 @@ export class Locked extends Rejected {
     } catch { return null; }
   }
 }
-/** rejected no_session: another session came in between (a force among them) and took this session's resources over
- * (core §9); the host opens again. */
+/** rejected no_session (core §6.2): the request carries a session_id while no session holds the lock - this session
+ * ended (end, lease expiry, another session's force and then its end) and the probe released everything it created.
+ * Nothing is re-opened silently: the caller opens a new session and builds again (host guide §9). */
 export class NoSession extends Rejected {}
-
-/**
- * rejected expired (core §6.2, §9): this session's lease lapsed and the probe swept its resources (plan, connections,
- * streams). Nothing is re-opened silently: the caller opens again (resumed = 2 then) and rebuilds what it had.
- * `leaseMs`: the lease the session had (null when unknown). A session whose lock another id took by force sees Locked
- * while that one holds it, then NoSession (the probe remembers the last id only) - never Expired.
- */
-export class Expired extends Rejected {
-  /** @param {import('./message.js').Result} result @param {number | null} leaseMs */
-  constructor(result, leaseMs = null) {
-    super(result);
-    this.leaseMs = leaseMs;
-    const lease = leaseMs !== null ? ` (lease ${leaseMs} ms)` : '';
-    this.message = `session expired${lease}: the lease lapsed and the probe swept this session's resources - open again`;
-  }
-}
 export class Busy extends Rejected {}
 export class NoConnection extends Rejected {}
 
@@ -129,9 +114,8 @@ const BY_REASON = {
   [REJECT.unsupported]: Unsupported, [REJECT.unavailable]: Unavailable,
 };
 
-/** The error class a rejected result deserves; `leaseMs` names the lease in an Expired.
- * @param {import('./message.js').Result} result @param {number | null} leaseMs */
-export function rejection(result, leaseMs = null) {
-  if (result.detail === REJECT.expired) return new Expired(result, leaseMs);
+/** The error class a rejected result deserves.
+ * @param {import('./message.js').Result} result */
+export function rejection(result) {
   return new (BY_REASON[result.detail] ?? Rejected)(result);
 }

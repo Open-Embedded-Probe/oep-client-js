@@ -1,5 +1,5 @@
 // @ts-check
-// Serial-port framing (oep-core §3.1): message + CRC-16 little endian, COBS-encoded, sent as 0x00 <COBS> 0x00.
+// Serial-port framing (transports §1): message + CRC-16 little endian, COBS-encoded, sent as 0x00 <COBS> 0x00.
 // CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, no reflection, no final xor ("123456789" -> 0x29B1).
 
 export class CorruptFrame extends Error {}
