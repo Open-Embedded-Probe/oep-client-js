@@ -42,8 +42,9 @@ const CONFIRM_TRANSPORT = reg.CORE.tlv.confirm_answer.transport;
 /**
  * Host.clock(): fn 0's clock read against this host's clock. hostBeforeMs / hostAfterMs: this host's `performance.now()`
  * just before the request went and just after the answer came; roundTripMs their difference; uptimeNs the probe's
- * clock (core §2.6a, ns since its start) read just before it built the answer - somewhere in between, so it matches
- * the midpoint within half the round trip. bootId: the boot that clock belongs to (core §6.5).
+ * clock (core §2.6a, ns since its start) read after the request arrived and before the answer went (core §7.7) -
+ * somewhere in between, so it matches the midpoint within half the round trip (host guide §12). bootId: the boot that
+ * clock belongs to (core §6.5).
  * @typedef {{ hostBeforeMs: number, hostAfterMs: number, roundTripMs: number, uptimeNs: bigint, bootId: number }} ProbeClock */
 /**
  * open's answer (core §6.4): the lease the probe gave and its boot_id.
@@ -330,10 +331,10 @@ export class Host {
   async confirmed() { return this.limits ?? this.confirm(); }
 
   /**
-   * The probe's clock against this host's: fn 0's clock (lock-free, session_id 0; core §12) timed -> { hostBeforeMs,
-   * hostAfterMs, roundTripMs, uptimeNs, bootId } (ProbeClock). The probe read uptimeNs just before it built the answer,
-   * so it matches this host's time (hostBeforeMs + hostAfterMs) / 2 within roundTripMs / 2 - how a mark's or a segment's
-   * time (the probe's clock) is put on this host's. Comparable only within one boot_id (watched like confirm's: a
+   * The probe's clock against this host's: fn 0's clock (lock-free, session_id 0; core §7.7) timed -> { hostBeforeMs,
+   * hostAfterMs, roundTripMs, uptimeNs, bootId } (ProbeClock). The probe read uptimeNs while it handled the request,
+   * so it matches this host's time (hostBeforeMs + hostAfterMs) / 2 within roundTripMs / 2 (host guide §12) - how a
+   * mark's or a segment's time (the probe's clock) is put on this host's. Comparable only within one boot_id (watched like confirm's: a
    * change is a restart, core §6.5). Any time, in a session too: it touches no session, lock or lease.
    * @returns {Promise<ProbeClock>}
    */

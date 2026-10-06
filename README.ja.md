@@ -12,13 +12,14 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 
 **v1 の凍結の前に、ひととおり移した版です。仕様が固まるにつれて作り直す前提です。**
 
-**実装する仕様: oep-spec の commit `0304f37`**（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
+**実装する仕様: oep-spec の commit `498ae95`**（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
 だけでは形が決まらないので、実装は実装する仕様を名乗る）。2026-10-06 の単純化（10 byte の要求の見出し 1 つ、TLV の len は u16、
 閉じた固定の形、describe の `ops` tag、再開なし）、コンソールの送りの列と reset の後の待ち（f0c68bf）、長い probe.config の項目
 （d34dafa）、既存の connection に加わる attach（59dd028）と、2026-10-06 の構造（2e5dc4c〜9c837a9、0304f37）: 本体は名前を
 持たない（fn 0、list に載らない）、plan と再起動と線の試験はインターフェース `oep.probe.plan`、`oep.probe.restart`、
 `oep.probe.link`、subscribe / unsubscribe は通知を送るインターフェース自身の op 0x30 / 0x32（heartbeat は無い）、fn 0 の `clock` が
-probe の時刻を返す、ops の値の符号は 1 つ（core §7.4）。凍結までは日本語の文（`.ja.md`）が仕様の作業の文。
+probe の時刻を返す（要求を処理する間に読む。e0d9dc6、498ae95）、ops の値の符号は 1 つ（core §7.4）。凍結までは日本語の文
+（`.ja.md`）が仕様の作業の文。
 
 入っているもの:
 

@@ -12,15 +12,15 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 
 **A first full port, ahead of the v1 freeze: expect it to be redone as the spec settles.**
 
-**The spec this implements: oep-spec commit `0304f37`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
+**The spec this implements: oep-spec commit `498ae95`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
 revision 1 alone does not fix the forms, so an implementation names the spec it implements). That is the 2026-10-06
 simplification (one 10-byte request header, TLV len u16, closed fixed forms, the `ops` describe tag, no resume), the
 console's send queue and the reset settle wait (f0c68bf), a longer probe.config item (d34dafa), an attach joining a
 connection (59dd028) and the 2026-10-06 structure (2e5dc4c .. 9c837a9, 0304f37): the core has no name (fn 0, never
 listed), the plan, restart and link test are the interfaces `oep.probe.plan`, `oep.probe.restart` and `oep.probe.link`,
 subscribe / unsubscribe are ops 0x30 / 0x32 of the interface that sends the notifications (no heartbeat), fn 0's `clock`
-gives the probe's time, and an ops value has one encoding (core §7.4). Until the freeze the Japanese text (`.ja.md`) is
-the specification's working text.
+gives the probe's time (read while it handles the request; e0d9dc6, 498ae95), and an ops value has one encoding (core
+§7.4). Until the freeze the Japanese text (`.ja.md`) is the specification's working text.
 
 What is there:
 
