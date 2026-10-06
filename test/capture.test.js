@@ -444,7 +444,21 @@ test('analog values, scale and calibration', opts, () => withFake(async ({ hst }
   const data = await an.readSegment(seg);
   assert.deepEqual(an.values(data, 0, 256), Array.from({ length: 256 }, (_, i) => analogValue(0, i)));   // a square
   assert.deepEqual(an.values(data, 1, 256), Array.from({ length: 256 }, (_, i) => analogValue(1, i)));   // a sine
-  assert.ok(Math.abs(an.millivolts(0, 4095) - 3100) <= 1);
+  assert.ok(Math.abs((an.millivolts(0, 2048) ?? NaN) - (3100 * 2048) / 4095) <= 1);
+  assert.equal(an.millivolts(0, 4095), null);                          // clipped (§1.2 rule 6)
+  assert.equal(an.millivolts(0, 0), null);
+  const [lo, hi] = an.endsMillivolts(0);
+  assert.ok(lo === 0 && Math.abs(hi - 3100) <= 1);
+  const { CLIP_LOW, CLIP_HIGH } = c.AnalogCapture;
+  assert.deepEqual([0, 1, 4094, 4095].map((v) => an.clipped(0, v)), [CLIP_LOW, 0, 0, CLIP_HIGH]);
+  const square = an.values(data, 0, 256), sine = an.values(data, 1, 256);
+  assert.deepEqual(an.clipCounts(0, square), { low: 128, high: 128 });   // the values stay raw
+  assert.deepEqual(an.clipCounts(1, sine), { low: 4, high: 0 });         // the sine's troughs round to 0
+  assert.deepEqual(an.clipMask(0, square.slice(30, 34)), [CLIP_HIGH, CLIP_HIGH, CLIP_LOW, CLIP_LOW]);
+  cfg.scaleNv.set(0, -(cfg.scaleNv.get(0) ?? 0));                           // an inverting frontend: code 0 is the high end
+  assert.deepEqual([an.clipped(0, 0), an.clipped(0, 4095)], [CLIP_HIGH, CLIP_LOW]);
+  const [ilo, ihi] = an.endsMillivolts(0);
+  assert.ok(Math.abs(ilo + 3100) <= 1 && ihi === 0);
   const cal = await an.calibration();
   assert.deepEqual(cal.factory.map((f) => f.frontend), [0, 1, 2, 3]);
   assert.equal(cal.factory[0].scheme, 'org.example.fake.two-point');

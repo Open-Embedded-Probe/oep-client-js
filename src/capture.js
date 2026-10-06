@@ -753,11 +753,57 @@ export class AnalogCapture extends LogicCapture {
     return out;
   }
 
+  static CLIP_LOW = -1;
+  static CLIP_HIGH = 1;
+
   /** The probe's own 1st-order reading of a raw value of channel k, (value - zero) x scale_nv (a nominal reference:
-   * see reference and calibration() for others). @param {number} k @param {number} value */
+   * see reference and calibration() for others). null for a clipped value (§1.2 rule 6: 0 or 2^b - 1, the input's
+   * voltage is not known): see clipped() and endsMillivolts().
+   * @param {number} k @param {number} value @returns {number | null} */
   millivolts(k, value) {
+    return this.clipped(k, value) ? null : this.#linearMv(k, value);
+  }
+
+  /** @param {number} k @param {number} value */
+  #linearMv(k, value) {
     const c = this.cfg;
     return ((value - (c.zero.get(k) ?? 0)) * (c.scaleNv.get(k) ?? 0)) / 1_000_000;
+  }
+
+  /** §1.2 rule 6: 0 when the value is a voltage; CLIP_LOW (-1) when it is the converter's code that means the input was
+   * at or below the low end of the frontend's range, CLIP_HIGH (+1) at or above the high end. Codes 0 and 2^b - 1 are
+   * the ends; with a negative scale_nv (an inverting frontend) code 0 is the high end.
+   * @param {number} k @param {number} value @returns {-1 | 0 | 1} */
+  clipped(k, value) {
+    let end;
+    if (value === 0) end = AnalogCapture.CLIP_LOW;
+    else if (value === 2 ** this.cfg.bits - 1) end = AnalogCapture.CLIP_HIGH;
+    else return 0;
+    return /** @type {-1 | 1} */ ((this.cfg.scaleNv.get(k) ?? 0) < 0 ? -end : end);
+  }
+
+  /** [low end, high end] of channel k in mV: rule 4 applied to codes 0 and 2^b - 1, what a clipped value is shown
+   * against ("<= low", ">= high"). @param {number} k @returns {[number, number]} */
+  endsMillivolts(k) {
+    const a = this.#linearMv(k, 0), b = this.#linearMv(k, 2 ** this.cfg.bits - 1);
+    return [Math.min(a, b), Math.max(a, b)];
+  }
+
+  /** clipped() of each value: 0, CLIP_LOW or CLIP_HIGH. The values themselves stay raw.
+   * @param {number} k @param {ArrayLike<number>} values @returns {(-1 | 0 | 1)[]} */
+  clipMask(k, values) {
+    return Array.from(values, (v) => this.clipped(k, v));
+  }
+
+  /** How many values are clipped at each end. @param {number} k @param {ArrayLike<number>} values
+   * @returns {{ low: number, high: number }} */
+  clipCounts(k, values) {
+    const out = { low: 0, high: 0 };
+    for (const e of this.clipMask(k, values)) {
+      if (e === AnalogCapture.CLIP_LOW) out.low++;
+      else if (e === AnalogCapture.CLIP_HIGH) out.high++;
+    }
+    return out;
   }
 
   /** @returns {Promise<Calibration>} */
