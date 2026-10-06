@@ -58,7 +58,16 @@ What is there:
   ops set it; the procedure is the oep-spec host guide §17, opt-in):
   `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, idleMs, port, record })` (or
   `portSpeed: true | [candidates]` with `flows` / `verify` / `record` on `connect` / `openWebSerial` / `openSerial`) runs
-  a UART bridge faster for the session. The **minimal form** (the default, about 50 ms, no measurement): each candidate
+  a UART bridge faster for the session. **The default ceiling is 500000** (oep-if-link §3 obligation 7): the default
+  candidate is 500000 alone, and a rate above `speed.DEFAULT_CEILING` goes in the candidates only when the user named it
+  (the page's rates field, a setting). Such a rate, in the minimal and the full form alike, is committed only after its
+  **1 s verify** (host guide §17.3.3): in the try state, full frames (max_frame - 26) of oep.probe.link source (in) and
+  sink (out), and duplex too when the full form verifies it, each for at least 1 s (`speed.FAST_VERIFY_MS`) at its n,
+  judged as a flow is, no second run at n = 1; its try asks verify_ms 4000 (6000 with duplex), so it needs a lease of
+  5000 (7000) ms or more (`speed.leaseFor(candidates, { flows, verify })`; `connect` takes at least that, a shorter
+  lease skips the candidate). Committed, it has the probation and in-use judging of any rate (why: on a bridge, 921600
+  passed 16 full frames each way and still broke answers in every 9 KiB upload; 500000 was clean on every bridge
+  measured). The **minimal form** (the default, about 50 ms, no measurement): each candidate
   in order - `try` (answered at the speed now, then the probe switches) -> the host switches to the requested baud (the
   probe's answered baud only when the platform refuses it) -> 20 ms -> a `confirm` (100 ms, up to 3) -> `commit`. The
   **full form** (`verify: true`, or `flows` given): a baseline at the boot speed per flow (this session's frames, or 60

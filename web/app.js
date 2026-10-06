@@ -27,7 +27,7 @@ const WORDS = {
     fwRp2: 'RP2040 / RP2350',
     fwRp2Hint: 'Hold BOOTSEL while plugging it in, then copy OepProbe-<profile>-<version>.uf2 to the drive that appears.',
     locked: 'lock held', noLock: 'no lock',
-    speedHint: 'A UART bridge (serial) probe that offers port_speed runs faster for this session: each candidate is tried, confirmed at the new rate and committed - the first that passes is kept (the probe goes back to 115200 when the lock is released); in use, a rate whose frames keep breaking is left for the session. Which rates pass depends on the bridge chip.',
+    speedHint: 'A UART bridge (serial) probe that offers port_speed runs faster for this session: each candidate is tried, confirmed at the new rate and committed - the first that passes is kept (the probe goes back to 115200 when the lock is released); in use, a rate whose frames keep breaking is left for the session. Which rates pass depends on the bridge chip. The default is 500000: a faster rate is tried only when you enter it here, and is used only after full frames ran 1 s each way at it (oep-if-link §3 obligation 7).',
     speedTry: 'Try the rates',
   },
   ja: {
@@ -48,7 +48,7 @@ const WORDS = {
     fwRp2: 'RP2040 / RP2350',
     fwRp2Hint: 'BOOTSEL を押しながら挿し、出てきたドライブに OepProbe-<profile>-<version>.uf2 をコピーします。',
     locked: 'ロックあり', noLock: 'ロックなし',
-    speedHint: 'port_speed を持つ UART bridge（シリアル）の probe は、このセッションの間速くできます。候補を順に試し、新しい速さで confirm して決め、最初に通った速さを使います（ロックを放すと probe は 115200 に戻る）。使っている間にフレームが壊れ続ける速さはそのセッションでは降ります。通る速さは変換チップで決まります。',
+    speedHint: 'port_speed を持つ UART bridge（シリアル）の probe は、このセッションの間速くできます。候補を順に試し、新しい速さで confirm して決め、最初に通った速さを使います（ロックを放すと probe は 115200 に戻る）。使っている間にフレームが壊れ続ける速さはそのセッションでは降ります。通る速さは変換チップで決まります。既定は 500000 で、それより速い速さはここに入れたときだけ試し、両方向それぞれ 1 秒、最大のフレームを流して通ったときだけ使います（oep-if-link §3 の義務 7）。',
     speedTry: '速さを試す',
   },
 };

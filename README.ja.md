@@ -55,7 +55,14 @@ probe の時刻を返す（要求を処理する間に読む。e0d9dc6、498ae95
   oep-spec の host 開発ガイド §17。使うときだけ）:
   `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, idleMs, port, record })`（または
   `connect` / `openWebSerial` / `openSerial` の `portSpeed: true | [候補]` と `flows` / `verify` / `record`）で、セッションの間
-  UART bridge を速くする。**最小の形**（既定、約 50 ms、計測なし）: 候補ごとに順に `試す`（今の速さで応答してから probe が
+  UART bridge を速くする。**既定の上限は 500000**（oep-if-link §3 の義務 7）: 既定の候補は 500000 だけで、`speed.DEFAULT_CEILING`
+  より速い速さは利用者が名指したとき（ページの rates の欄、設定）だけ候補に入れる。その速さは、最小の形でも完全な形でも、
+  **1 秒の確かめ**（host 開発ガイド §17.3.3）を通ってから決める: 試しの状態で、max_frame − 26 のフレームを oep.probe.link の
+  source（in）と sink（out）で、完全な形が duplex を確かめるなら duplex でも、それぞれ 1 秒以上（`speed.FAST_VERIFY_MS`）その
+  同時数で流し、流し方と同じ基準で判定する（n = 1 での流し直しはしない）。その試すは verify_ms 4000（duplex を含めて 6000）を
+  頼むので、lease は 5000（7000）ms 以上が要る（`speed.leaseFor(candidates, { flows, verify })`。`connect` は少なくともそれで取り、
+  短い lease ではその候補を飛ばす）。決めた後は、ほかの速さと同じ試用期間と使用中の判定（理由: ある変換では 921600 が両方向
+  16 フレームずつの確かめを通っても 9 KiB の書き込みのたびに応答が壊れた。500000 は測ったどの変換でも壊れなかった）。**最小の形**（既定、約 50 ms、計測なし）: 候補ごとに順に `試す`（今の速さで応答してから probe が
   切り替える）→ host は要求した baud に切り替える（platform が断ったときだけ probe の応答の baud）→ 20 ms → `confirm`（100 ms、
   3 回まで）→ `決める`。**完全な形**（`verify: true` か `flows` を渡す）: 起動時の速さの基準を流し方ごとに取り（このセッションの
   フレーム、無ければ 60 フレーム）、候補ごとに使う流し方だけ流す。流し方 = `'in' | 'out' | 'duplex'` か `[流し方, n]`（in =

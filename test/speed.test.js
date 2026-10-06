@@ -16,10 +16,11 @@ import { getU16, getU32, u32 } from '../src/bytes.js';
 import { Host } from '../src/host.js';
 import { connect } from '../src/open.js';
 import * as cobs from '../src/cobs.js';
-import { DEFAULT_CANDIDATES, VERIFY_MS, raiseSpeed, resolveFlows, speedText } from '../src/speed.js';
+import { DEFAULT_CANDIDATES, DEFAULT_CEILING, FAST_VERIFY_MS, FLOW_FRAMES, VERIFY_MS, ceiling, fastVerifyMs, leaseFor, raiseSpeed,
+  resolveFlows, speedText } from '../src/speed.js';
 import { SpeedRecord, fileStore, localStorageStore, memoryStore } from '../src/speedrecord.js';
 import { RiscvDm, Wire } from '../src/riscv.js';
-import { take } from '../src/core.js';
+import { linkSize, take } from '../src/core.js';
 import { openTcp, tcpTransport } from '../src/node/index.js';
 import { haveFake, startFake } from './fake.js';
 
@@ -28,6 +29,16 @@ const UNIT = 'fafe00000003';      // the fake esp32-v003's unit_id
 const NO_PROBATION = { probationBytes: 0, probationMs: 0 };   // the window alone (the probation has its own tests)
 const LINK_FN = 10;               // the fake esp32-v003's oep.probe.link (oep-if-link): port_speed and the link test are its ops
 const PS = reg.PROBE_LINK.op.port_speed, SOURCE = reg.PROBE_LINK.op.source, SINK = reg.PROBE_LINK.op.sink;
+
+// Most tests here are about the procedure at any rate the fake makes (1500000, 921600 ... included): they run without
+// the default ceiling, so a rate above 500000 is not given the 1 s verify. The tests named "ceiling" put the real one
+// back (oep-if-link §3 obligation 7, host guide §17.3.3). Tests in a file run one after another.
+ceiling.rate = Infinity;
+/** @template T @param {() => Promise<T>} body */
+async function withCeiling(body) {
+  ceiling.rate = DEFAULT_CEILING;
+  try { return await body(); } finally { ceiling.rate = Infinity; }
+}
 
 /** @param {string[]} args  esp32-v003 unless they name a --profile @param {(hst: import('../src/host.js').Host) => Promise<void>} body @param {object} [opts] */
 async function withSpeedFake(args, body, opts = {}) {
@@ -1172,3 +1183,102 @@ test('the record keeps a failure a day and a pass 30 days; an unknown is neither
   now += 2 * 86400_000;
   assert.deepEqual(longer.lookup('p', 'u'), { passed: [], failed: [921600] });
 });
+
+// ---- the default ceiling (oep-if-link §3 obligation 7, host guide §17.3.3) ------------------------------------------
+
+/** A line model that keeps the verify_ms of every port_speed try, by rate. @param {Map<number, number>} tries */
+const keepTries = (tries) => ({
+  /** @param {Uint8Array} msg */
+  onWrite(msg) {
+    const req = m.Request.unpack(msg);
+    if (req.fn === LINK_FN && req.op === PS && req.payload[5] === 0) tries.set(getU32(req.payload, 1), getU16(req.payload, 6));
+    return true;
+  },
+});
+
+test('ceiling: the default is 500000 alone, with no measurement', { skip: !haveFake }, () => withCeiling(async () => {
+  const tries = new Map();
+  await withLine([], keepTries(tries), async (hst) => {
+    assert.equal(DEFAULT_CEILING, 500000);
+    const report = await raiseSpeed(hst);
+    const [t] = report.trials;
+    assert.equal(t.committed, true);
+    assert.deepEqual(t.flows, []);
+    assert.equal(hst.link.baud, 500000);
+    assert.equal(tries.get(500000), VERIFY_MS);
+  });
+}));
+
+test('ceiling: a faster rate is committed only after full frames ran 1 s each way', { skip: !haveFake }, () => withCeiling(async () => {
+  const tries = new Map();
+  await withLine([], keepTries(tries), async (hst) => {
+    const report = await raiseSpeed(hst, [921600]);
+    const [t] = report.trials;
+    assert.equal(t.committed, true);
+    assert.equal(report.chosen, 921600);
+    assert.equal(report.verified, false);
+    const limits = await hst.confirmed();
+    const nMax = hst.link.inflightFor(limits), size = linkSize(limits.maxFrame);
+    assert.deepEqual(t.flows.map((f) => [f.flow, f.n]), [['in', nMax], ['out', nMax]]);
+    for (const f of t.flows) {
+      assert.equal(f.passed, true);
+      assert.ok(f.frames > FLOW_FRAMES);
+      assert.ok(f.frames * size / (f.kbS * 1000) >= FAST_VERIFY_MS / 1000 - 0.01);
+    }
+    assert.equal(tries.get(921600), fastVerifyMs(2));
+    assert.equal(fastVerifyMs(2), 4000);
+    assert.equal(t.probation, 'running');
+  });
+}));
+
+test('ceiling: a faster rate that breaks past the quick verify fails its 1 s verify; 500000 then passes quickly', { skip: !haveFake },
+  () => withCeiling(() => withSpeedFake(['--broken-rate', '921600:40:in:every3:after12000'], async (hst) => {
+    const report = await raiseSpeed(hst, [921600, 500000], { flows: [['in', 1]], ...FAST });
+    const [a, b] = report.trials;
+    assert.equal(a.committed, false);
+    assert.equal(a.flows[0].flow, 'in');
+    assert.ok(a.flows[0].frames > FLOW_FRAMES);
+    assert.match(a.why, /full frames in 1 s broken or lost/);
+    assert.deepEqual([...hst.link.failed.keys()], [921600]);
+    assert.equal(b.committed, true);
+    assert.equal(report.chosen, 500000);
+    assert.deepEqual(b.flows.map((f) => [f.flow, f.frames]), [['in', FLOW_FRAMES]]);   // the quick verify at 500000
+  })));
+
+test('ceiling: the full form adds duplex and asks verify_ms 6000', { skip: !haveFake }, () => withCeiling(async () => {
+  const tries = new Map();
+  await withLine([], keepTries(tries), async (hst) => {
+    const report = await raiseSpeed(hst, [921600], { flows: [['in', 1], ['duplex', 1]] });
+    const [t] = report.trials;
+    assert.equal(t.committed, true);
+    const nMax = hst.link.inflightFor(await hst.confirmed());
+    assert.deepEqual(t.flows.map((f) => [f.flow, f.n]), [['in', 1], ['out', nMax], ['duplex', 1]]);
+    assert.equal(tries.get(921600), 6000);
+  });
+}));
+
+test('ceiling: a lease too short for the 1 s verify skips the rate; leaseFor gives the lease', { skip: !haveFake }, () => withCeiling(async () => {
+  assert.equal(leaseFor([500000, 230400]), 0);
+  assert.equal(leaseFor([921600, 500000]), 5000);
+  assert.equal(leaseFor([921600], { flows: [['out', 2]] }), 5000);
+  assert.equal(leaseFor([921600], { verify: true }), 7000);
+  assert.equal(leaseFor([921600], { flows: ['duplex'] }), 7000);
+  await withLine([], {}, async (hst) => {
+    const report = await raiseSpeed(hst, [921600, 500000], FAST);
+    const [a, b] = report.trials;
+    assert.equal(a.committed, false);
+    assert.match(a.why, /needs verify_ms 4000 and a lease of 5000 ms/);
+    assert.equal(a.actual, null);
+    assert.equal(b.committed, true);
+    assert.equal(report.chosen, 500000);
+    assert.equal(hst.link.failed.size, 0);
+  }, 3000);
+}));
+
+test('ceiling: connect with a faster rate takes a lease long enough for its 1 s verify', { skip: !haveFake },
+  () => withCeiling(() => withSpeedFake([], async (hst) => {
+    const report = /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
+    assert.equal(hst.leaseMs, 5000);
+    assert.equal(report.chosen, 921600);
+    assert.deepEqual(report.trials[0].flows.map((f) => f.flow), ['in', 'out']);
+  }, { portSpeed: [921600, 500000] })));

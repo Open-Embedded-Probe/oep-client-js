@@ -5,7 +5,7 @@ import { Host } from './host.js';
 import * as core from './core.js';
 import * as reg from './registry.js';
 import { NotOepProbe, UnitIdMismatch } from './errors.js';
-import { DEFAULT_CANDIDATES, raiseSpeed } from './speed.js';
+import { DEFAULT_CANDIDATES, leaseFor, raiseSpeed } from './speed.js';
 
 /** The probing rule's wait for confirm's answer (transports §3, core §4.4: confirm sets no time, so 1000 ms). */
 export const PROBE_WAIT_MS = reg.TIMING.host_wait_add_ms;
@@ -72,6 +72,8 @@ export async function checkUnitId(host, unitId) {
  * and no valid answer closes it (NotOepProbe); on a serial port (COBS) the first confirm is retried for about 4 s
  * (Link.waitBootSpeed): a raised rate a host that died left over goes back by then. `unitId`: the unit the device was
  * opened as (by its USB serial): fn 0's describe must say the same unit_id, else the link is closed (UnitIdMismatch).
+ * A candidate above 500000 is the user's choice only (oep-if-link §3 obligation 7) and gets raiseSpeed's 1 s verify;
+ * the session is then taken with at least `leaseFor(candidates)` ms.
  * @param {import('./link.js').Transport} transport
  * @param {SpeedOptions & { timeoutMs?: number, leaseMs?: number, owner?: string, unitId?: string }} [opts]
  */
@@ -82,8 +84,9 @@ export async function connect(transport, { timeoutMs = 3000, portSpeed, flows, v
   await probe(link, host, transport);
   if (unitId) await checkUnitId(host, unitId);
   if (portSpeed === true || (Array.isArray(portSpeed) && portSpeed.length)) {
-    await core.take(host, leaseMs, { owner, exclusive: transport.kind === 'serial' });
-    await raiseSpeed(host, portSpeed === true ? DEFAULT_CANDIDATES : portSpeed, { flows, verify, record });
+    const candidates = portSpeed === true ? DEFAULT_CANDIDATES : portSpeed;
+    await core.take(host, Math.max(leaseMs, leaseFor(candidates, { flows, verify })), { owner, exclusive: transport.kind === 'serial' });
+    await raiseSpeed(host, candidates, { flows, verify, record });
   }
   return host;
 }
