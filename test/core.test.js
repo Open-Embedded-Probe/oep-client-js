@@ -41,7 +41,7 @@ for (const framing of /** @type {const} */ (['length', 'cobs'])) {
       assert.equal(hst.describes.size, 1);                                // describe is cached (declarations only)
       assert.equal(hst.bootId, hst.limits?.bootId);                       // confirm tells the boot_id (core §7.1)
       const fn0 = /** @type {Set<number>} */ (await ops(hst, 0));         // the ops tag (core §1.2, §7.4)
-      assert.ok(fn0.has(m.OP.open) && fn0.has(m.OP.plan_apply) && !fn0.has(0x14));
+      assert.ok(fn0.has(m.OP.open) && fn0.has(m.OP.plan_apply) && fn0.has(m.OP.restart) && !fn0.has(0x15));   // restart: optional, offered (§6.6)
       assert.equal(await offers(hst, 0, 0x50), false);
       const opened = await hst.open(3000, { owner: 'js test' });
       assert.deepEqual(Object.keys(opened).sort(), ['bootId', 'leaseMs']);   // no resumed (core §6.4)

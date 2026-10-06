@@ -368,6 +368,17 @@ async function onClient(c) {
   const name = /** @type {string} */ (c.name);
   const a = m.Result.unpack(hx(c.answer_hex));
   const r = m.Request.unpack(hx(c.request_hex));
+  if (name.startsWith('core restart')) {
+    const { hst, sent } = client(c, name.includes('without a session') ? null : S);
+    if (a.resolution === m.COMPLETED) {
+      await hst.requestRestart();
+      assert.equal(hst.session, null);
+      assert.equal(hst.fns.size, 0);                                    // nothing of the old boot lasts (core §6.6)
+    } else {
+      await assert.rejects(hst.requestRestart(), (e) => e instanceof Rejected && e.result.detail === a.detail);
+    }
+    return sent;
+  }
   if (name.startsWith('link source')) {
     const { hst, sent } = client(c);
     const n = getU32(r.payload);

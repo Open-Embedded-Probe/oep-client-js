@@ -22,7 +22,7 @@
 import * as reg from './registry.js';
 import { Writer, text, utf8 } from './bytes.js';
 import * as m from './message.js';
-import { Failed, InUse, Locked, NotUsable, NotV1, Rejected, rejection } from './errors.js';
+import { Failed, InUse, Locked, NoSession, NotRestarted, NotUsable, NotV1, OepError, Rejected, Timeout, rejection } from './errors.js';
 
 export const MIN_REVISION = 1, MAX_REVISION = 1;
 const OWNER = reg.CORE.tlv.open.owner;
@@ -63,6 +63,11 @@ export function checkMaxOpMs(value) {
   }
   return '';
 }
+
+/** fn 0's restart: the probe begins its restart at most this long after its answer has left (core §6.6). */
+export const RESTART_AFTER_ANSWER_MS = reg.LIMITS.restart_after_answer_ms;
+/** restartProbe: how long the probe may take to answer a confirm again, by default. */
+export const RESTART_WAIT_MS = 10000;
 
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -107,6 +112,13 @@ export class Host {
     /** @type {number | null} the lease the last open gave */ this.leaseMs = null;
     this.unusable = '';                      // why this probe is not used (C-20, C-47): set, nothing more is sent
     /** @type {bigint | null} the last heartbeat's uptime_ns (core §11.2, fn 0 kind 0x01) */ this.uptimeNs = null;
+    this.useLink(link);
+  }
+
+  /** Bind `link` to this host (its corr source, session, keepalive, heartbeat and boot_id hooks): the constructor's,
+   * and restartProbe's for a link opened again. @param {import('./link.js').Link} link */
+  useLink(link) {
+    this.link = link;
     if (link && 'corrSource' in link) link.corrSource = () => this.nextCorr();   // the link's own confirms (port_speed)
     if (link && 'held' in link) link.held = () => this.session !== null;   // a held serial port: a broken frame is resent at once
     if (link && 'keepaliveFrame' in link) {   // raised (port_speed): the link keeps the line alive in this session
@@ -382,6 +394,69 @@ export class Host {
         await sleep(Math.min(left, e.remainingMs + 50));
       }
     }
+  }
+
+  // ---- restart (core §6.6) ---------------------------------------------------------------------------------
+
+  /** fn 0's restart, the request alone (core §6.6): sent in this session (the op needs the lock: without a session it
+   * goes with session_id 0 and is refused session_required); completed success = the probe restarts once the answer is
+   * out. A probe without it in fn 0's ops answers unknown_operation (Rejected). Afterwards nothing of this session lasts:
+   * the session, its resources, the fn numbers. restartProbe also waits for the probe and confirms its new boot_id. */
+  async requestRestart() {
+    await this.call(m.CORE_FN, m.OP.restart);
+    this.session = null;
+    this.lost();
+  }
+
+  /**
+   * Restart the probe and wait until it is back (core §6.6, host guide §5.2) -> its new boot_id. The session must hold
+   * the lock. After the answer nothing more goes out. `reopen` (optional): opens the transport again and gives a new
+   * Link, started (a serial port at its boot speed, a USB device found again once it has re-enumerated, a TCP
+   * connection made again); the old link is then closed, RESTART_AFTER_ANSWER_MS waited, and reopen + confirm retried
+   * until `waitMs`. Without it the link stays (a transport the restart leaves open: a UART bridge, a broker, the fake
+   * over TCP): the host waits and confirms again until `waitMs`. When the answer is lost, the same: a resend the
+   * restarted probe refused no_session counts as the restart having happened. The confirm's boot_id must differ from
+   * the one before (NotRestarted otherwise); everything this host remembered of the old boot is dropped (core §6.5).
+   * @param {{ reopen?: () => Promise<import('./link.js').Link>, waitMs?: number }} [opts]
+   * @returns {Promise<number>}
+   */
+  async restartProbe({ reopen, waitMs = RESTART_WAIT_MS } = {}) {
+    await this.requireV1();
+    const before = this.bootId ?? (await this.confirm()).bootId;
+    const epoch = this.epoch;
+    try {
+      await this.call(m.CORE_FN, m.OP.restart);
+    } catch (e) {
+      // the resend reached the new boot (no_session), no answer came (Timeout), or the transport went away with the
+      // restart (a plain Error from the link): the confirm below tells. Any other refusal is the answer.
+      if (e instanceof OepError && !(e instanceof NoSession) && !(e instanceof Timeout)) throw e;
+      if (!(e instanceof Error)) throw e;
+    }
+    this.session = null;
+    this.lost();
+    this.epoch = epoch + 1;                  // one loss, however the answer came (a no_session too)
+    this.bootId = null;                      // the boot_id below is compared with `before` here
+    this.limits = null;
+    const deadline = performance.now() + waitMs;
+    if (reopen) {
+      try { await this.link.close(); } catch { /* already gone */ }
+    }
+    await sleep(RESTART_AFTER_ANSWER_MS);
+    let limits;
+    for (;;) {
+      try {
+        if (reopen) this.useLink(await reopen());
+        limits = await this.confirm();
+        break;
+      } catch (e) {
+        if (e instanceof Rejected || performance.now() >= deadline) throw e;
+        if (reopen) { try { await this.link.close(); } catch { /* not open */ } }
+        await sleep(100);
+      }
+    }
+    const after = limits.bootId;
+    if (after === before) throw new NotRestarted(`the probe confirmed boot_id 0x${after.toString(16).padStart(8, '0')} after the restart, the same as before`);
+    return after;
   }
 
   // ---- notifications (§11) ---------------------------------------------------------------------------------

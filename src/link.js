@@ -1115,11 +1115,12 @@ function completed(message, reply, fn = CORE_FN) {
  * @param {Uint8Array} message @param {Uint8Array} reply */
 function coreCompleted(message, reply) { return completed(message, reply); }
 
-/** A completed end, or port_speed's revert on oep.link (`speedFn`): the probe is back at its boot speed once this
- * answer is out (oep-if-link §3 host obligation 6).
+/** A completed end or restart (core §6.6: the probe starts again at its boot speed), or port_speed's revert on oep.link
+ * (`speedFn`): the probe is back at its boot speed once this answer is out (oep-if-link §3 host obligation 6).
  * @param {Uint8Array} message @param {Uint8Array} reply @param {number | null} speedFn */
 function reverts(message, reply, speedFn) {
-  if (coreCompleted(message, reply) === OP.end) return true;
+  const op = coreCompleted(message, reply);
+  if (op === OP.end || op === OP.restart) return true;
   const at = REQUEST_HEADER + 5;   // port(u8) baud(u32) step(u8)
   return completed(message, reply, speedFn) === reg.LINK.op.port_speed && message.length > at
     && message[at] === reg.LINK.enum.port_speed_step.revert;
