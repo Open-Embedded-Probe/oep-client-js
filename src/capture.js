@@ -17,7 +17,7 @@
 // only when asked: the probe rounds samples down to its limit and the answer (Config.samples / .segments) is what holds.
 //
 // blocking_ms (P2-○9): a start whose answer says blocking_ms > 0 is followed by nothing on any transport for that long
-// (`blocked`), then - on a length-prefixed link - the resync of core §5.1; neither the lease nor the answer's wait
+// (`blocked`), then - on a length-prefixed link - the resync of transports §5; neither the lease nor the answer's wait
 // counts it.
 
 import * as reg from './registry.js';
@@ -78,7 +78,7 @@ export function tlvs(payload) { return m.splitTlvs(payload); }
 
 /**
  * oep-if-capture §3.2 (P2-○9): from the start answer for blockingMs the probe may not process frames on any transport,
- * so this host sends nothing for that long; afterwards a length-prefixed link begins with the resync of core §5.1, a
+ * so this host sends nothing for that long; afterwards a length-prefixed link begins with the resync of transports §5, a
  * serial port simply goes on. Neither the lease nor the host's wait counts blockingMs.
  * @param {import('./host.js').Host} hst @param {number} blockingMs @param {(ms: number) => Promise<unknown>} [wait]
  */
@@ -522,7 +522,7 @@ export class LogicCapture extends Interface {
     const rd = new m.Reader((await this.call(LogicCapture.SEGMENTS, new Writer().u32(fromSerial).done(), { locked: false })).payload);
     const more = rd.u8(), n = rd.u8();
     const segments = [];
-    for (let i = 0; i < n; i++) segments.push(Segment.read(rd.element()));
+    for (let i = 0; i < n; i++) segments.push(Segment.read(rd));   // count x segment, no element length (core §2.3)
     rd.tail();
     return { segments, more: !!more };
   }

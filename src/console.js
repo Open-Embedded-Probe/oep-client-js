@@ -8,10 +8,10 @@
 // Every answer is a fixed part, a counted list or length-prefixed data, then TLVs the host skips (core §2.3).
 
 import * as reg from './registry.js';
-import { Writer, concat, utf8 } from './bytes.js';
+import { Writer, concat, getU16, utf8 } from './bytes.js';
 import * as m from './message.js';
 import { Failed, Timeout } from './errors.js';
-import { Interface } from './core.js';
+import { Interface, describe } from './core.js';
 
 const CON = reg.TARGET_CONSOLE;
 const COMMON = reg.COMMON.enum;
@@ -90,9 +90,8 @@ export class PositionStream extends Interface {
     const more = rd.u8(), count = rd.u8();
     /** @type {Mark[]} */
     const marks = [];
-    for (let i = 0; i < count; i++) {
-      const e = rd.element();
-      marks.push({ serial: e.u32(), position: e.u64(), kind: e.u8(), timeNs: e.u64(), detail: e.u8() });
+    for (let i = 0; i < count; i++) {   // count x mark, no element length (core §2.3)
+      marks.push({ serial: rd.u32(), position: rd.u64(), kind: rd.u8(), timeNs: rd.u64(), detail: rd.u8() });
     }
     rd.tail();
     return { marks, more: !!more };
@@ -116,8 +115,10 @@ export class PositionStream extends Interface {
   /** A host mark (kind host, detail = value). @param {number} value */
   async mark(value) { await this.call(PositionStream.MARK, this.streamBody(Uint8Array.of(value & 0xff))); }
 
-  /** -> bytes accepted: what fit the mechanism's send slot (common §1.4; delivery is not implied). Fewer than asked is
-   * completed partial, not an error; nothing accepted is completed failed (thrown as Failed).
+  /** -> bytes accepted: what went into the probe's send queue from data's start, min(count, its free space) (common
+   * §1.4; delivery is not implied) - a console's queue is its describe's send_queue bytes, handed to the target 2
+   * (dmseq) or 3 (DMDATA) bytes at a time; SDI takes nothing (console §2, §3). Fewer than asked is completed partial, not
+   * an error; nothing accepted (the queue full) is completed failed (thrown as Failed): StreamIO.write loops on it.
    * @param {Uint8Array} data */
   async write(data) {
     const r = await this.request(PositionStream.WRITE, this.streamBody(concat(new Writer().u16(data.length).done(), data)));
@@ -157,6 +158,20 @@ export class Console extends PositionStream {
 
   streamPrefix() { return new Writer().u16(this.stream).done(); }
 
+  /** The mechanisms the probe opens (describe tag 0x40). @returns {Promise<number[]>} */
+  async mechanisms() {
+    return (await describe(this.host, this.fn)).filter(([tag]) => (tag & 0x7f) === CON.tlv.describe.mechanisms)
+      .flatMap(([, v]) => [...v]);
+  }
+
+  /** The bytes of each stream's send queue that write fills (describe tag 0x41, u16, at least 64; console §1, §2); null
+   * when the probe declares none (no mechanism of it carries host -> target bytes). @returns {Promise<number | null>} */
+  async sendQueue() {
+    const v = (await describe(this.host, this.fn))
+      .find(([tag, value]) => (tag & 0x7f) === CON.tlv.describe.send_queue && value.length >= 2)?.[1];
+    return v ? getU16(v) : null;
+  }
+
   /**
    * -> the stream. An open stream of the same (connection, mechanism) comes back as it is (this.existing): position
    * and marks carry on; so does a closed one of the same place and mechanism, under its old number. A mechanism the
@@ -184,9 +199,8 @@ export class Console extends PositionStream {
     for (;;) {
       const rd = new m.Reader((await this.call(Console.STREAMS, Uint8Array.of(out.length), { locked: false })).payload);
       const more = rd.u8(), count = rd.u8();
-      for (let i = 0; i < count; i++) {
-        const e = rd.element();
-        const stream = e.u16(), connection = e.u16(), mechanism = e.u8(), users = e.u8(), state = e.u8();
+      for (let i = 0; i < count; i++) {   // count x entry (core §2.3)
+        const stream = rd.u16(), connection = rd.u16(), mechanism = rd.u8(), users = rd.u8(), state = rd.u8();
         out.push({ stream, connection, mechanism, users, state, open: state === STREAM_STATE.open });
       }
       rd.tail();
@@ -226,14 +240,22 @@ export class StreamIO {
     return /** @type {InstanceType<T>} */ (new this(source, pos));
   }
 
-  /** (read, write) chunk sizes that fit the probe's frame: request header 6 + session 4 + stream prefix + count 2;
-   * result header 5 + start 8 + flags 1 + len 2. */
-  async limits() {
+  /** (read, write) chunk sizes that fit the probe's frame: request header 10 (session_id included) + stream prefix +
+   * count 2; result header 5 + start 8 + flags 1 + len 2. */
+  async limits() { return [await this.readLimit(), await this.writeLimit()]; }
+
+  async readLimit() {
     const frame = (await this.source.host.confirmed()).maxFrame;
-    const ctor = /** @type {typeof StreamIO} */ (this.constructor);
-    const overhead = 12 + this.source.streamPrefix().length;
-    return [Math.max(1, Math.min(ctor.MAX_READ, frame - 16)), Math.max(1, Math.min(ctor.MAX_WRITE, frame - overhead))];
+    return Math.max(1, Math.min(/** @type {typeof StreamIO} */ (this.constructor).MAX_READ, frame - 16));
   }
+
+  async writeLimit() {
+    const frame = (await this.source.host.confirmed()).maxFrame;
+    return Math.max(1, Math.min(await this.writeCap(), frame - 12 - this.source.streamPrefix().length));
+  }
+
+  /** The most one write sends (before the frame's limit). */
+  async writeCap() { return /** @type {typeof StreamIO} */ (this.constructor).MAX_WRITE; }
 
   /** Where reading starts when nothing set it. */
   async startPosition() { return (await this.source.read(PositionStream.FROM_NOW, 0, 0)).start; }
@@ -246,7 +268,7 @@ export class StreamIO {
       return out;
     }
     if (this.position === null) this.position = await this.startPosition();
-    const c = await this.source.readFrom(this.position, Math.min(n, (await this.limits())[0]));
+    const c = await this.source.readFrom(this.position, Math.min(n, await this.readLimit()));
     if (c.gap) this.lost += c.start - this.position;   // u64 positions: no wrap
     this.position = c.start + BigInt(c.data.length);
     this.more = c.more;
@@ -292,18 +314,19 @@ export class StreamIO {
     }
   }
 
-  /** All of `data`, in chunks that fit; waits while the target takes nothing. No progress within timeoutMs (when
-   * given): Timeout. @param {Uint8Array | string} data @param {{ timeoutMs?: number }} [opts] */
+  /** All of `data`, in chunks that fit, each next one from where the last answer's accepted left off (a console's send
+   * queue empties 2 or 3 bytes a poll); waits while nothing is accepted. No progress within timeoutMs (when given):
+   * Timeout - an SDI console accepts nothing ever (console §3.1). @param {Uint8Array | string} data @param {{ timeoutMs?: number }} [opts] */
   async write(data, { timeoutMs } = {}) {
     let rest = typeof data === 'string' ? utf8(data) : data;
-    const chunk = (await this.limits())[1];
+    const chunk = await this.writeLimit();
     let since = performance.now();
     while (rest.length) {
       let took = 0;
       try {
         took = await this.source.write(rest.slice(0, chunk));
       } catch (e) {
-        if (!(e instanceof Failed) || !e.result?.ran) throw e;   // accepted 0: the slot was full (completed failed)
+        if (!(e instanceof Failed) || !e.result?.ran) throw e;   // accepted 0: the queue was full (completed failed)
       }
       rest = rest.slice(took);
       if (took) since = performance.now();
@@ -316,13 +339,23 @@ export class StreamIO {
 }
 
 /** A console stream read from a position onwards (default: from now), as a plain byte stream. Build with
- * `await ConsoleIO.create(console, start?)`. */
+ * `await ConsoleIO.create(console, start?)`. A write chunk is the probe's send_queue (`sendQueue()`), at most what one
+ * frame carries: a line no longer than send_queue goes in one write (host guide §14). */
 export class ConsoleIO extends StreamIO {
   /** @param {Console} console @param {bigint | null} position */
   constructor(console, position = null) {
     super(console, position);
     this.console = console;
+    /** @type {number | null | undefined} the probe's send_queue, once asked */ this.queue = undefined;
   }
+
+  /** The probe's send_queue (describe tag 0x41; null: none declared). */
+  async sendQueue() {
+    if (this.queue === undefined) this.queue = await this.console.sendQueue();
+    return this.queue;
+  }
+
+  async writeCap() { return (await this.sendQueue()) ?? StreamIO.MAX_WRITE; }
 }
 
 /** @param {Uint8Array} hay @param {Uint8Array} needle */

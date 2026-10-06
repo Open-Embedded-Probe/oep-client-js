@@ -52,8 +52,8 @@ export const UNREADABLE = /** @type {Record<number, string>} */ ({
 export const NEVER_NS = 0xffffffffffffffffn;
 /** A slot's boot_reset (probe.config §1.1): off, retry_with_reset */
 export const BOOT_RESET = /** @type {{ off: number, retry_with_reset: number }} */ (CFG.enum.slot_boot_reset);
-/** slot wire_fn swdio swclk attach retry_ms max_speed_hz idle_clock mechanism name_len: the slot's head (§1.1) */
-export const SLOT_HEAD = 19;
+/** slot wire_fn swdio swclk attach boot_reset retry_ms max_speed_hz idle_clock mechanism name_len: the slot's head (§1.1) */
+export const SLOT_HEAD = 20;
 
 /** @param {Record<string, number>} table @param {number} value */
 function nameOf(table, value) { return Object.keys(table).find((k) => table[k] === value) ?? String(value); }
@@ -94,8 +94,8 @@ export class Label {
  * keeps driving that level while the channel is free (a target's power switch kept on), and a gpio plan that takes the
  * channel keeps it until its first set (fixture §1); a probe that cannot drive the channel refuses it unsupported.
  * drive (output modes only): the strength it drives at (`fixture.Drive`, or a level number; fixture §1.1) - also what a
- * gpio set without its own drive uses on that channel. null: the default level. A probe without drive_levels keeps it
- * and drives at its default.
+ * gpio set without its own drive uses on that channel. null: the default level (sent as drive_kind 2, value 0: the
+ * item is always 6 bytes, probe.config §1). A probe without drive_levels keeps it and drives at its default.
  */
 export class Idle {
   static TAG = ITEM.idle;
@@ -107,13 +107,14 @@ export class Idle {
     this.drive = drive === null || drive === undefined ? null : Drive.of(drive);
   }
   key() { return [this.channel]; }
+  /** channel(u16) mode(u8) drive_kind(u8) drive_value(u16): 6 bytes (probe.config §1). */
   value() {
     const w = new Writer().u16(this.channel).u8(valueOf(IDLE, this.mode, 'idle mode'));
-    if (this.drive === null) return w.done();
-    if (this.mode !== 'output-low' && this.mode !== 'output-high') {
+    const drive = this.drive ?? Drive.default();
+    if (!drive.isDefault && this.mode !== 'output-low' && this.mode !== 'output-high') {
       throw new RangeError(`idle mode ${this.mode}: a drive goes with output-low / output-high only`);
     }
-    return w.raw(this.drive.pack()).done();                         // drive_kind(u8) drive_value(u16)
+    return w.raw(drive.pack()).done();                               // drive_kind(u8) drive_value(u16)
   }
 }
 
@@ -148,7 +149,7 @@ export class Disable {
  * lock: e.g. { scheme: 1, mask: u32 LE, value: u32 LE }; mask and value are as long as the scheme's value (4 bytes for
  * scheme 1). retryS goes on the wire as retry_ms (u32), maxSpeed as max_speed_hz (u32). bootReset (at-boot only): an
  * automatic attach that got no answer is tried once more with the `nrst` line (probe.config §3.1), before any session
- * took the lock this boot; it goes after the lock (absent = off).
+ * took the lock this boot; it goes right after attach, and the item ends with the lock.
  */
 export class Slot {
   static TAG = ITEM.slot;
@@ -171,18 +172,18 @@ export class Slot {
   value() {
     const name = utf8(this.name);
     const retryMs = this.attach === 'at-boot' ? Math.round(this.retryS * 1000) : 0;
+    if (this.bootReset && this.attach !== 'at-boot') throw new RangeError('bootReset goes with attach at-boot only');
     const w = new Writer().u8(this.slot).u16(this.wireFn).u16(this.pins[0]).u16(this.pins[1])
-      .u8(valueOf(ATTACH, this.attach, 'attach')).u32(retryMs).u32(this.maxSpeed)
+      .u8(valueOf(ATTACH, this.attach, 'attach')).u8(this.bootReset ? BOOT_RESET.retry_with_reset : BOOT_RESET.off)
+      .u32(retryMs).u32(this.maxSpeed)
       .u8(valueOf(IDLE_CLOCK, this.idleClock, 'idle clock')).u8(valueOf(MECHANISM, this.mechanism, 'mechanism'))
       .u8(name.length).raw(name);
-    if (this.bootReset && this.attach !== 'at-boot') throw new RangeError('bootReset goes with attach at-boot only');
-    const tail = this.bootReset ? Uint8Array.of(BOOT_RESET.retry_with_reset) : new Uint8Array();   // after the lock
-    if (this.lock === null) return w.u8(0).raw(tail).done();         // lock_len 0: no lock
+    if (this.lock === null) return w.u8(0).done();                   // lock_len 0: no lock
     const { scheme, mask, value } = this.lock;
     if (mask.length !== value.length || !mask.length || !scheme) {
       throw new RangeError('a lock has a scheme and a mask and value of the same length, at least 1 byte');
     }
-    return w.u8(1 + 2 * mask.length).u8(scheme).raw(mask).raw(value).raw(tail).done();
+    return w.u8(1 + 2 * mask.length).u8(scheme).raw(mask).raw(value).done();
   }
 }
 
@@ -200,7 +201,7 @@ export class Bind {
   value() {
     const w = new Writer().u8(this.port).u8(valueOf(MODE, this.mode, 'bind mode')).u8(this.mode === 'manual' ? this.selected : 0)
       .u8(this.streams.length);
-    for (const [kind, id] of this.streams) w.u8(3).u8(valueOf(STREAM, kind, 'stream kind')).u16(id);   // len, kind, id
+    for (const [kind, id] of this.streams) w.u8(valueOf(STREAM, kind, 'stream kind')).u16(id);   // kind, id: 3 bytes each
     return w.done();
   }
 }
@@ -233,13 +234,14 @@ export function remove(kind, key) {
 }
 
 /** One item as one of the classes above (an unknown tag or a value too short for its tag: { tag, value }). Bytes after
- * the known fields are a later revision's: skipped (core §2.3).
+ * the known fields are not read (every item has one form per tag, probe.config §1).
  * @param {number} tag @param {Uint8Array} v @returns {Item | RawItem} */
 export function decode(tag, v) {
   if (tag === ITEM.plan && v.length >= 5) return new Plan({ fn: getU16(v), role: v[2], channel: getU16(v, 3) });
   if (tag === ITEM.label && v.length >= 2) return new Label({ channel: getU16(v), text: text(v.slice(2)) });
-  if (tag === ITEM.idle && v.length >= 3) {
-    return new Idle({ channel: getU16(v), mode: nameOf(IDLE, v[2]), drive: v.length >= 6 ? Drive.unpack(v.slice(3, 6)) : null });
+  if (tag === ITEM.idle && v.length >= 6) {
+    const drive = Drive.unpack(v.slice(3, 6));
+    return new Idle({ channel: getU16(v), mode: nameOf(IDLE, v[2]), drive: drive.isDefault ? null : drive });
   }
   if (tag === ITEM.slot && v.length >= SLOT_HEAD + 1) {
     const nameLen = v[SLOT_HEAD - 1];
@@ -247,24 +249,24 @@ export function decode(tag, v) {
     const at = SLOT_HEAD + nameLen;
     const lockLen = at < v.length ? v[at] : 0;
     const part = v.slice(at + 1, at + 1 + lockLen);
-    const bootReset = at + 1 + lockLen < v.length ? v[at + 1 + lockLen] : 0;   // optional; after it: later fields, skipped
+    const bootReset = v[8];                                         // right after attach (probe.config §1.1)
     let lock = null;
     if (lockLen >= 3 && part.length === lockLen) {
       const half = (lockLen - 1) >> 1;
       lock = { scheme: part[0], mask: part.slice(1, 1 + half), value: part.slice(1 + half, 1 + 2 * half) };
     }
     return new Slot({ slot: v[0], wireFn: getU16(v, 1), pins: [getU16(v, 3), getU16(v, 5)], name,
-      attach: nameOf(ATTACH, v[7]), retryS: getU32(v, 8) / 1000, maxSpeed: getU32(v, 12), idleClock: nameOf(IDLE_CLOCK, v[16]),
-      mechanism: nameOf(MECHANISM, v[17]), lock, bootReset: bootReset === BOOT_RESET.retry_with_reset });
+      attach: nameOf(ATTACH, v[7]), retryS: getU32(v, 9) / 1000, maxSpeed: getU32(v, 13), idleClock: nameOf(IDLE_CLOCK, v[17]),
+      mechanism: nameOf(MECHANISM, v[18]), lock, bootReset: bootReset === BOOT_RESET.retry_with_reset });
   }
   if (tag === ITEM.disable && v.length >= 2) return new Disable({ channel: getU16(v) });
   if (tag === ITEM.uart && v.length >= 7) return new Uart({ fn: getU16(v), baud: getU32(v, 2), format: v[6] });
   if (tag === ITEM.bind && v.length >= 4) {
     /** @type {[string, number][]} */
     const streams = [];
-    for (let k = 0, at = 4; k < v[3]; k++, at += 1 + v[at]) {   // n × (len, kind, id): a longer one's tail skipped
-      if (at >= v.length || v[at] < 3 || at + 1 + v[at] > v.length) return { tag, value: v };
-      streams.push([nameOf(STREAM, v[at + 1]), getU16(v, at + 2)]);
+    for (let k = 0, at = 4; k < v[3]; k++, at += 3) {   // n × (kind(u8), id(u16)), 3 bytes each
+      if (at + 3 > v.length) return { tag, value: v };
+      streams.push([nameOf(STREAM, v[at]), getU16(v, at + 1)]);
     }
     return new Bind({ port: v[0], mode: nameOf(MODE, v[1]), streams, selected: v[2] });
   }
@@ -481,17 +483,15 @@ export class ProbeConfig extends Interface {
       st.unreadableReason = why;
       st.unreadable = why ? (UNREADABLE[why] ?? String(why)) : null;
       const nSlots = rd.u8();
-      for (let i = 0; i < nSlots; i++) {
-        const e = rd.element();
-        const slot = e.u8(), state = e.u8(), connection = e.u16(), tried = e.u64(), scheme = e.u8(), tid = e.bytes(e.u8());
-        const resetAt = e.u64();
+      for (let i = 0; i < nSlots; i++) {   // count x slot_state, no element length (core §2.3)
+        const slot = rd.u8(), state = rd.u8(), connection = rd.u16(), tried = rd.u64(), resetAt = rd.u64();
+        const scheme = rd.u8(), tid = rd.bytes(rd.u8());
         st.slots.push({ slot, state: SLOT_STATE[state] ?? String(state), connection, lastTryAtNs: tried === NEVER_NS ? null : tried,
           targetIdScheme: scheme, targetId: tid.length ? tid : null, resetAtNs: resetAt === NEVER_NS ? null : resetAt });
       }
       const nBinds = rd.u8();
       for (let i = 0; i < nBinds; i++) {
-        const e = rd.element();
-        const port = e.u8(), mode = e.u8(), sel = e.u8(), flow = e.u8();
+        const port = rd.u8(), mode = rd.u8(), sel = rd.u8(), flow = rd.u8();
         st.binds.push({ port, mode: nameOf(MODE, mode), selected: sel === 0xff ? null : sel, flow: BIND_FLOW[flow] ?? String(flow) });
       }
       rd.tail();

@@ -17,7 +17,7 @@ const GPIO = reg.FIXTURE_GPIO, UART = reg.FIXTURE_UART, I2C = reg.FIXTURE_I2C_TA
 const MODE = GPIO.enum.mode;
 const TAG_INDEX = GPIO.tlv.unavailable_payload.index;   // 0x40: the list position of what was refused
 /** drive_kind (fixture §1.1): 0 level (a number of the probe's drive_levels), 1 max_ma (an mA ceiling) */
-export const DRIVE_KIND = /** @type {{ level: number, max_ma: number }} */ (GPIO.enum.drive_kind);
+export const DRIVE_KIND = /** @type {{ level: number, max_ma: number, default: number }} */ (GPIO.enum.drive_kind);
 /** read's drive TLV for a channel not driven in mode 3 / 4 */
 export const NOT_DRIVEN = GPIO.enum.drive_read.not_driven;
 
@@ -39,7 +39,7 @@ export class GpioUnavailable extends Unavailable {
  * level is stronger). A ceiling carries over between probes; a level number is one probe's list.
  */
 export class Drive {
-  /** @param {number} kind  DRIVE_KIND.level / DRIVE_KIND.max_ma @param {number} value  u16 */
+  /** @param {number} kind  DRIVE_KIND.level / DRIVE_KIND.max_ma / DRIVE_KIND.default @param {number} value  u16 */
   constructor(kind, value) { this.kind = kind; this.value = value; Object.freeze(this); }
 
   /** A level number of the probe's drive_levels. @param {number} n */
@@ -48,21 +48,30 @@ export class Drive {
   /** An mA ceiling. @param {number} ma */
   static maxMa(ma) { return new Drive(DRIVE_KIND.max_ma, ma); }
 
+  /** The default level of drive_levels (kind 2, value 0; fixture §1.1). */
+  static default() { return new Drive(DRIVE_KIND.default, 0); }
+
+  get isDefault() { return this.kind === DRIVE_KIND.default; }
+
   /** A Drive as it is, a number as a level number. @param {Drive | number} drive */
   static of(drive) { return drive instanceof Drive ? drive : Drive.level(Number(drive)); }
 
   /** kind(u8) value(u16), the form both places use. */
   pack() {
     if (!Object.values(DRIVE_KIND).includes(this.kind) || !Number.isInteger(this.value) || this.value < 0 || this.value > 0xffff) {
-      throw new RangeError(`drive kind ${this.kind} value ${this.value}: kind 0 (level) or 1 (max_ma), value u16`);
+      throw new RangeError(`drive kind ${this.kind} value ${this.value}: kind 0 (level), 1 (max_ma) or 2 (default), value u16`);
     }
+    if (this.isDefault && this.value) throw new RangeError('drive kind 2 (the default level) carries value 0');
     return new Writer().u8(this.kind).u16(this.value).done();
   }
 
   /** @param {Uint8Array} data  kind(u8) value(u16) */
   static unpack(data) { return new Drive(data[0], getU16(data, 1)); }
 
-  toString() { return this.kind === DRIVE_KIND.level ? `level ${this.value}` : `<= ${this.value} mA`; }
+  toString() {
+    if (this.isDefault) return 'default';
+    return this.kind === DRIVE_KIND.level ? `level ${this.value}` : `<= ${this.value} mA`;
+  }
 }
 
 /**
@@ -77,6 +86,7 @@ export class DriveLevels {
    * @param {Drive | number} drive @returns {number | null} */
   pick(drive) {
     const d = Drive.of(drive);
+    if (d.isDefault) return this.defaultLevel;
     if (d.kind === DRIVE_KIND.level) return d.value < this.ma.length ? d.value : null;
     let best = 0;
     this.ma.forEach((x, i) => { if (x <= d.value) best = i; });
@@ -306,7 +316,7 @@ export class FixtureUartIO extends StreamIO {
  * not declared. */
 /** @typedef {TargetDeclarations & { maxStretchUs: number | null, pullupOhms: number | null }} I2cTargetDeclarations
  * maxStretchUs (tag 0x41, u32): the largest stretchUs stretch() accepts; null when not declared (a probe declares it
- * exactly when features has bit1). pullupOhms (tag 0x42, u32; fixture §3, P2-★3): the approximate resistance of the
+ * exactly when its ops offer stretch). pullupOhms (tag 0x42, u32; fixture §3, P2-★3): the approximate resistance of the
  * pull-ups the probe enables on SDA / SCL while configured; null when it declares none (features bit2 clear): it then
  * enables none and the bus needs its own. */
 
@@ -351,7 +361,6 @@ export class I2cTarget extends Interface {
   static TAG_QUEUE_DEPTH = I2C.tlv.describe.queue_depth;
   static TAG_MAX_STRETCH_US = I2C.tlv.describe.max_stretch_us;
   static FEATURE_PRELOADED_TX = I2C.enum.features.preloaded_tx;
-  static FEATURE_STRETCH = I2C.enum.features.stretch;
   static FEATURE_INTERNAL_PULLUPS = I2C.enum.features.internal_pullups;
   static TAG_PULLUP_OHMS = I2C.tlv.describe.pullup_ohms;
 
@@ -420,7 +429,8 @@ export class I2cTarget extends Interface {
 
   async reset() { await this.call(I2cTarget.RESET); }
 
-  /** Hold SCL low for stretchUs after each received byte (0 = off); probes declaring features bit1 only. Above the
+  /** Hold SCL low for stretchUs after each received byte (0 = off); an optional op, offered when the describe's ops set
+   * it (`offers(I2cTarget.STRETCH)`; otherwise rejected unknown_operation). Above the
    * declared maxStretchUs: Unsupported. Accepted in any state; configure and reset keep it, the plan's release clears it.
    * @param {number} stretchUs */
   async stretch(stretchUs) { await this.call(I2cTarget.STRETCH, new Writer().u32(stretchUs).done()); }

@@ -10,7 +10,7 @@ import * as reg from './registry.js';
 import { hex } from './bytes.js';
 import * as catalog from './catalog.js';
 import * as m from './message.js';
-import { KNOWN, ranges } from './interfaces.js';
+import { KNOWN, opNames, ranges } from './interfaces.js';
 import { kind } from './names.js';
 
 /** @typedef {{ entry: catalog.ListEntry, description: catalog.Description, tlvs: [number, Uint8Array][] }} Offer */
@@ -37,6 +37,7 @@ export function requiredMissing(limits, coreDescribe) {
   if (limits.revision >= 1 && limits.transport === null) out.push('confirm\'s transport TLV');
   const have = new Set(coreDescribe.map(([tag]) => tag & 0x7f));
   for (const [tag, name] of REQUIRED_CORE_TAGS) if (!have.has(tag)) out.push(`describe of fn 0: ${name}`);
+  if (!have.has(m.TAG_OPS)) out.push('describe of fn 0: ops');   // every fn's describe carries it (core §1.2, §7.4)
   return out;
 }
 
@@ -73,7 +74,9 @@ export async function collect(hst, prefix = '', exact = false) {
       if (!p[0] || !page.length) break;
     }
     caps.offers.push({ entry, description: catalog.decodeDescription(tlvs), tlvs });
-    if (entry.fn === m.CORE_FN) caps.missing = requiredMissing(limits, tlvs);
+    const description = caps.offers[caps.offers.length - 1].description;
+    if (entry.fn === m.CORE_FN) caps.missing = [...requiredMissing(limits, tlvs), ...caps.missing];
+    else if (limits.revision >= 1 && description.ops === null) caps.missing.push(`describe of fn ${entry.fn}: ops`);
   }
   return caps;
 }
@@ -95,6 +98,7 @@ export async function collect(hst, prefix = '', exact = false) {
  * @property {number} [maxClockHz]
  * @property {number} [minClockHz]
  * @property {number} [maxLength]
+ * @property {string[]} [ops]                      the ops tag's ops by name (core §7.4)
  * @property {string[]} [features]
  * @property {string} [implementation]
  * @property {Record<string, string>} [declares]     interface-specific tags, decoded (a repeated tag: '; '-joined)
@@ -132,6 +136,7 @@ export function describeOffer(o) {
   if (d.maxClockHz !== null) out.maxClockHz = d.maxClockHz;
   if (d.minClockHz !== null) out.minClockHz = d.minClockHz;
   if (d.maxLength !== null) out.maxLength = d.maxLength;
+  if (d.ops !== null) out.ops = opNames(name, d.ops);
   if (d.features !== null) out.features = features(d.features, k?.features ?? {});
   if (d.implementation !== null) out.implementation = catalog.IMPLEMENTATIONS[d.implementation] ?? String(d.implementation);
   /** @type {Record<string, string>} */
@@ -176,7 +181,7 @@ export function toText(caps) {
   const rows = caps.offers.map(describeOffer);
   const lines = [`OEP revision ${caps.revision}, max frame ${caps.maxFrame} bytes; `
     + `${rows.length} interfaces in ${caps.requests.list} list and ${caps.requests.describe} describe requests`, ''];
-  if (caps.missing?.length) lines.splice(1, 0, `MISSING what every probe must give (core §1.2): ${caps.missing.join(', ')}`);
+  if (caps.missing?.length) lines.splice(1, 0, `MISSING what every probe must give (core §1.2, §7.4): ${caps.missing.join(', ')}`);
   /** @type {Map<number, OfferRow[]>} */
   const byInstance = new Map();
   for (const r of rows) byInstance.set(r.instance, [...(byInstance.get(r.instance) ?? []), r]);
@@ -202,6 +207,7 @@ export function toText(caps) {
       if (r.minClockHz !== undefined) limits.push(`min ${hz(r.minClockHz)}`);
       if (r.maxLength !== undefined) limits.push(`max length ${r.maxLength}`);
       if (limits.length) lines.push(`${pad}  ${limits.join(', ')}`);
+      if (r.ops) lines.push(`${pad}  ops: ${r.ops.join(', ') || 'none'}`);
       if (r.features?.length) lines.push(`${pad}  features: ${r.features.join(', ')}`);
       if (r.implementation) lines.push(`${pad}  implementation: ${r.implementation}`);
       for (const [k, v] of Object.entries(r.declares ?? {})) lines.push(`${pad}  ${k}: ${v}`);

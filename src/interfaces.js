@@ -9,6 +9,7 @@
 import { getU16, getU32 } from './bytes.js';
 import { bitmapToChannels } from './catalog.js';
 import { shown } from './message.js';
+import * as reg from './registry.js';
 
 /** @typedef {(v: Uint8Array) => string} Decoder */
 
@@ -66,8 +67,8 @@ export const KNOWN = {
       0x43: ['channels', u16], 0x44: ['reserved', channels], 0x45: ['profile', asText],
       0x46: ['label', label], 0x47: ['resets on open', () => 'yes'],
       0x49: ['transport', transport], 0x4a: ['discoverable', (v) => (v[0] === 1 ? 'yes' : 'no')],
-      0x4b: ['plan roles', u32], 0x4c: ['chip', asText], 0x4d: ['max op ms', u32],
-      0x4e: ['port speed', (v) => (v[0] === 1 ? 'yes' : 'no')] } }),
+      0x4b: ['plan roles', u32], 0x4c: ['chip', asText], 0x4d: ['max op ms', u32] } }),
+  'oep.link': known('the link test (source, sink) and, when its ops offer it, port_speed on a UART bridge'),
   'oep.wire.rvswd': known('scan, attach, detach over RVSWD (attach returns a connection)',
     { roles: { 1: 'SWDIO', 2: 'SWCLK', 3: 'reset' }, features: { 0: 'attach writes unbounded' }, tags: { 0x40: ['max connections', first] } }),
   'oep.wire.swio': known('scan, attach, detach over SWIO, one wire (attach returns a connection)',
@@ -75,11 +76,11 @@ export const KNOWN = {
   'oep.wire.swd': known('scan, attach, detach over ARM SWD',
     { roles: { 1: 'SWDIO', 2: 'SWCLK' }, features: { 0: 'attach writes unbounded' }, tags: { 0x40: ['max connections', first] } }),
   'oep.target.riscv-dm': known(
-    'RISC-V Debug Module over DMI: step lists, block read/write, run until halt, halt/resume',
-    { features: { 0: 'block read/write', 1: 'run until halt', 2: 'reset', 3: 'step' } }),
+    'RISC-V Debug Module over DMI: step lists, block read/write, run until halt, halt/resume (optional ops: ops)'),
   'oep.target.arm-adi': known('ARM Debug Interface: DP/AP transfer lists, block transfers'),
   'oep.target.console': known('console streams on a debug connection (position-addressed, marks)',
-    { tags: { 0x40: ['mechanisms', (v) => Array.from(v, (b) => MECHANISMS[b] ?? String(b)).join(', ')] } }),
+    { tags: { 0x40: ['mechanisms', (v) => Array.from(v, (b) => MECHANISMS[b] ?? String(b)).join(', ')],
+      0x41: ['send queue', (v) => `${u16(v.slice(0, 2))} bytes`] } }),
   'oep.probe.config': known('the probe\'s configuration (plan, labels, idle pins, slots, binds, uart) and its storage; the state is op state',
     { tags: { 0x40: ['storage', (v) => `${u32(v.slice(0, 4))} bytes`],
       0x41: ['items', (v) => Array.from(v, String).join(', ')], 0x42: ['slots', first],
@@ -87,16 +88,25 @@ export const KNOWN = {
   'oep.fixture.gpio': known('drive and read probe pins', { roles: { 1: 'line' }, tags: { 0x40: ['modes', bits32] } }),
   'oep.fixture.uart': known('a UART (USART, asynchronous) on probe pins', { roles: { 1: 'RX', 2: 'TX' },
     tags: { 0x40: ['formats', (v) => Array.from(v.slice(1, 1 + v[0]), (b) => `0x${b.toString(16).padStart(2, '0')}`).join(', ')] } }),
-  'oep.fixture.logic': known('sampled logic capture', { roles: LOGIC_LINES, tags: { 0x40: ['mode', captureMode] } }),
+  'oep.fixture.logic': known('sampled logic capture', { roles: LOGIC_LINES, features: { 2: 'notify' }, tags: { 0x40: ['mode', captureMode] } }),
   'oep.fixture.analog': known('sampled analog capture',
-    { roles: Object.fromEntries(Array.from({ length: 8 }, (_, k) => [k, `ch${k}`])), tags: { 0x40: ['mode', captureMode] } }),
+    { roles: Object.fromEntries(Array.from({ length: 8 }, (_, k) => [k, `ch${k}`])), features: { 2: 'notify' }, tags: { 0x40: ['mode', captureMode] } }),
+  'oep.fixture.capture-group': known('captures started and stopped together', { features: { 2: 'notify' } }),
   'oep.fixture.i2c-target': known('an I2C target the DUT can address (open-drain only, fixture §3)',
-    { roles: { 1: 'SDA', 2: 'SCL' }, features: { 0: 'preloaded tx', 1: 'clock stretching', 2: 'internal pull-ups' },
+    { roles: { 1: 'SDA', 2: 'SCL' }, features: { 0: 'preloaded tx', 2: 'internal pull-ups' },
       tags: { 0x40: ['queue depth', first], 0x41: ['max stretch us', u32], 0x42: ['pull-ups ohms', u32] } }),
   'oep.fixture.spi-target': known('an SPI target the DUT can clock (ESP-IDF slave driver)',
     { roles: { 1: 'SCK', 2: 'MOSI', 3: 'MISO', 4: 'CS' }, features: { 0: 'LSB first' },
       tags: { 0x40: ['queue depth', first], 0x43: ['CS setup ns', (v) => `${u32(v)} (SCK sooner after CS: the first bit is not sure)`] } }),
 };
+
+/** The ops of an ops tag by the registry's names for interface `name` (an op it does not name: 0x.. hex).
+ * @param {string} name @param {Iterable<number>} ops */
+export function opNames(name, ops) {
+  const table = /** @type {Record<string, number>} */ (/** @type {any} */ (reg.INTERFACES)[name]?.op ?? {});
+  const known = Object.fromEntries(Object.entries(table).map(([k, v]) => [v, k]));
+  return [...ops].sort((a, b) => a - b).map((op) => known[op] ?? `0x${op.toString(16).padStart(2, '0')}`);
+}
 
 /** [0,1,2,5,7,8] -> '0-2,5,7-8' ('-' for none).
  * @param {number[]} chans */

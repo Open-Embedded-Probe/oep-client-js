@@ -28,6 +28,9 @@ const RVSWD = reg.WIRE_RVSWD;
 export const ATTACH_BUDGET_MS = reg.LIMITS.attach_budget_ms;
 /** No scan combination starts later than this; a scan's argument time adds one attach to it. */
 export const SCAN_BUDGET_MS = reg.LIMITS.scan_budget_ms;
+/** After a reset's release, the most a probe waits for a silent DM (attach's reset TLV, riscv-dm reset; debug §3, §4.3):
+ * argument time (core §4.4). */
+export const RESET_SETTLE_MS = reg.LIMITS.reset_settle_ms;
 export const STEP = RV.enum.dmi_step;
 export const STEP_WRITE = STEP.write, STEP_READ = STEP.read, STEP_POLL_READS = STEP.poll_reads;
 export const STEP_WAIT_US = STEP.wait_us, STEP_POLL_US = STEP.poll_us;
@@ -161,9 +164,10 @@ export class WireBase extends Interface {
     try { return Math.min(ms, await maxOpMs(this.host)); } catch { return ms; }
   }
 
-  /** attach's argument time (core §4.4, C-06 / P2-★4): attach_budget_ms plus the reset TLV's holdMs, at most max_op_ms -
-   * the host's wait for its answer adds host_wait_add_ms and the transfer time. @param {[number, number] | null} [reset] */
-  attachMs(reset = null) { return this.budget(ATTACH_BUDGET_MS + (reset ? reset[1] : 0)); }
+  /** attach's argument time (core §4.4, C-06 / P2-★4): attach_budget_ms, and with the reset TLV its holdMs and
+   * reset_settle_ms (the wait for a target that restarts by itself after the release, debug §3), at most max_op_ms - the
+   * host's wait for its answer adds host_wait_add_ms and the transfer time. @param {[number, number] | null} [reset] */
+  attachMs(reset = null) { return this.budget(ATTACH_BUDGET_MS + (reset ? reset[1] + RESET_SETTLE_MS : 0)); }
 
   /** scan's argument time: scan_budget_ms + attach_budget_ms (one combination's try), at most max_op_ms. */
   scanMs() { return this.budget(SCAN_BUDGET_MS + ATTACH_BUDGET_MS); }
@@ -203,8 +207,7 @@ export class WireBase extends Interface {
       const rd = new m.Reader((await this.call(WireBase.SCAN, w.done(), { expectMs })).payload);
       const tried = rd.u8(), count = rd.u8();
       for (let i = 0; i < count; i++) {
-        const e = rd.element();   // len(u8)-prefixed: read what this client knows of it (core §2.3)
-        const kind = e.u8(), dio = e.u16(), clk = e.u16(), status = e.u32();
+        const kind = rd.u8(), dio = rd.u16(), clk = rd.u16(), status = rd.u32();   // 9 bytes, no length (core §2.3)
         out.push({ kind, pins: [dio, clk], dmstatus: status });
       }
       rd.tail();
@@ -225,7 +228,7 @@ export class WireBase extends Interface {
   }
 
   /** The wire's live connections, in the order they were made (§2.1, lock-free; paged: the request is first(u8), the
-   * answer `more count × (len entry) [TLV]`, followed until more is 0). @returns {Promise<ConnectionInfo[]>} */
+   * answer `more count × entry [TLV]`, followed until more is 0). @returns {Promise<ConnectionInfo[]>} */
   async connections() {
     /** @type {ConnectionInfo[]} */
     const out = [];
@@ -233,9 +236,8 @@ export class WireBase extends Interface {
       const rd = new m.Reader((await this.call(WireBase.CONNECTIONS, Uint8Array.of(out.length), { locked: false })).payload);
       const more = rd.u8(), count = rd.u8();
       for (let i = 0; i < count; i++) {
-        const e = rd.element();
-        const conn = e.u16(), dio = e.u16(), clk = e.u16(), speedHz = e.u32(), users = e.u8(), slot = e.u8();
-        const scheme = e.u8(), tid = e.bytes(e.u8());
+        const conn = rd.u16(), dio = rd.u16(), clk = rd.u16(), speedHz = rd.u32(), users = rd.u8(), slot = rd.u8();
+        const scheme = rd.u8(), tid = rd.bytes(rd.u8());
         out.push({ conn, pins: [dio, clk], speedHz, users, slot, targetId: scheme ? [scheme, tid] : null });
       }
       rd.tail();
@@ -504,8 +506,9 @@ export class RiscvDm extends Interface {
   static TAG_RESET_METHOD = RV.tlv.reset.method;
   static TAG_STEP_LEFT = RV.tlv.step_answer.step_left;
   static DPC = 0x07B1;
-  /** The optional ops' bits of describe features (debug §4): block (read_block / write_block), run, reset, step. */
-  static FEATURE = RV.enum.features;
+  /** The optional ops (debug §4), by name: block (read_block / write_block, a pair), run, reset, step. */
+  static OPTIONAL = Object.freeze({ block: [RV.op.read_block, RV.op.write_block], run: [RV.op.run], reset: [RV.op.reset],
+    step: [RV.op.step] });
 
   /** @type {number | null} bytes one block operation may move (describe max_length; never computed from max_frame) */
   maxLength = null;
@@ -524,13 +527,19 @@ export class RiscvDm extends Interface {
   /** The words one read_block / write_block may move, from the probe's declared max_length (NoMaxLength when none). */
   blockWords() { return blockWords(this); }
 
-  /** The optional ops this probe offers, from describe's features (debug §4, core §1.2): 'block' (read_block /
-   * write_block), 'run', 'reset', 'step'. dmi, halt and resume are always there; an op not declared here is answered
-   * unknown_operation, and the host builds the same thing from dmi. @returns {Promise<Set<string>>} */
+  /** The optional ops this probe offers, from its describe's ops tag (debug §4, core §1.2, §7.4): 'block' (read_block
+   * / write_block, offered as a pair), 'run', 'reset', 'step'. dmi, halt and resume are always there; an op not offered
+   * is answered unknown_operation, and the host builds the same thing from dmi. A describe without an ops tag (not a
+   * conforming probe) declares none. @returns {Promise<Set<string>>} */
   async declared() {
-    const v = (await describe(this.host, this.fn)).find(([tag, value]) => (tag & 0x7f) === catalog.COMMON.features && value.length >= 4)?.[1];
-    const bits = v ? getU32(v) : 0;
-    return new Set(Object.entries(RiscvDm.FEATURE).filter(([, bit]) => bits & bit).map(([name]) => name));
+    const offered = (await this.ops()) ?? new Set();
+    return new Set(Object.entries(RiscvDm.OPTIONAL).filter(([, ops]) => ops.every((op) => offered.has(op))).map(([name]) => name));
+  }
+
+  /** reset's argument time (core §4.4): reset_settle_ms - the wait for a DM that does not answer while the target
+   * restarts by itself after ndmreset (debug §4.3) - at most max_op_ms. */
+  async resetMs() {
+    try { return Math.min(RESET_SETTLE_MS, await maxOpMs(this.host)); } catch { return RESET_SETTLE_MS; }
   }
 
   /** @param {string} what @param {number} op */
@@ -567,7 +576,7 @@ export class RiscvDm extends Interface {
   async resetMode(mode, method) {
     const body = new Writer().u8(mode);
     if (method != null) body.raw(m.tlv(RiscvDm.TAG_RESET_METHOD, [method], true));
-    const r = await this.request(RiscvDm.RESET, body.done());
+    const r = await this.request(RiscvDm.RESET, body.done(), { expectMs: await this.resetMs() });
     const rd = ran(r);
     const status = rd.u8(), flags = rd.u8(), attempts = rd.u8(), pc = rd.u32();
     rd.tail();
