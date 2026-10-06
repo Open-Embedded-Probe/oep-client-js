@@ -63,7 +63,11 @@ test('Drive: level / maxMa, a number is a level, kind(u8) value(u16)', () => {
   assert.deepEqual(Drive.unpack(Uint8Array.of(1, 10, 0)), Drive.maxMa(10));
   assert.equal(String(Drive.level(1)), 'level 1');
   assert.equal(String(Drive.maxMa(10)), '<= 10 mA');
-  assert.throws(() => new Drive(2, 0).pack(), RangeError);
+  assert.deepEqual([...Drive.default().pack()], [2, 0, 0]);                 // kind 2: the default level (fixture §1.1)
+  assert.equal(String(Drive.default()), 'default');
+  assert.equal(LEVELS.pick(Drive.default()), 2);
+  assert.throws(() => new Drive(2, 1).pack(), RangeError);                  // kind 2 carries value 0
+  assert.throws(() => new Drive(3, 0).pack(), RangeError);
   assert.throws(() => Drive.level(0x10000).pack(), RangeError);
 });
 
@@ -179,21 +183,24 @@ test('the idle item\'s drive encodes and decodes', () => {
   assert.deepEqual([...it.value()], [7, 0, 4, 1, 10, 0]);
   assert.deepEqual(config.decode(config.ITEM.idle, it.value()), it);
   assert.deepEqual([...new Idle({ channel: 7, mode: 'output-low', drive: 2 }).value()], [7, 0, 3, 0, 2, 0]);
-  assert.equal(/** @type {Idle} */ (config.decode(config.ITEM.idle, Uint8Array.of(7, 0, 4))).drive, null);
+  assert.equal(/** @type {Idle} */ (config.decode(config.ITEM.idle, Uint8Array.of(7, 0, 4, 2, 0, 0))).drive, null);
   assert.equal(new Idle({ channel: 7 }).drive, null);
+  assert.deepEqual([...new Idle({ channel: 7 }).value()], [7, 0, 1, 2, 0, 0]);   // 6 bytes: kind 2, value 0 (§1)
   assert.throws(() => new Idle({ channel: 7, mode: 'pull-up', drive: 1 }).value(), /output-low \/ output-high/);
-  assert.throws(() => new Idle({ channel: 7, mode: 'output-high', drive: new Drive(2, 0) }).value(), RangeError);
+  assert.throws(() => new Idle({ channel: 7, mode: 'output-high', drive: new Drive(3, 0) }).value(), RangeError);
 });
 
 /** @param {number} ch @param {number[]} rest */
 const idleTlv = (ch, ...rest) => m.tlv(config.ITEM.idle, Uint8Array.of(ch & 0xff, ch >> 8, ...rest));
 
 for (const [value, reason] of /** @type {[number[], 'malformed' | 'unsupported'][]} */ ([
+  [[4], 'malformed'],                                              // 3 bytes: the idle is 6 (probe.config §1)
   [[4, 0], 'malformed'],                                           // 4 bytes
   [[4, 0, 1], 'malformed'],                                        // 5 bytes
-  [[4, 2, 0, 0], 'unsupported'],                                   // drive_kind undefined: a later revision's (C-02)
-  [[1, 0, 0, 0], 'malformed'],                                     // a drive on a mode other than 3 / 4
+  [[4, 3, 0, 0], 'unsupported'],                                   // drive_kind undefined: a later revision's (C-02)
+  [[1, 0, 0, 0], 'malformed'],                                     // a drive other than the default on mode 0-2
   [[0, 1, 10, 0], 'malformed'],
+  [[4, 2, 1, 0], 'malformed'],                                     // kind 2 with a value other than 0
   [[4, 0, 4, 0], 'unsupported'],                                   // level number = the number of levels
 ])) {
   test(`idle drive refused ${reason}: ${value.join(' ')}`, { skip }, () => withFake(['--profile', 'p4-bench'], async (hst) => {
@@ -203,11 +210,15 @@ for (const [value, reason] of /** @type {[number[], 'malformed' | 'unsupported']
 
 test('idle drive forms the probe takes', { skip }, () => withFake(['--profile', 'p4-bench'], async (hst) => {
   const cfg = await ProbeConfig.open(hst);
-  await cfg.set([idleTlv(20, 4, 0, 3, 0), idleTlv(21, 3, 1, 1, 0), idleTlv(22, 4, 1, 0xff, 0xff), idleTlv(23, 4, 0, 1, 0, 0xaa)]);
+  await cfg.set([idleTlv(20, 4, 0, 3, 0), idleTlv(21, 3, 1, 1, 0), idleTlv(22, 4, 1, 0xff, 0xff), idleTlv(23, 4, 2, 0, 0)]);
   const idles = /** @type {Idle[]} */ ((await cfg.items()).filter((i) => i instanceof Idle));
-  assert.deepEqual(idles.map((i) => i.drive), [Drive.level(3), Drive.maxMa(1), Drive.maxMa(0xffff), Drive.level(1)]);   // a tail skipped
+  assert.deepEqual(idles.map((i) => i.drive), [Drive.level(3), Drive.maxMa(1), Drive.maxMa(0xffff), null]);   // kind 2: the default
   const g = await gpioOf(hst, [20, 21, 22, 23]);
-  assert.deepEqual((await g.readState([20, 21, 22, 23])).drive, [3, 0, 3, 1]);   // a ceiling below every level: level 0
+  assert.deepEqual((await g.readState([20, 21, 22, 23])).drive, [3, 0, 3, 2]);   // a ceiling below every level: level 0
+  const r = await hst.call(cfg.fn, ProbeConfig.SET, idleTlv(27, 4, 0, 1, 0, 0xaa));   // 7 bytes: longer than its form
+  assert.deepEqual(new m.Reader(r.payload.slice(4)).tail().ignored, [config.ITEM.idle]);   // ignored, not applied (§1)
+  await assert.rejects(hst.call(cfg.fn, ProbeConfig.SET, m.tlv(config.ITEM.idle, Uint8Array.of(27, 0, 4, 0, 1, 0, 0xaa), true)),
+    rejected('unsupported'));                                      // ... critical: unsupported (core §2.3)
 }));
 
 // ---- slot boot_reset ----------------------------------------------------------------------------------------------
@@ -215,36 +226,39 @@ test('idle drive forms the probe takes', { skip }, () => withFake(['--profile', 
 const v003 = (/** @type {Partial<ConstructorParameters<typeof Slot>[0]>} */ o = {}) => new Slot({ slot: 0, wireFn: 1,
   pins: [16, 0xffff], name: 'v003', attach: 'at-boot', ...o });
 
-test('slot bootReset goes after the lock and decodes', () => {
+test('slot bootReset goes right after attach and decodes; the item ends with the lock', () => {
   const s = v003({ bootReset: true });
-  assert.deepEqual([...s.value().slice(-2)], [0, 1]);              // lock_len 0, boot_reset 1
+  assert.deepEqual([...s.value().slice(7, 9)], [1, 1]);            // attach at-boot, boot_reset 1
+  assert.deepEqual([...s.value().slice(-5)], [...new TextEncoder().encode('v003'), 0]);   // lock_len 0, nothing after
   assert.deepEqual(config.decode(config.ITEM.slot, s.value()), s);
   const lock = { scheme: 1, mask: Uint8Array.of(0xff, 0xff, 0xff, 0xff), value: Uint8Array.of(1, 2, 3, 4) };
   const locked = v003({ bootReset: true, lock });
-  assert.deepEqual([...locked.value().slice(-5)], [1, 2, 3, 4, 1]);
+  assert.deepEqual([...locked.value().slice(-4)], [1, 2, 3, 4]);
   assert.deepEqual(config.decode(config.ITEM.slot, locked.value()), locked);
   const plain = v003();
-  assert.deepEqual([...plain.value().slice(-5)], [...new TextEncoder().encode('v003'), 0]);   // not placed: off
-  assert.equal(/** @type {Slot} */ (config.decode(config.ITEM.slot, concat(plain.value(), Uint8Array.of(0)))).bootReset, false);
-  assert.equal(/** @type {Slot} */ (config.decode(config.ITEM.slot, concat(s.value(), Uint8Array.of(0x55)))).bootReset, true);
+  assert.equal(plain.value()[8], 0);                               // always there: 0
+  assert.equal(/** @type {Slot} */ (config.decode(config.ITEM.slot, plain.value())).bootReset, false);
   assert.throws(() => v003({ attach: 'host', bootReset: true }).value(), /at-boot/);
   assert.equal(config.BOOT_RESET.retry_with_reset, 1);
 });
 
-/** A slot item with attach and a boot_reset byte (null: none) as raw bytes. @param {number} attach
- * @param {number | null} bootReset @param {number[]} extra */
+/** A slot item with attach and boot_reset as raw bytes, `extra` after its end. @param {number} attach
+ * @param {number} bootReset @param {number[]} extra */
 function slotTlv(attach, bootReset, extra = []) {
   const v = v003().value();
   v[7] = attach;
-  return m.tlv(config.ITEM.slot, Uint8Array.of(...v, ...(bootReset === null ? [] : [bootReset]), ...extra));
+  v[8] = bootReset;
+  return m.tlv(config.ITEM.slot, Uint8Array.of(...v, ...extra));
 }
 
 test('slot boot_reset: 2 or more, or 1 on a host slot, is malformed', { skip }, () => withFake(['--profile', 'esp32-v003'], async (hst) => {
   const cfg = await ProbeConfig.open(hst);
   await assert.rejects(cfg.set([slotTlv(1, 2)]), rejected('malformed'));
   await assert.rejects(cfg.set([slotTlv(0, 1)]), rejected('malformed'));
-  await cfg.set([slotTlv(0, 0)]);                                  // 0 placed: fine on a host slot
-  await cfg.set([slotTlv(1, 1, [0x55, 0x66])]);                    // later fields after it: skipped
+  await cfg.set([slotTlv(0, 0)]);                                  // 0: fine on a host slot
+  const r = await hst.call(cfg.fn, ProbeConfig.SET, slotTlv(1, 1, [0x55, 0x66]));   // longer than its form: not applied
+  assert.deepEqual(new m.Reader(r.payload.slice(4)).tail().ignored, [config.ITEM.slot]);
+  await cfg.set([slotTlv(1, 1)]);
   const [slot] = /** @type {Slot[]} */ ((await cfg.items()).filter((i) => i instanceof Slot));
   assert.equal(slot.bootReset, true);
 }));

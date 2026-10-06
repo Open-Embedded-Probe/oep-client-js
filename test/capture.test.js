@@ -15,7 +15,7 @@ import { openTcp } from '../src/node/index.js';
 import { PYTHON, haveFake, join, startFake } from './fake.js';
 
 /** @param {...[number, Uint8Array | number[]]} items */
-const answer = (...items) => Uint8Array.from(items.flatMap(([t, v]) => [t, v.length, ...v]));
+const answer = (...items) => Uint8Array.from(items.flatMap(([t, v]) => [t, v.length & 0xff, v.length >> 8, ...v]));   // tag len(u16) value
 const u32 = (/** @type {number} */ v) => new Writer().u32(v).done();
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -98,7 +98,7 @@ test('a segment without a trigger, and bytes after the known ones skipped', () =
  * @param {number} fn @param {number} seq @param {bigint} position @param {string} data @param {number | null} [generation] */
 const push = (fn, seq, position, data, generation = null) => {
   const w = new Writer().u8(0x06).u16(fn).u16(seq).u64(position).u16(data.length).raw(new TextEncoder().encode(data));
-  if (generation !== null) w.u8(c.DATA_GENERATION).u8(4).u32(generation);
+  if (generation !== null) w.u8(c.DATA_GENERATION).u16(4).u32(generation);
   return w.done();
 };
 
@@ -146,7 +146,7 @@ test("stream does not count the fn's events as lost", async () => {
 
 test('stream drops pushes of another generation (oep-if-capture §3.4)', async () => {
   const link = fakeLink([[push(2, 0, 90n, 'old', 4), push(2, 1, 0n, 'ab', 5)],
-    [Uint8Array.from([...push(2, 2, 2n, 'cd', 5), 0x55, 1, 0])]]);   // an unknown TLV after it: skipped
+    [Uint8Array.from([...push(2, 2, 2n, 'cd', 5), 0x55, 1, 0, 0])]]);   // an unknown TLV after it: skipped
   const cap = offline({ link, session: null }, 2);
   cap.generation = 5;
   const got = await cap.stream({ nbytes: 4 });
@@ -164,7 +164,7 @@ test('read spans frames without the header leaking into the data; the generation
     const g = rd.u32(), pos = Number(rd.u64()), n = rd.u32();
     assert.equal(g, 9);
     const data = stream.subarray(pos, pos + n);
-    return new m.Result(0, m.COMPLETED, m.SUCCESS, new Writer().u64(pos).u8(0).u32(data.length).raw(data).raw([0x41, 1, 0]).done());   // a TLV after
+    return new m.Result(0, m.COMPLETED, m.SUCCESS, new Writer().u64(pos).u8(0).u32(data.length).raw(data).raw([0x41, 1, 0, 0]).done());   // a TLV after
   };
   const hst = {
     session: null,

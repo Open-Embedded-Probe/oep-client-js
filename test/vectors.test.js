@@ -2,8 +2,10 @@
 // oep-spec's test vectors (test/vectors/*.json, copied from oep-spec tests/vectors, never edited) against this client's
 // own code: COBS and serial frames (cobs.js), headers and TLVs (message.js), the CRCs, confirm (the request this host
 // sends, the answer as Host reads it), discovery (list, describe and the header refusals of the smallest probe: the
-// requests as this host builds them, the answers as it reads them), probe.config's canonical form and hash (config.js), and the refusals as the host
-// reads them. Where a vector and this code disagree, the spec's text decides (core §0 rule 4) and the vector is the
+// requests as this host builds them, the answers as it reads them), probe.config's canonical form and hash (config.js), the refusals as the host
+// reads them, the session scenarios (sessions.json: the requests open / keepalive / end / lock_state send and the
+// answers as the host reads them) and the per-op vectors (ops.json: where this client has the op, its request byte for
+// byte and its reading of the answer). Where a vector and this code disagree, the spec's text decides (core §0 rule 4) and the vector is the
 // one the spec corrects. Mirrors oep-client-python's tests/test_vectors.py (whose fake-side checks are the fake's).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -16,7 +18,9 @@ import * as core from '../src/core.js';
 import * as config from '../src/config.js';
 import * as m from '../src/message.js';
 import { fromHex, hex } from '../src/bytes.js';
-import { Rejected, Unsupported, rejection } from '../src/errors.js';
+import { Locked, Rejected, Unsupported, rejection } from '../src/errors.js';
+import * as reg from '../src/registry.js';
+import { getU32 } from '../src/bytes.js';
 import { Host } from '../src/host.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -34,7 +38,7 @@ test('the copy is the spec\'s (when a sibling oep-spec checkout is there)', { sk
   for (const n of names(SPEC)) assert.equal(readFileSync(join(HERE, n), 'utf8'), readFileSync(join(SPEC, n), 'utf8'), n);
 });
 
-// ---- COBS and serial frames (core §3.1) --------------------------------------------------------------------------
+// ---- COBS and serial frames (transports §1) --------------------------------------------------------------------------
 
 const COBS = load('cobs.json');
 
@@ -83,10 +87,11 @@ test('answer headers', () => {
   }
 });
 
-test('TLVs in the one encoding (short and long form)', () => {
+test('TLVs in the one encoding (tag, len u16, value)', () => {
   for (const c of HEADERS.tlvs) {
     const value = 'value_hex' in c ? hx(c.value_hex) : new Uint8Array(c.value_len).fill(c.value_byte);
-    assert.equal(hex(m.tlv(c.tag, value)), c.tlv_hex, c.name);
+    if ((c.tag & 0x7f) === m.TAG_IGNORED) assert.deepEqual(m.Tail.parse(hx(c.tlv_hex)).ignored, [...value], c.name);   // the probe's own list: a host never sends it
+    else assert.equal(hex(m.tlv(c.tag & 0x7f, value, (c.tag & 0x80) !== 0)), c.tlv_hex, c.name);
     assert.deepEqual(m.splitTlvs(hx(c.tlv_hex)), [[c.tag, value]], c.name);
   }
 });
@@ -95,7 +100,7 @@ test('TLVs in the one encoding (short and long form)', () => {
 
 const CHECKS = load('checks.json');
 
-test('CRC check values (CRC-16 of core §3.1, CRC-32 of core §5.2 / probe.config §2)', () => {
+test('CRC check values (CRC-16 of transports §1, CRC-32 of core §5.2 / probe.config §2)', () => {
   for (const c of CHECKS.cases.filter((/** @type {any} */ c) => c.algorithm !== 'crc8-dmseq')) {
     const data = hx(c.input_hex);
     const got = c.algorithm === 'crc16-ccitt-false' ? cobs.crc16(data) : config.crc32(data);
@@ -245,7 +250,7 @@ test('refusals: the requests parse, and the answers read as the host reads them'
     const req = m.Request.unpack(hx(c.request_hex));
     assert.equal(hex(req.pack()), c.request_hex, c.name);
     assert.ok(req.fn === 0 || Object.hasOwn(c.fns, String(req.fn)), c.name);
-    if (req.session !== null) assert.equal(req.session, 0x11223344, c.name);   // the vectors' lock holder
+    if (req.session !== m.NO_SESSION_ID) assert.equal(req.session, 0x11223344, c.name);   // the vectors' lock holder
     const res = m.Result.unpack(hx(c.answer_hex));
     if (c.answer === 'completed success') {
       assert.ok(res.succeeded, c.name);
@@ -270,4 +275,214 @@ test('refusals: the gpio set this client builds is the vector\'s request', async
   const c = REFUSALS.cases.find((/** @type {any} */ e) => e.name.startsWith('gpio mode 8'));
   const req = m.Request.unpack(hx(c.request_hex));
   assert.equal(hex(Gpio.setBody([[3, 8]])), hex(req.payload));
+});
+
+// ---- session scenarios (sessions.json: core §5.2, §6, §9) -------------------------------------------------------------
+
+const SESSIONS = load('sessions.json');
+
+/** A host whose next request has `corr` and whose open draws `sid`; every request is answered with `answer`.
+ * @param {Uint8Array} answer @param {number} corr @param {number | null} session @param {number} [sid] */
+function scripted(answer, corr, session, sid = 0) {
+  /** @type {Uint8Array[]} */
+  const sent = [];
+  const link = /** @type {any} */ ({ framing: 'length', maxFrame: 1024, async send(/** @type {Uint8Array} */ b) { sent.push(b); return answer; } });
+  const hst = new Host(link);
+  hst.corr = corr - 1;
+  hst.revision = 1;
+  hst.session = session;
+  hst.newSession = () => sid;
+  return { hst, sent };
+}
+
+test('sessions: each answer as the host reads it, and the requests it sends for open, keepalive, end and lock_state', async () => {
+  for (const sc of SESSIONS.scenarios) {
+    for (const step of sc.steps) {
+      const what = `${sc.name}: ${step.note}`;
+      const req = m.Request.unpack(hx(step.request_hex));
+      const res = m.Result.unpack(hx(step.answer_hex));
+      assert.equal(res.corr, req.corr, what);
+      const { hst, sent } = scripted(hx(step.answer_hex), req.corr, req.op === m.OP.open ? null : (req.session || null), req.session);
+      /** @type {() => Promise<any>} */
+      let call;
+      if (req.op === m.OP.open) {
+        const rd = new m.Reader(req.payload);
+        const lease = rd.u32(), force = rd.u8();
+        const owner = rd.tail().get(reg.CORE.tlv.open.owner);
+        call = () => hst.open(lease, { force: !!force, owner: owner ? new TextDecoder().decode(owner) : undefined });
+      } else if (req.op === m.OP.lock_state) {
+        call = () => hst.lockState();
+      } else {
+        call = /** @type {Record<number, () => Promise<any>>} */ ({ [m.OP.keepalive]: () => hst.keepalive(), [m.OP.end]: () => hst.end() })[req.op];
+      }
+      if (res.resolution === m.REJECTED) {
+        await assert.rejects(call(), (e) => e instanceof Rejected && e.result.detail === res.detail
+          && e.constructor === rejection(res).constructor, what);
+        if (res.detail === m.REJECT.locked) {
+          const err = /** @type {Locked} */ (rejection(res));
+          assert.equal(err.remainingMs, getU32(res.payload), what);
+        }
+        if (req.session === m.NO_SESSION_ID && req.op === m.OP.open) continue;   // a request the host never makes
+      } else {
+        const got = await call();
+        if (req.op === m.OP.open) assert.deepEqual([got.leaseMs, got.bootId], [getU32(res.payload), getU32(res.payload, 4)], what);
+        if (req.op === m.OP.lock_state) assert.deepEqual([got.locked, got.remainingMs], [res.payload[0] !== 0, getU32(res.payload, 1)], what);
+        if (req.op === m.OP.open) assert.equal(hst.session, req.session, what);
+        if (req.op === m.OP.end) assert.equal(hst.session, null, what);
+      }
+      assert.equal(hex(sent[0]), step.request_hex, what);
+    }
+  }
+});
+
+// ---- per-op vectors (ops.json): the client's request and its reading of the answer ------------------------------------
+
+const OPS = load('ops.json').cases;
+const S = 0x11223344;   // ops.json about: the lock holder's id
+
+/** A host whose next request is the case's: its corr, its session, the case's fn numbers known (revision 1, no
+ * describe TLVs), and the case's answer to whatever it sends. @param {any} c @param {number | null} [session] */
+function client(c, session = null) {
+  const r = m.Request.unpack(hx(c.request_hex));
+  const { hst, sent } = scripted(hx(c.answer_hex), r.corr, session);
+  hst.limits = { revision: 1, flags: 0, maxFrame: 1024, window: 4096, maxInflight: 4, bootId: 0, transport: 0, tail: new m.Tail() };
+  for (const [k, name] of Object.entries(c.fns)) {
+    hst.fns.set(/** @type {string} */ (name), Number(k)); hst.revisions.set(Number(k), 1); hst.describes.set(Number(k), []);
+  }
+  hst.describes.set(0, []);
+  return { hst, sent };
+}
+
+/** @param {unknown} e */
+const unknownOperation = (e) => e instanceof Rejected && e.constructor === Rejected && e.result.detail === m.REJECT.unknown_operation;
+
+/** The client's own request for the case and its reading of the answer; null where this client has no API for that
+ * request as it stands. @param {any} c @returns {Promise<Uint8Array[] | null>} */
+async function onClient(c) {
+  const { Gpio, GpioUnavailable } = await import('../src/fixture.js');
+  const rv = await import('../src/riscv.js');
+  const { Console } = await import('../src/console.js');
+  const { ProbeConfig } = await import('../src/config.js');
+  const { LogicCapture } = await import('../src/capture.js');
+  const { NoConnection } = await import('../src/errors.js');
+  const name = /** @type {string} */ (c.name);
+  const a = m.Result.unpack(hx(c.answer_hex));
+  const r = m.Request.unpack(hx(c.request_hex));
+  if (name.startsWith('link source')) {
+    const { hst, sent } = client(c);
+    const n = getU32(r.payload);
+    const data = core.linkSourceData((await hst.call(1, core.LINK_SOURCE, core.linkSourceRequest(n), { locked: false })).payload);
+    assert.deepEqual([...data], Array.from({ length: Math.min(n, core.linkSize(1024)) }, (_, k) => k & 0xff));   // max_frame - 26 (§2)
+    return sent;
+  }
+  if (name.startsWith('link sink') || name.startsWith('link port_speed')) {
+    if (name.includes('port_speed')) {
+      const { hst, sent } = client(c, S);
+      const body = new Uint8Array(12);
+      const v = new DataView(body.buffer);
+      v.setUint32(1, 921600, true); v.setUint16(6, 2000, true); v.setUint32(8, 3000, true);
+      await assert.rejects(hst.call(1, core.LINK_PORT_SPEED, body), unknownOperation);   // WireSkein's check
+      return sent;
+    }
+    const { hst, sent } = client(c);
+    const count = r.payload[0] | (r.payload[1] << 8);
+    if (count > r.payload.length - 2) return null;                  // a count the client never sends
+    await hst.call(1, core.LINK_SINK, core.linkSinkRequest(r.payload.slice(2, 2 + count)), { locked: false });
+    return sent;
+  }
+  if (name.startsWith('gpio')) {
+    if (name.includes('n = 2 with one element')) return null;       // the client never sends a short list
+    const { hst, sent } = client(c, name.includes('without a session') ? null : S);
+    const g = new Gpio(hst, 2, Gpio.NAME);
+    if (name.startsWith('gpio read')) assert.deepEqual(await g.read([3]), [1]);
+    else if (name.includes('channel 9')) {
+      await assert.rejects(g.set([[3, Gpio.OUTPUT_HIGH], [9, Gpio.INPUT]]), (e) => e instanceof GpioUnavailable && JSON.stringify(e.channels) === '[9]');
+    } else if (name.includes('without a session')) {
+      await assert.rejects(g.set([[3, Gpio.OUTPUT_HIGH]]), (e) => e instanceof Rejected && e.result.detail === m.REJECT.session_required);
+    } else await g.set([[3, Gpio.OUTPUT_HIGH]]);
+    return sent;
+  }
+  if (name.startsWith('rvswd connections')) {
+    if (name.includes('first beyond')) return null;                 // the client pages from 0 on
+    const { hst, sent } = client(c);
+    const info = await new rv.Wire(hst, Number(Object.keys(c.fns).find((k) => c.fns[k] === 'oep.wire.rvswd')), 'oep.wire.rvswd').connections();
+    if (a.payload[1]) {
+      assert.equal(info.length, 1);
+      const [x] = info;
+      assert.deepEqual([x.conn, x.pins, x.speedHz, x.users, x.slot, x.targetId?.[0], hex(x.targetId?.[1] ?? new Uint8Array())],
+        [1, [1, 2], 1_000_000, 1, 0xff, 1, '00352000']);
+    } else assert.deepEqual(info, []);
+    return sent;
+  }
+  if (name.startsWith('rvswd scan')) {
+    if (name.includes('count 0') || name.includes('with skip')) return null;   // skip: the client's own loop sends it
+    const { hst, sent } = client(c, S);
+    const found = await new rv.Wire(hst, Number(Object.keys(c.fns).find((k) => c.fns[k] === 'oep.wire.rvswd')), 'oep.wire.rvswd').scan([[1, 2]]);
+    assert.deepEqual(found, [{ kind: 1, pins: [1, 2], dmstatus: 0x00400382 }]);
+    return sent;
+  }
+  if (name.startsWith('riscv-dm')) {
+    if (name.includes('unknown step kind')) return null;
+    const { hst, sent } = client(c, S);
+    const dm = new rv.RiscvDm(hst, r.fn, rv.RiscvDm.NAME, r.payload.slice(0, 2));
+    if (name.includes('halt') && name.includes('unknown connection')) await assert.rejects(dm.halt(), NoConnection);
+    else if (name.includes('halt')) await dm.halt();
+    else if (name.includes('run not offered')) await assert.rejects(dm.run(0x20000000, [], { timeoutMs: 100, outs: [] }), unknownOperation);
+    else if (name.includes('n = 0')) assert.deepEqual(await dm.dmi([]), { done: 0, values: [] });
+    else assert.deepEqual(await dm.dmi([rv.RiscvDm.stepRead(0x11)]), { done: 1, values: [0x00400382] });
+    return sent;
+  }
+  if (name.startsWith('console')) {
+    if (name.includes('from 4')) return null;                       // the client never sends from 4
+    const { hst, sent } = client(c);
+    const con = new Console(hst, r.fn, Console.NAME);
+    con.stream = 2;
+    if (name.startsWith('console marks')) {
+      const { marks, more } = await con.marksPage(0);
+      assert.equal(more, false);
+      assert.deepEqual(marks.map((k) => [k.serial, Number(k.position), k.kind, Number(k.timeNs), k.detail]), [[0, 0, 3, 1_000_000, 0]]);
+    } else if (name.startsWith('console streams')) {
+      assert.deepEqual(await con.streams(), [{ stream: 2, connection: 1, mechanism: 2, users: 1, state: 0, open: true }]);
+    } else {
+      const got = await con.read(Console.FROM_POSITION, 5, 64);
+      assert.deepEqual([Number(got.start), got.more, got.gap, got.data.length], [5, false, false, 0]);
+    }
+    return sent;
+  }
+  if (name.startsWith('probe.config')) {
+    if (name.includes('set')) return null;                          // the client's Idle never sends these forms
+    const { hst, sent } = client(c, name.includes('save') ? S : null);
+    const p = new ProbeConfig(hst, 8, ProbeConfig.NAME);
+    if (name.includes('save')) {
+      await assert.rejects(p.save(), unknownOperation);
+      return sent;
+    }
+    const st = await p.state();
+    assert.deepEqual([st.storage, st.savedHash, st.unreadable], ['none', 0, null]);
+    assert.equal(st.slots.length, 1);
+    const [slot] = st.slots;
+    assert.deepEqual([slot.slot, slot.state, slot.connection, Number(slot.lastTryAtNs), slot.resetAtNs, hex(slot.targetId ?? new Uint8Array())],
+      [0, 'connected', 1, 1_000_000, null, '00352000']);
+    assert.deepEqual(st.binds, [{ port: 0, mode: 'last-reset', selected: 0, flow: 'streaming' }]);
+    return sent;
+  }
+  if (name.startsWith('logic segments')) {
+    const { hst, sent } = client(c);
+    const { segments, more } = await new LogicCapture(hst, 9, LogicCapture.NAME).segmentsPage(0);
+    assert.equal(more, false);
+    assert.deepEqual(segments.map((s) => [s.serial, Number(s.position), Number(s.samples), Number(s.startNs), s.generation]), [[0, 0, 1000, 5_000_000, 1]]);
+    return sent;
+  }
+  return null;
+}
+
+test('ops: where this client has the op, its request is the case\'s and its reading gives the case\'s values', async () => {
+  let checked = 0;
+  for (const c of OPS) {
+    const sent = await onClient(c);
+    if (sent === null) continue;
+    assert.equal(hex(sent[0]), c.request_hex, c.name);
+    checked++;
+  }
+  assert.ok(checked >= 20, `${checked} cases checked`);
 });

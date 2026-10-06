@@ -1,7 +1,7 @@
 // @ts-check
 // The host side of oep-spec docs/v1-rule-change-proposal-2026-10-02.md (applied 09622ef..e9cd891): the wait's floor
 // (C-06, P2-★4), the serial line (C-09), the revision in use (C-15), confirm's transport (C-05), x- unit_ids (C-24),
-// TCP and the resync wait (C-07, core §5.1), the line search (PC-1, PC-2, PC-5), text shown and sent (C-22, C-18),
+// TCP and the resync wait (C-07, transports §5), the line search (PC-1, PC-2, PC-5), text shown and sent (C-22, C-18),
 // ignored's marker (C-04), what a probe must give (C-10), capture (P2-○8, P2-○9) and the new answer TLVs in the API.
 // Mirrors oep-client-python's tests/test_host_rules_2026_10_02.py.
 import assert from 'node:assert/strict';
@@ -18,6 +18,7 @@ import { Host, ownerText } from '../src/host.js';
 import { Link, RESYNC_WAIT_MS } from '../src/link.js';
 import { connect } from '../src/open.js';
 import { planApply, take } from '../src/core.js';
+import { packOps } from '../src/catalog.js';
 import { Wire, RiscvDm, StepError, TargetError, ATTACH_BUDGET_MS, SCAN_BUDGET_MS } from '../src/riscv.js';
 import { I2cTarget } from '../src/fixture.js';
 import { SpeedRecord, memoryStore } from '../src/speedrecord.js';
@@ -85,11 +86,11 @@ async function withFake(args, body, framing = 'length') {
 
 /** Every request's (role, fn, op, payload, expectMs) the host sends (wraps link.send). @param {Host} hst */
 function recording(hst) {
-  /** @type {{ role: number, fn: number, op: number, payload: Uint8Array, expectMs: number }[]} */ const log = [];
+  /** @type {{ role: number, session: number, fn: number, op: number, payload: Uint8Array, expectMs: number }[]} */ const log = [];
   const send = hst.link.send.bind(hst.link);
   hst.link.send = (msg, opts) => {
     const r = m.Request.unpack(msg);
-    log.push({ role: msg[0], fn: r.fn, op: r.op, payload: r.payload, expectMs: opts?.expectMs ?? 0 });
+    log.push({ role: msg[0], session: r.session, fn: r.fn, op: r.op, payload: r.payload, expectMs: opts?.expectMs ?? 0 });
     return send(msg, opts);
   };
   return log;
@@ -138,7 +139,8 @@ test('C-06 / P2-★4: attach and scan wait their budgets', { skip: !haveFake }, 
   const budgets = Object.fromEntries(log.filter((r) => r.fn === w.fn).map((r) => [r.op, r.expectMs]));
   assert.deepEqual(budgets, { [Wire.SCAN]: SCAN_BUDGET_MS + ATTACH_BUDGET_MS, [Wire.ATTACH]: ATTACH_BUDGET_MS });
   assert.deepEqual([SCAN_BUDGET_MS, ATTACH_BUDGET_MS], [500, 1000]);
-  assert.equal(await w.attachMs([7, 20]), 1020);
+  assert.equal(await w.attachMs([7, 20]), 1000 + 20 + 700);        // + hold_ms + reset_settle_ms (debug §3, core §4.4)
+  assert.equal(await (await RiscvDm.on(hst, 1)).resetMs(), 700);   // reset: reset_settle_ms (debug §4.3)
   assert.equal(w.searchRetries, 0);
   await hst.end();
 }));
@@ -188,10 +190,15 @@ test('C-05: the confirm names the transport this host came on', { skip: !haveFak
   assert.equal(transports.find((x) => x.index === where)?.kind, reg.CORE.enum.transport_kind.tcp);   // fake_serve's TCP listener
 }));
 
-/** A Host that knows a describe and a confirm answer, and sends nothing. @param {[number, Uint8Array][]} core @param {number | null} transport */
-function knowing(core, transport) {
+/** A Host that knows a describe, oep.link as fn 10 with `link` ops (null: no oep.link) and a confirm answer, and sends
+ * nothing. @param {[number, Uint8Array][]} core @param {number | null} transport @param {number[] | null} link */
+function knowing(core, transport, link = [1, 2, 3]) {
   const hst = new Host(/** @type {any} */ ({ framing: 'cobs', async send() { throw new Error('nothing is sent'); } }));
   hst.describes.set(0, core);
+  if (link) {
+    hst.fns.set('oep.link', 10);
+    hst.describes.set(10, [[reg.DESCRIBE_COMMON.ops, packOps(link)]]);
+  }
   hst.limits = { revision: 1, flags: 0, maxFrame: 1024, window: 4096, maxInflight: 4, bootId: 1, transport, tail: new m.Tail() };
   hst.revision = 1;
   return hst;
@@ -199,14 +206,13 @@ function knowing(core, transport) {
 
 test('C-05: port_speed raises the transport this host came on; a relaying broker\'s 0xFF and a confirm without the TLV', async () => {
   const D = reg.CORE.tlv.describe, K = reg.CORE.enum.transport_kind;
-  const declares = /** @type {[number, Uint8Array]} */ ([D.port_speed, Uint8Array.of(1)]);
   const bridges = /** @type {[number, Uint8Array][]} */ ([[D.transport, Uint8Array.of(0, K.uart_bridge, 0xff)], [D.transport, Uint8Array.of(1, K.uart_bridge, 0xff)],
     [D.transport, Uint8Array.of(2, K.vendor_bulk, 0)]]);
-  assert.deepEqual(await speedPort(knowing([declares, ...bridges], 1)), [1, '']);   // the second bridge, not the first
-  assert.match((await speedPort(knowing([declares, ...bridges], 2)))[1], /index 2\) is not a UART bridge/);
-  assert.match((await speedPort(knowing([declares], 0xff)))[1], /broker/);
-  assert.match((await speedPort(knowing([declares], null)))[1], /names no transport/);
-  assert.match((await speedPort(knowing(bridges, 0)))[1], /does not declare port_speed/);
+  assert.deepEqual(await speedPort(knowing(bridges, 1)), [10, 1, '']);   // oep.link's fn, the second bridge, not the first
+  assert.match((await speedPort(knowing(bridges, 2)))[2], /index 2\) is not a UART bridge/);
+  assert.match((await speedPort(knowing(bridges, 0xff)))[2], /broker/);
+  assert.match((await speedPort(knowing(bridges, null)))[2], /names no transport/);
+  assert.match((await speedPort(knowing(bridges, 0, [1, 2])))[2], /does not offer port_speed/);   // its ops (oep-if-link §1)
 });
 
 // ---- C-24: an x- unit_id names no unit ------------------------------------------------------------------------------
@@ -248,7 +254,7 @@ test('C-24: no USB device is looked up by an x- unit_id', async () => {
   await assert.rejects(usbTransport({ unitId: 'X-esp32' }), RangeError);   // before the usb package is even loaded
 });
 
-// ---- C-07 / core §5.1: TCP and the resync wait ------------------------------------------------------------------------
+// ---- C-07 / transports §5: TCP and the resync wait ------------------------------------------------------------------------
 
 /** A frame arriving in two parts `gapMs` apart on a scripted transport. @param {boolean} keepsBoundaries @param {number} gapMs */
 async function paused(keepsBoundaries, gapMs) {
@@ -357,19 +363,19 @@ test('C-18: the session id is random and never 0', { skip: !haveFake }, () => wi
   const ids = new Set();
   for (let i = 0; i < 10; i++) { await hst.open(3000, { force: true }); ids.add(hst.session); }
   assert.ok(!ids.has(0) && ids.size > 1);
-  await assert.rejects(hst.open(3000, { session: 0 }), RangeError);
   const opens = log.filter((r) => r.fn === m.CORE_FN && r.op === m.OP.open);
   assert.equal(opens.length, 10);
-  assert.ok(opens.every((r) => r.role === m.ROLE_REQUEST));         // open goes as role 0x01 (no session id in the header)
+  assert.ok(opens.every((r) => r.role === m.ROLE_REQUEST));         // one request role (core §4.1)
+  assert.deepEqual(new Set(opens.map((r) => r.session)), ids);      // the id in the header (§6.4)
   await hst.end();
 }));
 
 // ---- C-04 / C-10 ------------------------------------------------------------------------------------------------------
 
 test('C-04: the ignored marker', () => {
-  let t = m.Tail.parse(Uint8Array.of(0x7f, 3, 0x31, 0x32, 0x00));
+  let t = m.Tail.parse(Uint8Array.of(0x7f, 3, 0, 0x31, 0x32, 0x00));
   assert.ok(t.moreIgnored && t.mayHaveIgnored(0x40) && t.mayHaveIgnored(0x31));
-  t = m.Tail.parse(Uint8Array.of(0x7f, 1, 0x31));
+  t = m.Tail.parse(Uint8Array.of(0x7f, 1, 0, 0x31));
   assert.ok(!t.moreIgnored && t.mayHaveIgnored(0xb1) && !t.mayHaveIgnored(0x40));
 });
 
@@ -387,11 +393,12 @@ test('C-04: more than 16 ignored TLVs come back as 15 and 0x00 (the fake), read 
 
 test('C-10: dump says what a probe must give and did not', async () => {
   const D = reg.CORE.tlv.describe;
-  assert.deepEqual(dump.requiredMissing({ revision: 1, transport: 0 }, [[D.unit_id, utf8('u')], [D.transport, Uint8Array.of(0, 1)], [D.max_op_ms | 0x80, new Uint8Array(4)]]), []);
+  assert.deepEqual(dump.requiredMissing({ revision: 1, transport: 0 }, [[D.unit_id, utf8('u')], [D.transport, Uint8Array.of(0, 1)], [D.max_op_ms | 0x80, new Uint8Array(4)],
+    [reg.DESCRIBE_COMMON.ops, packOps([1, 2, 3])]]), []);
   assert.deepEqual(dump.requiredMissing({ revision: 1, transport: null }, []),
-    ['confirm\'s transport TLV', 'describe of fn 0: unit_id', 'describe of fn 0: transport', 'describe of fn 0: max_op_ms']);
+    ['confirm\'s transport TLV', 'describe of fn 0: unit_id', 'describe of fn 0: transport', 'describe of fn 0: max_op_ms', 'describe of fn 0: ops']);
   const text = dump.toText({ revision: 1, maxFrame: 256, offers: [], requests: { confirm: 1, list: 1, describe: 0 }, missing: ['describe of fn 0: unit_id'] });
-  assert.match(text, /\nMISSING what every probe must give \(core §1\.2\): describe of fn 0: unit_id\n/);
+  assert.match(text, /\nMISSING what every probe must give \(core §1\.2, §7\.4\): describe of fn 0: unit_id\n/);
   assert.deepEqual(JSON.parse(dump.toJson({ revision: 1, maxFrame: 256, offers: [], requests: { confirm: 1, list: 1, describe: 0 }, missing: ['x'] })).missingRequired, ['x']);
 });
 
@@ -399,7 +406,7 @@ test('C-10: dump says what a probe must give and did not', async () => {
 
 test('API: searchRetries, StepError.stepLeft, pullupOhms', async () => {
   const A = reg.WIRE_RVSWD.tlv.attach_answer;
-  let stepTail = Uint8Array.of(0x01, 0);
+  let stepTail = Uint8Array.of(0x01, 0, 0);
   let stepStatus = 0x04;
   const hst = new ScriptedHost(handlers([
     [1, Wire.ATTACH, () => ok([...new Writer().u16(1).u32(0x382).u8(0x08).u32(1_000_000).done(), ...m.tlv(A.dpc, new Writer().u32(0x100).done()),
@@ -427,12 +434,12 @@ test('API: searchRetries, StepError.stepLeft, pullupOhms', async () => {
   assert.equal(await t.pullupOhms(), null);                         // features bit2 clear: it enables none
 });
 
-test('API: describe shows the capture mode with background, port_speed, the wires\' attach_writes_unbounded', { skip: !haveFake }, async () => {
+test('API: describe shows the capture mode with background, oep.link\'s port_speed, the wires\' attach_writes_unbounded', { skip: !haveFake }, async () => {
   await withFake(['--profile', 'p4-x035'], async (hst) => {
     assert.match(dump.toText(await dump.collect(hst, 'oep.fixture.logic', true)), /mode: one-shot, answers while capturing, max \d+ samples x 1 segments/);
   });
   await withFake(['--profile', 'esp32-v003'], async (hst) => {
-    assert.match(dump.toText(await dump.collect(hst, 'oep.core', true)), /port speed: yes/);
+    assert.match(dump.toText(await dump.collect(hst, 'oep.link', true)), /ops: source, sink, port_speed/);
   });
   for (const w of ['oep.wire.rvswd', 'oep.wire.swio', 'oep.wire.swd']) assert.equal(KNOWN[w].features[0], 'attach writes unbounded');
 });

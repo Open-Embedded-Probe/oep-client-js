@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as cobs from '../src/cobs.js';
 import { Writer, utf8 } from '../src/bytes.js';
-import { describe, find, listEntries, maxOpMs, probeInfo } from '../src/core.js';
-import { Expired, Rejected, Unsupported } from '../src/errors.js';
+import { describe, find, listEntries, maxOpMs, notOffered, offers, ops, probeInfo } from '../src/core.js';
+import { NoSession, Rejected, Unsupported } from '../src/errors.js';
 import * as m from '../src/message.js';
 import * as reg from '../src/registry.js';
 import { openTcp } from '../src/node/index.js';
 import { haveFake, startFake } from './fake.js';
 
-test('crc16 and COBS as core §3.1 says', () => {
+test('crc16 and COBS as transports §1 says', () => {
   assert.equal(cobs.crc16(utf8('123456789')), 0x29b1);
   const data = Uint8Array.from([1, 0, 2, 0, 0, 3]);
   assert.deepEqual(cobs.decode(cobs.encode(data)), data);
@@ -40,9 +40,11 @@ for (const framing of /** @type {const} */ (['length', 'cobs'])) {
       assert.equal(await maxOpMs(hst), 10000);
       assert.equal(hst.describes.size, 1);                                // describe is cached (declarations only)
       assert.equal(hst.bootId, hst.limits?.bootId);                       // confirm tells the boot_id (core §7.1)
+      const fn0 = /** @type {Set<number>} */ (await ops(hst, 0));         // the ops tag (core §1.2, §7.4)
+      assert.ok(fn0.has(m.OP.open) && fn0.has(m.OP.plan_apply) && !fn0.has(0x14));
+      assert.equal(await offers(hst, 0, 0x50), false);
       const opened = await hst.open(3000, { owner: 'js test' });
-      assert.equal(opened.resumed, reg.CORE.enum.resumed.new);
-      assert.equal(opened.swept, false);
+      assert.deepEqual(Object.keys(opened).sort(), ['bootId', 'leaseMs']);   // no resumed (core §6.4)
       assert.equal(opened.bootId, hst.bootId);
       assert.deepEqual((await hst.lockState()).owner, 'js test');
       const r = await hst.pipelineCalls(Array.from({ length: 8 }, () => [0, 0x13, new Uint8Array()]), { locked: false });
@@ -55,36 +57,46 @@ for (const framing of /** @type {const} */ (['length', 'cobs'])) {
   });
 }
 
-test('TLV long form: tag 0xFF len(u16) value from 255 bytes on, the one encoding (core §2.2)', () => {
+test('one TLV form: tag(u8) len(u16) value whatever the length (core §2.2); one request header (§4.1)', () => {
   const big = Uint8Array.from({ length: 512 }, (_, i) => i & 0xff);
   const t = m.tlv(0x41, big);
-  assert.deepEqual([...t.slice(0, 4)], [0x41, 0xff, 0x00, 0x02]);
+  assert.deepEqual([...t.slice(0, 3)], [0x41, 0x00, 0x02]);
   assert.deepEqual(m.splitTlvs(Uint8Array.from([...t, ...m.tlv(0x42, utf8('x'))])), [[0x41, big], [0x42, utf8('x')]]);
-  assert.equal(m.tlv(0x41, new Uint8Array(254))[1], 254);
-  assert.equal(m.tlv(0x41, new Uint8Array(255)).length, 255 + 4);
-  assert.throws(() => m.splitTlvs(Uint8Array.from([0x41, 0xff, 3, 0, 97, 98, 99])), m.BadTlv);        // a short value, long form
-  assert.throws(() => m.splitTlvs(Uint8Array.from([0x41, 0xff, 0x00, 0x02, ...new Uint8Array(100)])), m.ShortPayload);
+  assert.deepEqual([...m.tlv(0x41, new Uint8Array(254)).slice(1, 3)], [254, 0]);
+  assert.equal(m.tlv(0x41, new Uint8Array(255)).length, 255 + 3);
+  assert.deepEqual([...m.tlv(0x41, [])], [0x41, 0, 0]);
+  assert.throws(() => m.splitTlvs(Uint8Array.from([0x41, 0x00, 0x02, ...new Uint8Array(100)])), m.ShortPayload);   // len past the end
+  assert.throws(() => m.splitTlvs(Uint8Array.from([0x41, 1])), m.ShortPayload);                       // a header cut short
   assert.throws(() => m.tlv(0x00, []), RangeError);                                                    // tag 0x00 is reserved
   assert.throws(() => m.tlv(0x41, new Uint8Array(0x10000)), RangeError);
-  const rd = new m.Reader(Uint8Array.from([3, 0, 7, 8, 9, 0x41, 1, 5]));
+  const plain = new m.Request(7, 3, 1, Uint8Array.of(0xaa)).pack(), held = new m.Request(7, 3, 1, Uint8Array.of(0xaa), 0xdeadbeef).pack();
+  assert.equal(plain.length, 11);
+  assert.equal(held.length, 11);
+  assert.equal(plain[0], 0x01);
+  assert.deepEqual([...plain.slice(6, 10)], [0, 0, 0, 0]);                                             // session_id 0 = none
+  assert.equal(m.Request.unpack(held).session, 0xdeadbeef);
+  assert.equal(new m.Request(7, 3, 1, Uint8Array.of(0xaa), null).session, 0);
+  const no = notOffered();                                                                             // what a probe answers
+  assert.ok(no instanceof Rejected && no.constructor === Rejected && no.result.detail === m.REJECT.unknown_operation);
+  const rd = new m.Reader(Uint8Array.from([3, 0, 7, 8, 9, 0x41, 1, 0, 5]));
   assert.deepEqual([...rd.counted(2)], [7, 8, 9]);                                                     // len(u16) data [TLV]
   assert.deepEqual(rd.tail().get(0x41), Uint8Array.of(5));
 });
 
-test('the probe takes a long non-critical TLV and refuses the wrong encoding', { skip: !haveFake }, async () => {
+test('the probe takes a long non-critical TLV and refuses a broken one', { skip: !haveFake }, async () => {
   const fake = await startFake();
   const hst = await openTcp({ port: fake.port });
   try {
     const big = new Uint8Array(300).fill(1);
-    const open = new Writer().u32(0x1234).u32(3000).u8(0).done();                              // an open ...
-    const r = await hst.request(0, m.OP.open, Uint8Array.from([...open, ...m.tlv(0x21, big)]), { locked: false });
+    const open = new Writer().u32(3000).u8(0).done();                                          // an open (the id in the header) ...
+    const r = await hst.request(0, m.OP.open, Uint8Array.from([...open, ...m.tlv(0x21, big)]), { session: 0x1234 });
     const rd = new m.Reader(r.payload);
-    rd.u32(); rd.u32(); rd.u8();
+    rd.u32(); rd.u32();
     assert.deepEqual(rd.tail().ignored, [0x21]);                                               // ... with a long TLV it ignores
     hst.session = 0x1234;
-    await assert.rejects(hst.request(0, m.OP.open, Uint8Array.from([...open, 0x21, 0xff, 1, 0, 9]), { locked: false }),
-      (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);                       // a short value in the long form
-    await assert.rejects(hst.request(0, m.OP.open, Uint8Array.from([...open, 0x00, 0]), { locked: false }),
+    await assert.rejects(hst.request(0, m.OP.open, Uint8Array.from([...open, 0x21, 5, 0, 9]), { session: 0x1234 }),
+      (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);                       // a len past the end
+    await assert.rejects(hst.request(0, m.OP.open, Uint8Array.from([...open, 0x00, 0, 0]), { session: 0x1234 }),
       (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);                       // tag 0x00 is reserved
     const tlvs = await describe(hst, 0);
     assert.ok(tlvs.some(([tag]) => (tag & 0x7f) === reg.CORE.tlv.describe.max_op_ms));
@@ -95,25 +107,26 @@ test('the probe takes a long non-critical TLV and refuses the wrong encoding', {
   }
 });
 
-test('a lapsed lease is expired, never re-opened silently; open then says swept (core §6.2, §9)', { skip: !haveFake }, async () => {
+test('a lapsed lease is no_session, never resumed: the host opens anew (core §6.2, §9)', { skip: !haveFake }, async () => {
   const fake = await startFake();
   const hst = await openTcp({ port: fake.port });
   try {
     const opened = await hst.open(1000);
     assert.equal(opened.leaseMs, 1000);
-    const epoch = hst.epoch;
+    const epoch = hst.epoch, sid = hst.session;
     await new Promise((r) => setTimeout(r, 1300));
-    const e = await hst.keepalive().catch((x) => x);
-    assert.ok(e instanceof Expired);
-    assert.equal(e.leaseMs, 1000);
-    assert.match(e.message, /1000 ms/);
+    await assert.rejects(hst.keepalive(), NoSession);
     assert.equal(hst.epoch, epoch + 1);
-    await assert.rejects(hst.keepalive(), Expired);                                           // still: nothing re-opens by itself
-    const again = await hst.open(1000, { session: /** @type {number} */ (hst.session) });
-    assert.equal(again.resumed, reg.CORE.enum.resumed.swept);
-    assert.ok(again.swept);
+    assert.equal(hst.session, null);                                                          // out of a session
+    await assert.rejects(hst.keepalive(), (e) => e instanceof Rejected && e.result.detail === m.REJECT.session_required);
+    await hst.open(1000);                                                                     // a new session, a new id
+    assert.notEqual(hst.session, sid);
     await hst.keepalive();
+    const ended = hst.session;
     await hst.end();
+    assert.equal(hst.session, null);
+    hst.session = ended;                                                                      // a stale caller's id
+    await assert.rejects(hst.keepalive(), NoSession);                                         // end released it: no resume
   } finally {
     await hst.link.close();
     fake.stop();

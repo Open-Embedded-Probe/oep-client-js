@@ -1,5 +1,5 @@
 // @ts-check
-// port_speed (oep-core §3.5 the handshake, host guide §17 the procedure; src/speed.js) against oep-client-python's fake
+// port_speed (oep-if-link §3 the handshake, host guide §17 the procedure; src/speed.js) against oep-client-python's fake
 // probe (esp32-v003 has it; --broken-rate models the line, by the probe's rate alone over TCP), behind a line model
 // of the host's side (withLine: frames garbled or dropped as the host would see them), and the link's fall back to
 // the boot speed on a scripted transport. Mirrors oep-client-python's tests/test_port_speed.py.
@@ -9,6 +9,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as m from '../src/message.js';
+import * as reg from '../src/registry.js';
 import { NotOepProbe, Rejected, Timeout, Unavailable, Unsupported } from '../src/errors.js';
 import { Link, SWITCH_SETTLE_MS, IDLE_MAX_MS, KEEPALIVE_MS, OPEN_RETRY_MS, IN_USE_WINDOW_MS } from '../src/link.js';
 import { getU16, getU32, u32 } from '../src/bytes.js';
@@ -25,6 +26,8 @@ import { haveFake, startFake } from './fake.js';
 const FAST = { verifyMs: 900 };   // the probe's try state ends soon: a failed candidate costs under a second
 const UNIT = 'fafe00000003';      // the fake esp32-v003's unit_id
 const NO_PROBATION = { probationBytes: 0, probationMs: 0 };   // the window alone (the probation has its own tests)
+const LINK_FN = 10;               // the fake esp32-v003's oep.link (oep-if-link): port_speed and the link test are its ops
+const PS = reg.LINK.op.port_speed, SOURCE = reg.LINK.op.source, SINK = reg.LINK.op.sink;
 
 /** @param {string[]} args @param {(hst: import('../src/host.js').Host) => Promise<void>} body @param {object} [opts] */
 async function withSpeedFake(args, body, opts = {}) {
@@ -46,7 +49,8 @@ test('the minimal form tries, confirms and commits without a measurement; the en
   await withLine([], {
     onWrite(msg) {
       const req = m.Request.unpack(msg);
-      if (req.fn === m.CORE_FN) ops.push([req.op, req.op === m.OP.port_speed ? req.payload[5] : null]);
+      if (req.fn === m.CORE_FN) ops.push([req.op, null]);
+      if (req.fn === LINK_FN && req.op === PS) ops.push([-PS, req.payload[5]]);
       return true;
     },
   }, async (hst) => {
@@ -67,7 +71,7 @@ test('the minimal form tries, confirms and commits without a measurement; the en
     assert.equal(t.nCap, 0);
     assert.equal(report.inKBs, null);
     assert.equal(t.inKBs, null);
-    assert.deepEqual(ops.filter(([op]) => op !== m.OP.describe), [[m.OP.port_speed, 0], [m.OP.confirm, null], [m.OP.port_speed, 1]]);
+    assert.deepEqual(ops.filter(([op]) => op !== m.OP.describe && op !== m.OP.list), [[-PS, 0], [m.OP.confirm, null], [-PS, 1]]);
     assert.equal(hst.link.speed, report);
     assert.equal(hst.link.baud, 1500000);
     assert.equal(hst.link.keepaliveMs, KEEPALIVE_MS);
@@ -112,17 +116,17 @@ test('the minimal form falls back when the confirm does not come, skips an unmak
 test('an off probe is not supported and stays at the boot speed', { skip: !haveFake }, () => withSpeedFake(['--no-port-speed'], async (hst) => {
   let report = await raiseSpeed(hst, [1500000], FAST);
   assert.equal(report.supported, false);
-  assert.match(report.why, /does not declare/);
+  assert.match(report.why, /does not offer port_speed/);
   assert.equal(hst.link.baud, 115200);
-  // declared (the describe cache says so) but the op unknown: unknown_operation
-  hst.describes.set(0, [...(hst.describes.get(0) ?? []), [0x4e, Uint8Array.of(1)]]);
+  // offered (the describe cache says so) but the op unknown: unknown_operation
+  hst.describes.set(LINK_FN, [[reg.DESCRIBE_COMMON.ops, Uint8Array.of(1, 0b111)]]);
   report = await raiseSpeed(hst, [1500000], FAST);
   assert.equal(report.supported, false);
   assert.match(report.why, /unknown_operation/);
   assert.equal(report.trials.length, 0);
   assert.match(speedText(report), /not supported/);
-  await assert.rejects(hst.call(m.CORE_FN, m.OP.port_speed, new Uint8Array(12)),
-    (e) => e instanceof Rejected && e.result.detail === m.REJECT.unknown_operation);
+  await assert.rejects(hst.call(LINK_FN, PS, new Uint8Array(12)),
+    (e) => e instanceof Rejected && e.constructor === Rejected && e.result.detail === m.REJECT.unknown_operation);
   await hst.keepalive();
 }));
 
@@ -221,7 +225,7 @@ test('WebSerial: opens 8N1 without flow control; a new rate closes and opens the
   await new Promise((r) => setTimeout(r, 5));
   assert.deepEqual(got, [1, 2]);
   assert.equal(closedWith, 'open');               // the reopen is not the transport closing
-  const asserted = ['signals', { dataTerminalReady: true, requestToSend: true }];   // core §3.4, C-09
+  const asserted = ['signals', { dataTerminalReady: true, requestToSend: true }];   // transports §4, C-09
   assert.deepEqual(calls, [['open', 115200], asserted, ['close'], ['open', 1500000], asserted, ['write', 2]]);
   for (const o of opened) assert.deepEqual({ ...o, baudRate: 0, bufferSize: 0 }, { baudRate: 0, bufferSize: 0, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
   await t.close();
@@ -334,9 +338,9 @@ test('full form: pipelined frames break, one at a time passes: committed in flig
     assert.match(speedText(report), /committed \(in flight 1\)/);
     assert.deepEqual(report.baselineFlows.map((f) => f.name), ['in@4']);
     line.peak = 0;
-    const results = await hst.pipeline(Array.from({ length: 8 }, () => [m.CORE_FN, m.OP.link_source, Uint8Array.of(32, 0, 0, 0)]), { locked: false });
+    const results = await hst.pipeline(Array.from({ length: 8 }, () => [LINK_FN, SOURCE, Uint8Array.of(32, 0, 0, 0)]), { locked: false });
     assert.equal(results.length, 8);
-    assert.ok(results.every((r) => r.succeeded && r.payload.length === 32));
+    assert.ok(results.every((r) => r.succeeded && r.payload.length === 2 + 32));   // len(u16) data (oep-if-link §2)
     assert.equal(line.peak, 1);                             // one request at a time
     await hst.end();
     assert.equal(hst.link.baud, 115200);
@@ -381,7 +385,7 @@ test('full form: only the flows asked are verified; a flow that needs n = 1 caps
   /** @type {() => number | null} */ let rateNow = () => 115200;
   await withLine([], {
     // a link_source answer (probe -> host) arriving while a link_sink (host -> probe) is still out: both ways busy
-    garble: (line) => rateNow() === 921600 && line.ops[0] === m.OP.link_source && line.ops.slice(1).includes(m.OP.link_sink),
+    garble: (line) => rateNow() === 921600 && line.ops[0] === SOURCE && line.ops.slice(1).includes(SINK),
   }, async (hst) => {
     rateNow = () => hst.link.baud;
     const report = await raiseSpeed(hst, [921600], { flows: [['in', 2], ['duplex', 0]], verifyMs: 5000 });
@@ -444,7 +448,7 @@ test('a broken frame towards the probe reverts it and the flow is lost', { skip:
     onWrite(msg) {
       if (rateNow() !== probeRate) return false;                        // garbage at the probe: no answer
       const req = m.Request.unpack(msg);
-      if (req.fn === m.CORE_FN && req.op === m.OP.port_speed) {
+      if (req.fn === LINK_FN && req.op === PS) {
         if (req.payload[5] === 0) probeRate = getU32(req.payload, 1);   // try: the probe switches once its answer is out
         else if (req.payload[5] === 2) probeRate = 115200;              // revert
       } else if (rateNow() === 230400 && msg.length >= 32) probeRate = 115200;   // broken at the probe: it goes back
@@ -531,11 +535,11 @@ test('raiseSpeed commits the idle maximum by default, and for 0', { skip: !haveF
   await withLine([], {
     onWrite(msg) {
       const req = m.Request.unpack(msg);
-      if (req.op === m.OP.port_speed && req.payload[5] === 1) idles.push(getU32(req.payload, 8));   // step commit
+      if (req.fn === LINK_FN && req.op === PS && req.payload[5] === 1) idles.push(getU32(req.payload, 8));   // step commit
       return true;
     },
   }, async (hst) => {
-    // a try while committed is rejected (core §3.5: a step that does not fit the port's state): one raise per session
+    // a try while committed is rejected (oep-if-link §3: a step that does not fit the port's state): one raise per session
     for (const opts of [FAST, { ...FAST, idleMs: 0 }, { ...FAST, idleMs: 600000 }, { ...FAST, idleMs: 1500 }]) {
       const report = await raiseSpeed(hst, [750000], opts);
       assert.equal(report.chosen, 750000);
@@ -553,13 +557,13 @@ test('the keepalive interval stays under half of idle_ms; verify_ms stays a seco
     /** @param {Uint8Array} msg */
     onWrite(msg) {
       const req = m.Request.unpack(msg);
-      if (req.op === m.OP.port_speed && req.payload[5] === 0) verifies.push(getU16(req.payload, 6));   // step try
+      if (req.fn === LINK_FN && req.op === PS && req.payload[5] === 0) verifies.push(getU16(req.payload, 6));   // step try
       return true;
     },
   };
   await withLine([], model, async (hst) => {
     await raiseSpeed(hst, [750000], { idleMs: 200 });
-    assert.equal(hst.link.keepaliveMs, 80);                       // under half of idle_ms (core §3.5 obligation 4)
+    assert.equal(hst.link.keepaliveMs, 80);                       // under half of idle_ms (oep-if-link §3 obligation 4)
     await hst.end();
     await take(hst, 10000);
     await raiseSpeed(hst, [750000]);
@@ -571,7 +575,7 @@ test('the keepalive interval stays under half of idle_ms; verify_ms stays a seco
   assert.deepEqual(verifies, [1400]);
 });
 
-// ---- the fake probe's port_speed handshake (core §3.5), driven straight from the link -----------------------------
+// ---- the fake probe's port_speed handshake (oep-if-link §3), driven straight from the link -----------------------------
 
 /** The port_speed request body: port(u8) baud(u32) step(u8) verify_ms(u16) idle_ms(u32).
  * @param {number} port @param {number} baud @param {number} step @param {number} [verifyMs] @param {number} [idleMs] */
@@ -583,12 +587,15 @@ function ps(port, baud, step, verifyMs = 5000, idleMs = 0) {
 }
 const TRY = 0, COMMIT = 1, REVERT = 2;
 /** @param {import('../src/host.js').Host} hst @param {Uint8Array} body */
-const portSpeed = (hst, body) => hst.call(m.CORE_FN, m.OP.port_speed, body);
+const portSpeed = (hst, body) => {
+  hst.link.speedFn = LINK_FN;   // what raiseSpeed records once it finds oep.link: a completed revert there moves the link back
+  return hst.call(LINK_FN, PS, body);
+};
 /** @param {unknown} e */
 const wrongState = (e) => e instanceof Unavailable && e.cause === 'wrong_state';
 /** @param {unknown} e */
 const malformed = (e) => e instanceof Rejected && e.result.detail === m.REJECT.malformed;
-/** A broken candidate at the probe: bytes between 0x00s that do not decode (core §3.5 "broken"). The link's own
+/** A broken candidate at the probe: bytes between 0x00s that do not decode (oep-if-link §3 "broken"). The link's own
  * write is bypassed so nothing is resent. @param {import('../src/host.js').Host} hst */
 const noise = (hst) => hst.link.transport.write(Uint8Array.of(0, 0x11, 0x22, 0x33, 0));
 
@@ -715,7 +722,7 @@ test('connect on a serial port waits out a raised rate left over', { skip: !have
 });
 
 test('connect on a serial port gives up after about 4 s; other transports keep their timeout', { skip: !haveFake }, async () => {
-  // either way the probing rule (core §3.3) closes the transport: NotOepProbe, its cause the Timeout
+  // either way the probing rule (transports §3) closes the transport: NotOepProbe, its cause the Timeout
   const { fake, transport, t0 } = await deafSerial(60000);
   try {
     await assert.rejects(connect(transport, { timeoutMs: 1000 }), (e) => e instanceof NotOepProbe && /** @type {any} */ (e).cause instanceof Timeout);
@@ -1001,11 +1008,11 @@ test('the record is a cache: an unreadable or unwritable store is not an error; 
 
 // ---- step downs, the probation, maxTries (host guide §17.3.2 item 4) ----------------------------------------------------
 
-/** In-use traffic: link_source answers of `size` bytes until `until()` (at most `limitMs`).
+/** In-use traffic: oep.link source answers of `size` bytes until `until()` (at most `limitMs`).
  * @param {import('../src/host.js').Host} hst @param {() => boolean} until */
 async function move(hst, until, size = 40, limitMs = 3000) {
   const deadline = performance.now() + limitMs;
-  while (!until() && performance.now() < deadline) await hst.request(m.CORE_FN, m.OP.link_source, u32(size));
+  while (!until() && performance.now() < deadline) await hst.request(LINK_FN, SOURCE, u32(size));
 }
 
 /** @param {import('../src/host.js').Host} hst */

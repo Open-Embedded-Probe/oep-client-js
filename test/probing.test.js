@@ -1,5 +1,5 @@
 // @ts-check
-// The probing rule and a named unit id (oep-core §3.3): the first thing sent to a transport is a confirm (and its one
+// The probing rule and a named unit id (transports §3): the first thing sent to a transport is a confirm (and its one
 // resend), nothing else until a valid answer; none closes it. A unit id names a device by its serial alone, and
 // describe must then say the same unit_id.
 import assert from 'node:assert/strict';

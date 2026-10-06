@@ -1,5 +1,5 @@
 // @ts-check
-// The resync of length-prefixed frames (oep-core §5.1) on a scripted transport: a stray result, an impossible length,
+// The resync of length-prefixed frames (transports §5) on a scripted transport: a stray result, an impossible length,
 // a frame that stops half way and a missing answer make the link discard until quiet, confirm, and send the waiting
 // requests once more with the same corr; pushes that never stop get the blind unsubscribe and end; no resync while
 // probing; the link's own confirms ask for 1..1 (core §7.1). Mirrors oep-client-python's tests/test_link_host.py.
@@ -204,7 +204,7 @@ test('pushes that never stop are stopped blind with unsubscribe and end; the ses
   assert.equal(link.endedBlind, true);
 });
 
-test('while probing (core §3.3) a stray result does not resync: nothing but the confirm goes out', async () => {
+test('while probing (transports §3) a stray result does not resync: nothing but the confirm goes out', async () => {
   const { t, sent } = scripted();
   const link = await linkOn(t);
   link.probing = true;

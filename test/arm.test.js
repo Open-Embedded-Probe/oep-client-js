@@ -78,10 +78,10 @@ test('swd attach decodes DPIDR and dormant; targetsel and max_speed go critical'
   const { hst } = bench();
   const wire = await SwdWire.open(hst);
   assert.deepEqual(await wire.attach(), { conn: 1, dpidr: 0x4c013477, dormant: true });
-  assert.deepEqual([...hst.log[hst.log.length - 1][2]], [0, 0x81, 4, ...w().u32(1_000_000).done()]);   // max_speed is required: the default
+  assert.deepEqual([...hst.log[hst.log.length - 1][2]], [0, 0x81, 4, 0, ...w().u32(1_000_000).done()]);   // max_speed is required: the default
   await wire.attach({ targetsel: 0x01002927, maxSpeed: 2_000_000, reset: [7, 20] });
   assert.deepEqual([...hst.log[hst.log.length - 1][2]],
-    [0, 0x81, 4, ...w().u32(2_000_000).done(), 0x85, 4, 7, 0, 20, 0, 0x82, 4, ...w().u32(0x01002927).done()]);
+    [0, 0x81, 4, 0, ...w().u32(2_000_000).done(), 0x85, 4, 0, 7, 0, 20, 0, 0x82, 4, 0, ...w().u32(0x01002927).done()]);
   assert.equal(wire.speedHz, 2_000_000);
   assert.equal(wire.flags, 4);
   assert.ok(!wire.existing);

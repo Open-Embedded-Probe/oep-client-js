@@ -151,7 +151,7 @@ test('USB vendor interface: chosen by class 0xFF, subclass 0x4F, protocol 0x45 -
   assert.deepEqual(findVendorInterface(d.configurations[0]), { interfaceNumber: 4, alternateSetting: 0, endpointIn: 1, endpointOut: 1, packetSizeOut: 512 });
   assert.equal(findVendorInterface({ configurationValue: 1, interfaces: d.configurations[0].interfaces.slice(0, 3) }), null);
   assert.equal(findVendorInterface(null), null);
-  // core §3.3: only the project's VID:PID identifies a probe - not iProduct, not the interface's class values
+  // transports §3: only the project's VID:PID identifies a probe - not iProduct, not the interface's class values
   assert.deepEqual(PROJECT_VID_PIDS, [[0x1209, 0x4f45]]);
   assert.deepEqual(PROJECT_USB_FILTERS, [{ vendorId: 0x1209, productId: 0x4f45 }]);
   assert.deepEqual(PROJECT_SERIAL_FILTERS, [{ usbVendorId: 0x1209, usbProductId: 0x4f45 }]);

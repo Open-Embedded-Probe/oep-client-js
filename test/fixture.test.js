@@ -64,7 +64,7 @@ test('i2c-target request and answer shapes', async () => {
   const { hst, log } = scripted({
     [`${I2C}:${I2cTarget.CONFIGURE}`]: () => ok(),
     [`${I2C}:${I2cTarget.PRELOAD_TX}`]: () => ok(Uint8Array.of(2)),
-    [`${I2C}:${I2cTarget.READ_RX}`]: () => ok(concat(Uint8Array.of(1), new Writer().u16(3).done(), utf8('abc'), Uint8Array.of(1, 8), new Writer().u64(1234).done())),   // TLV ns
+    [`${I2C}:${I2cTarget.READ_RX}`]: () => ok(concat(Uint8Array.of(1), new Writer().u16(3).done(), utf8('abc'), Uint8Array.of(1, 8, 0), new Writer().u64(1234).done())),   // TLV ns
     [`${I2C}:${I2cTarget.STATUS}`]: () => ok(new Writer().u8(1).u8(3).u8(0).u8(1).u32(5).u8(2).u32(0).done()),
     [`${I2C}:${I2cTarget.STRETCH}`]: () => ok(),
   });
@@ -162,7 +162,7 @@ test('gpio set is a list in order, only planned channels', { skip: !haveFake }, 
     assert.deepEqual(log.at(-1)?.[2], Uint8Array.of(3, 23, 0, 5, 5, 0, 4, 23, 0, 6));
     assert.deepEqual(await g.read([23, 5]), [1, 1]);
     const raw = await hst.request(g.fn, Gpio.READ, Uint8Array.of(2, 23, 0, 5, 0), { locked: false });
-    assert.deepEqual([...raw.payload], [2, 1, 1, 0x01, 2, 0xff, 2]);      // n(u8) n x level, TLV drive (fixture §1 / §1.1)
+    assert.deepEqual([...raw.payload], [2, 1, 1, 0x01, 2, 0, 0xff, 2]);      // n(u8) n x level, TLV drive (fixture §1 / §1.1)
     await assert.rejects(g.set([[5, 8]]), (e) => e instanceof Unsupported && e.tag === null && e.channel === 5 && e.index === 0);   // a mode a later revision may define (core §2.5)
     const e = await g.set([[5, Gpio.OUTPUT_LOW], [40, Gpio.OUTPUT_LOW]]).then(() => null, (x) => x);
     assert.ok(e instanceof GpioUnavailable && e instanceof Unavailable);
@@ -191,7 +191,7 @@ test('uart configure with a format, reads that do not consume, write, marks', { 
     const io = await FixtureUartIO.open(hst);
     await planApply(hst, [[io.uart.fn, 1, 20], [io.uart.fn, 2, 21]]);
     assert.equal(await io.configure(115200, FixtureUart.formatByte(8, 'E', 2)), Math.floor(80_000_000 / Math.floor(80_000_000 / 115200)));
-    assert.deepEqual(log.at(-2)?.[2].slice(4), Uint8Array.of(0x81, 1, 0b010100));   // format: a critical TLV
+    assert.deepEqual(log.at(-2)?.[2].slice(4), Uint8Array.of(0x81, 1, 0, 0b010100));   // format: a critical TLV
     assert.deepEqual(await io.read(), new Uint8Array());
     await assert.rejects(io.uart.configure(9600, 0x01), (e) => e instanceof Unsupported && e.tag === 0x81);   // 7N1: defined, not declared
     await assert.rejects(io.uart.configure(9600, 0x80), (e) => e instanceof Unsupported && e.tag === 0x81);   // a reserved format bit (core §2.5, C-02): the tag

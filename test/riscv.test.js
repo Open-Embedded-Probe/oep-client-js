@@ -58,11 +58,11 @@ test('attach twice returns the same connection; max_speed goes critical', { skip
   assert.ok(wire.hadReset && !wire.existing && wire.speedHz === 1_000_000 && (dmstatus & 0x300));
   assert.ok(wire.halted && wire.dpc !== null);                             // flags bit3 + the dpc TLV 0x11
   assert.deepEqual(wire.ignored, []);
-  assert.deepEqual([...log.at(-1)?.[2] ?? []], [1, 0x81, 4, ...w().u32(1_000_000).done()]);
+  assert.deepEqual([...log.at(-1)?.[2] ?? []], [1, 0x81, 4, 0, ...w().u32(1_000_000).done()]);
   const again = await wire.attach({ halt: false });
   assert.equal(again.conn, conn);
   assert.ok(wire.existing && !wire.hadReset);
-  assert.deepEqual([...log.at(-1)?.[2] ?? []], [0, 0x81, 4, ...w().u32(5_000_000).done()]);   // none: the declared max_clock_hz
+  assert.deepEqual([...log.at(-1)?.[2] ?? []], [0, 0x81, 4, 0, ...w().u32(5_000_000).done()]);   // none: the declared max_clock_hz
   await assert.rejects(hst.call(wire.fn, Wire.ATTACH, Uint8Array.of(0)), (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);   // max_speed is required
   const list = await wire.connections();
   assert.equal(list.length, 1);
@@ -112,7 +112,7 @@ test('swio: no default reset line, only the declared channels; gpio reset fallba
   const { conn, dpc } = await wire.attachUnderReset(23, { holdMs: 5 });
   assert.equal(dpc, 0);                                                     // halted before the first instruction
   assert.ok(wire.halted);
-  assert.deepEqual([...log.at(-1)?.[2] ?? []], [1, 0x81, 4, ...w().u32(1_000_000).done(), 0x85, 4, 23, 0, 5, 0]);   // the reset TLV
+  assert.deepEqual([...log.at(-1)?.[2] ?? []], [1, 0x81, 4, 0, ...w().u32(1_000_000).done(), 0x85, 4, 0, 23, 0, 5, 0]);   // the reset TLV
   const again = await wire.attach({ halt: false, reset: [23, 5] });        // an existing connection: the target reset, running
   assert.ok(again.conn === conn && wire.existing && !wire.halted && wire.dpc === null);
   await assert.rejects(wire.attach({ reset: [23, 20000] }), Unsupported);  // longer than max_op_ms
@@ -295,7 +295,7 @@ test('attachAfterGpioReset pipelines the release with the attach and retries', a
   const wire = await Wire.open(hst);
   assert.deepEqual(await rv.attachAfterGpioReset(hst, wire, 3, 23, { tries: 5, lowMs: 0 }), { conn: 1, dmstatus: 0xc82 });
   assert.equal(attaches.length, 3);
-  assert.deepEqual([...attaches[0]], [1, 0x81, 4, ...w().u32(1_000_000).done()]);   // attach with halt, max_speed (required)
+  assert.deepEqual([...attaches[0]], [1, 0x81, 4, 0, ...w().u32(1_000_000).done()]);   // attach with halt, max_speed (required)
   assert.deepEqual(hst.log.slice(0, 3).map(([fn, op]) => [fn, op]), [[3, 1], [3, 1], [1, Wire.ATTACH]]);
   assert.deepEqual([...hst.log[0][2]], [1, 23, 0, 5]);                       // set: n=1, channel 23 open-drain low
   assert.deepEqual([...hst.log[1][2]], [1, 23, 0, 6]);                       // ... then released
@@ -307,7 +307,7 @@ test('attachAfterGpioReset pipelines the release with the attach and retries', a
 test('resetHalt and step decode; the method goes as a critical TLV', async () => {
   const hst = new ScriptedHost(handlers([
     [2, RiscvDm.RESET, (p) => ok(p[2] === 2 ? w().u8(0).u8(0).u8(1).u32(0).done() : [])],
-    [2, RiscvDm.STEP, () => ok([...w().u8(0).u8(1).u32(0).u32(0x17f0).done(), 0x40, 0x01, 0x00])],
+    [2, RiscvDm.STEP, () => ok([...w().u8(0).u8(1).u32(0).u32(0x17f0).done(), 0x40, 0x01, 0x00, 0x00])],
   ]));
   const dm = await RiscvDm.on(hst, 1);
   assert.equal(dm.conn, 1);
@@ -315,16 +315,16 @@ test('resetHalt and step decode; the method goes as a critical TLV', async () =>
   assert.deepEqual([...hst.log[hst.log.length - 1][2]], [1, 0, 2]);          // connection(u16), mode 2
   assert.deepEqual(await dm.step(), { moved: true, before: 0, after: 0x17f0 });   // an unknown TLV after the fixed part: skipped
   await dm.resetHalt({ method: RiscvDm.METHOD_SYSTEM });
-  assert.deepEqual([...hst.log[hst.log.length - 1][2]], [1, 0, 2, 0x81, 1, 2]);
+  assert.deepEqual([...hst.log[hst.log.length - 1][2]], [1, 0, 2, 0x81, 1, 0, 2]);
 });
 
 test('connections are paged with first / more (debug §2.1)', async () => {
   /** @type {number[]} */
   const firsts = [];
-  const entry = (/** @type {number} */ c) => m.element(w().u16(c).u16(2).u16(54).u32(1_000_000).u8(1).u8(0xff).u8(0).u8(0).raw([0xee]).done());   // a byte more: skipped
+  const entry = (/** @type {number} */ c) => w().u16(c).u16(2).u16(54).u32(1_000_000).u8(1).u8(0xff).u8(0).u8(0).done();   // count x entry (core §2.3)
   const hst = new ScriptedHost(handlers([[1, Wire.CONNECTIONS, (p) => {
     firsts.push(p[0]);
-    return p[0] < 2 ? ok([1, 2, ...entry(p[0] + 1), ...entry(p[0] + 2)]) : ok([0, 1, ...entry(5), 0x41, 0]);   // an unknown TLV after
+    return p[0] < 2 ? ok([1, 2, ...entry(p[0] + 1), ...entry(p[0] + 2)]) : ok([0, 1, ...entry(5), 0x41, 0, 0]);   // an unknown TLV after
   }]]));
   const wire = await Wire.open(hst);
   const list = await wire.connections();

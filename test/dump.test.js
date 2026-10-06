@@ -114,18 +114,21 @@ test('filters', { skip: !haveFake }, () => withFake('esp32-v003', async (hst) =>
 test('p4 follows the agreed names; text and JSON', { skip: !haveFake }, () => withFake('p4-x035', async (hst) => {
   const caps = await dump.collect(hst);
   const byName = new Map(caps.offers.map((o) => [o.entry.name, o]));
-  assert.equal(caps.offers.length, 13);
+  assert.equal(caps.offers.length, 14);                             // oep.link the last (oep-if-link)
   assert.equal(caps.requests.list, 1);
-  assert.equal(caps.requests.describe, 13);
+  assert.equal(caps.requests.describe, 14);
+  assert.deepEqual(byName.get('oep.link')?.description.ops, new Set([1, 2]));   // source, sink: no UART bridge here
+  assert.ok(caps.offers.every((o) => o.description.ops !== null));             // every fn carries ops (core §7.4)
   assert.deepEqual(new Set(['oep.wire.rvswd', 'oep.target.riscv-dm', 'oep.target.console'].map((n) => byName.get(n)?.entry.instance)), new Set([0]));
   assert.deepEqual(byName.get('oep.wire.rvswd')?.description.groups.get(1), [[1, 2], [2, 54]]);
   const i2c = /** @type {dump.Offer} */ (byName.get('oep.fixture.i2c-target'));
   assert.deepEqual(i2c.description.roles.get(1), i2c.description.roles.get(2));
   assert.ok(!i2c.description.roles.get(1)?.includes(2));           // reserved for RVSWD
   const text = dump.toText(caps);
-  assert.match(text, /^OEP revision 1, max frame 1024 bytes; 13 interfaces in 1 list and 13 describe requests\n/);
+  assert.match(text, /^OEP revision 1, max frame 1024 bytes; 14 interfaces in 1 list and 14 describe requests\n/);
   assert.ok(text.includes('instance 0') && text.includes('oep.fixture.i2c-target'));
-  assert.ok(text.includes('features: preloaded tx, clock stretching'));
+  assert.ok(text.includes('features: preloaded tx') && !text.includes('clock stretching'));   // stretch: an op (ops)
+  assert.ok(text.includes('ops: configure, arm_rx, read_rx, preload_tx, status, reset, stretch'));
   assert.ok(text.includes('max 5 MHz'));
   assert.ok(text.includes('unit id: fafe00000035') && text.includes('chip: esp32p4 v1.0'));
   assert.ok(text.includes('oep.fixture.analog  rev 1\n'));          // known now: the capture mode is shown (P2-★6)
@@ -134,7 +137,7 @@ test('p4 follows the agreed names; text and JSON', { skip: !haveFake }, () => wi
   assert.deepEqual(caps.missing, []);
   const data = JSON.parse(dump.toJson(caps));
   assert.equal(data.maxFrame, 1024);
-  assert.equal(data.interfaces.length, 13);
+  assert.equal(data.interfaces.length, 14);
   assert.equal(data.interfaces[1].roles, undefined);                // rvswd declares a fixed pin set, not roles
   assert.deepEqual(data.interfaces[1].pinGroups['1'], { SWDIO: 2, SWCLK: 54 });
 }));

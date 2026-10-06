@@ -1,7 +1,7 @@
 // @ts-check
 // The host side of the rules added since the 2026-10-02 rule changes (oep-spec b4b08f1, 40291a4, 2e70f40, 73a0c37):
 // confirm's bounds (C-20), max_op_ms's ceiling (C-47), the transfer time before the first confirm answer (N-1),
-// resumed = 0 for the last session_id (C-19), the heartbeat's boot_id, short answers and wrong-direction roles (C-36),
+// the boot_id under no resume (C-19), the heartbeat's boot_id, short answers and wrong-direction roles (C-36),
 // an unanswered resend fails the transport (C-38), the last page's storage (PC-9), the optional ops (C-21),
 // cs_setup_ns and i2c-target's reserved addresses. Mirrors oep-client-python's tests/test_host_rules_2026_10_06.py.
 import assert from 'node:assert/strict';
@@ -128,7 +128,7 @@ test('C-47: a max_op_ms outside 1..600000 is a probe not used', async () => {
   for (const [value, usable] of /** @type {[number, boolean][]} */ ([[0, false], [1, true], [600000, true], [600001, false], [0xffffffff, false]])) {
     const { hst, sent } = answering((req) => {
       if (req.op === m.OP.confirm) return confirmPayload();
-      if (req.op === m.OP.describe) return new Writer().u8(0).u8(reg.CORE.tlv.describe.max_op_ms).u8(4).u32(value).done();
+      if (req.op === m.OP.describe) return new Writer().u8(0).u8(reg.CORE.tlv.describe.max_op_ms).u16(4).u32(value).done();
       return new Uint8Array();
     });
     await hst.confirm();
@@ -165,36 +165,37 @@ test('N-1: the transfer time counts 64 until a confirm answer, then the latest (
   assert.equal(link.probeMaxFrame, 256);
 });
 
-// ---- C-19: resumed = 0 for the session_id used last ------------------------------------------------------------------
+// ---- C-19 under no resume (core §6.5, §9): the boot_id tells a reboot, no_session a session that ended -------------
 
-/** A probe stand-in that answers open with `resumed` and its boot_id. @param {{ resumed: number, bootId: number }} state */
+/** A probe stand-in that answers open with its boot_id, and every other request as `other` says (null: success).
+ * @param {{ bootId: number, other: number | null }} state */
 function opening(state) {
   return answering((req) => {
     if (req.op === m.OP.confirm) return confirmPayload({ bootId: state.bootId });
-    if (req.op === m.OP.open) return new Writer().u32(3000).u32(state.bootId).u8(state.resumed).done();
+    if (req.op === m.OP.open) return new Writer().u32(3000).u32(state.bootId).done();
     return new Uint8Array();
   });
 }
 
-test('C-19: resumed 0 for the session id used last lists again; a new random id answered 0 is no loss', async () => {
-  const state = { resumed: 0, bootId: 0x11 };
+test('C-19: open answers lease_ms boot_id; a changed boot_id drops the names once, end and a new open count one loss', async () => {
+  const state = { bootId: 0x11, other: null };
   const { hst } = opening(state);
-  await hst.open(3000);
+  const opened = await hst.open(3000);
+  assert.deepEqual(opened, { leaseMs: 3000, bootId: 0x11 });      // no resumed (core §6.4)
   hst.fns.set('oep.fixture.gpio', 4);
   hst.describes.set(4, []);
   let epoch = hst.epoch;
-  await hst.open(3000);                                           // a new random id: resumed 0 is expected
-  assert.deepEqual([hst.epoch, hst.fns.size], [epoch, 1]);
-  const opened = await hst.open(3000, { session: /** @type {number} */ (hst.session) });   // the id it used last
-  assert.equal(opened.resumed, 0);
-  assert.deepEqual([hst.epoch, hst.fns.size, hst.describes.size], [epoch + 1, 0, 0]);   // listed again before use
+  await hst.open(3000);                                           // a new session over the last: its loss, once
+  assert.deepEqual([hst.epoch, hst.fns.size], [epoch + 1, 1]);
   epoch = hst.epoch;
-  state.bootId = 0x22;                                            // a reboot with a new boot_id: counted once
-  await hst.open(3000, { session: /** @type {number} */ (hst.session) });
-  assert.equal(hst.epoch, epoch + 1);
-  state.resumed = 1;
-  await hst.open(3000, { session: /** @type {number} */ (hst.session) });
-  assert.equal(hst.epoch, epoch + 1);                             // resumed: nothing lost
+  state.bootId = 0x22;                                            // a reboot: counted once, the names listed again
+  await hst.open(3000);
+  assert.deepEqual([hst.epoch, hst.fns.size, hst.describes.size], [epoch + 1, 0, 0]);
+  epoch = hst.epoch;
+  await hst.end();
+  assert.deepEqual([hst.epoch, hst.session], [epoch + 1, null]);  // end releases everything (core §9)
+  await hst.open(3000);
+  assert.equal(hst.epoch, epoch + 1);                             // nothing more lost after an end
 });
 
 // ---- heartbeats: the boot_id watched (core §6.5, §11.2) -------------------------------------------------------------
@@ -326,10 +327,10 @@ test('C-38: on a length link the resend\'s silence fails it too, after the resyn
 
 test('PC-9: state keeps the last page\'s storage', async () => {
   const cfg = new config.ProbeConfig(/** @type {any} */ (null), 9, config.ProbeConfig.NAME);
-  const slot = new Writer().u8(0).u8(1).u16(0xffff).u64(0xffffffffffffffffn).u8(0).u8(0).u64(0xffffffffffffffffn).done();
+  const slot = new Writer().u8(0).u8(1).u16(0xffff).u64(0xffffffffffffffffn).u64(0xffffffffffffffffn).u8(0).u8(0).done();
   const pages = [
-    new Writer().u8(1).u8(0).u32(0).u8(0).u8(1).u8(slot.length).raw(slot).u8(0).done(),          // more: storage none
-    new Writer().u8(0).u8(1).u32(0x1234).u8(0).u8(1).u8(slot.length).raw(slot).u8(0).done(),     // saved in between
+    new Writer().u8(1).u8(0).u32(0).u8(0).u8(1).raw(slot).u8(0).done(),          // more: storage none
+    new Writer().u8(0).u8(1).u32(0x1234).u8(0).u8(1).raw(slot).u8(0).done(),     // saved in between
   ];
   let i = 0;
   cfg.call = /** @type {any} */ (async () => ({ payload: pages[i++] }));
@@ -339,13 +340,16 @@ test('PC-9: state keeps the last page\'s storage', async () => {
 
 // ---- C-21: the optional ops are used when declared -------------------------------------------------------------------
 
-test('C-21: riscv-dm says which optional ops the probe offers', { skip: !haveFake }, () => withFake(['--profile', 'esp32-v003'], async (hst) => {
+test('C-21: riscv-dm says which optional ops the probe offers (its ops tag)', { skip: !haveFake }, () => withFake(['--profile', 'esp32-v003'], async (hst) => {
   await hst.open(10000);
   const wire = await Wire.open(hst, { name: 'oep.wire.swio' });
   const { conn } = await wire.attach({ halt: true });
   const dm = await RiscvDm.on(hst, conn);
   assert.deepEqual([...(await dm.declared())].sort(), ['block', 'reset', 'run']);
   await assert.rejects(dm.step(), (e) => e instanceof Rejected && e.reason === m.REJECT.unknown_operation);
+  assert.equal(await dm.offers(RiscvDm.STEP), false);
+  await assert.rejects(core.require(hst, dm.fn, RiscvDm.STEP),   // the same Rejected, nothing sent
+    (e) => e instanceof Rejected && e.constructor === Rejected && e.reason === m.REJECT.unknown_operation);
   await hst.end();
 }));
 

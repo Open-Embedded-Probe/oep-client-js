@@ -48,7 +48,7 @@ test('ConsoleIO counts what the ring dropped', async () => {
   const { hst, log } = scripted({
     [`${CONSOLE}:${Console.READ}`]: () => {
       const [start, data, flags] = /** @type {[number, string, number]} */ (reads.shift());
-      return ok(concat(new Writer().u64(start).u8(flags).u16(data.length).done(), utf8(data), Uint8Array.of(0x41, 1, 9)));   // len, then a TLV
+      return ok(concat(new Writer().u64(start).u8(flags).u16(data.length).done(), utf8(data), Uint8Array.of(0x41, 1, 0, 9)));   // len, then a TLV
     },
   });
   const io = await ConsoleIO.create(await Console.open(hst), 100);
@@ -67,14 +67,14 @@ test('a failed console open throws', async () => {
   await assert.rejects(con.open(1), Failed);
 });
 
-test('marks are len-prefixed elements, paged with more', async () => {
+test('marks are count x mark (22 bytes, no element length, core §2.3), paged with more', async () => {
   /** @param {number} serial */
-  const mark = (serial) => m.element(new Writer().u32(serial).u64(5).u8(7).u64(10).u8(serial).u8(0xee).done());   // one byte more: skipped
+  const mark = (serial) => new Writer().u32(serial).u64(5).u8(7).u64(10).u8(serial).done();
   const { hst, log } = scripted({
     [`${CONSOLE}:${Console.MARKS}`]: (p) => {
       const from = new m.Reader(p.slice(2)).u32();
       const page = from < 4 ? [from, from + 1] : [from];
-      return ok(concat(Uint8Array.of(from < 4 ? 1 : 0, page.length), ...page.map(mark)));
+      return ok(concat(Uint8Array.of(from < 4 ? 1 : 0, page.length), ...page.map(mark), m.tlv(0x50, [1])));   // a TLV after: skipped
     },
   });
   const con = await Console.open(hst);
@@ -97,10 +97,23 @@ test('console write: completed partial is no error, accepted 0 is failed, write(
       return [m.COMPLETED, took === count ? m.SUCCESS : took ? m.PARTIAL : m.FAILED, new Writer().u16(took).done()];
     },
   }, 64);
+  hst.describes.set(CONSOLE, [[reg.TARGET_CONSOLE.tlv.describe.send_queue, Uint8Array.of(64, 0)]]);   // send_queue 64
   const con = await Console.open(hst);
+  assert.equal(await con.sendQueue(), 64);
   const io = new ConsoleIO(con, 0n);
   await io.write('PING\n');
   assert.deepEqual(log.map(([, , p]) => text(p.slice(4))), ['PING\n', 'G\n', 'G\n']);
+  assert.equal(await io.sendQueue(), 64);
+});
+
+test('ConsoleIO writes a send_queue at a time, at most a frame (console §1, §2)', async () => {
+  const { hst, log } = scripted({
+    [`${CONSOLE}:${Console.WRITE}`]: (p) => [m.COMPLETED, m.SUCCESS, new Writer().u16(new m.Reader(p.slice(2)).u16()).done()],
+  }, 1024);
+  hst.describes.set(CONSOLE, [[reg.TARGET_CONSOLE.tlv.describe.send_queue, Uint8Array.of(0, 1)]]);   // 256
+  const io = new ConsoleIO(await Console.open(hst), 0n);
+  await io.write(new Uint8Array(600));
+  assert.deepEqual(log.map(([, , p]) => p.length - 4), [256, 256, 88]);
 });
 
 test('console streams against the fake probe', { skip: !haveFake }, async () => {
@@ -144,8 +157,8 @@ test('console streams against the fake probe', { skip: !haveFake }, async () => 
     const fromMark = await con.read(Console.FROM_MARK, reg.COMMON.enum.mark_kind.host, 16);
     assert.equal(fromMark.start, marks[6].position);
 
-    const accepted = await con.write(utf8('PING\n'));
-    assert.ok(accepted > 0 && accepted <= 5);
+    assert.equal(await con.sendQueue(), 256);                            // describe 0x41 (console §1)
+    assert.equal(await con.write(utf8('PING\n')), 5);                  // into the send queue (console §2)
 
     await io.readAll();
     assert.equal(io.more, false);                                // readAll followed more to its end
