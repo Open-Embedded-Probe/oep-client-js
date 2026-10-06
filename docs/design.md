@@ -8,7 +8,7 @@ the map for the scaffold.
 ## 1. What it is for
 
 - The JavaScript host side of OEP, for browsers and Node. It follows [oep-spec](https://github.com/Open-Embedded-Probe/oep-spec)
-  v1 (`docs/oep-core.ja.md` and `docs/oep-if-*.ja.md`).
+  v1 (`docs/oep-core.ja.md` and `interfaces/*.ja.md`).
 - A web page built on the same library ("OEP Probe Tool") on GitHub Pages: set a probe up and update its firmware from
   the browser alone.
 - The counterpart of the Python [oep-client-python](https://github.com/Open-Embedded-Probe/oep-client-python). It is one

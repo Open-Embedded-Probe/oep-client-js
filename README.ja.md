@@ -12,11 +12,13 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 
 **v1 の凍結の前に、ひととおり移した版です。仕様が固まるにつれて作り直す前提です。**
 
-**実装する仕様: oep-spec の commit `59dd028`**（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
+**実装する仕様: oep-spec の commit `0304f37`**（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
 だけでは形が決まらないので、実装は実装する仕様を名乗る）。2026-10-06 の単純化（10 byte の要求の見出し 1 つ、TLV の len は u16、
-閉じた固定の形、describe の `ops` tag、再開なし、`oep.link`）、コンソールの送りの列と reset の後の待ち（f0c68bf）、長い
-probe.config の項目（d34dafa）、oep.link の source の len（4bd3a87）、既存の connection に加わる attach（59dd028）と、`ecd1ab9` の fn 0 の任意の restart（core §6.6）と `3c96daf` の describe の restart_max_ms（core §7.5）。oep-client-python と同じ仕様。凍結までは日本語の文
-（`.ja.md`）が仕様の作業の文。
+閉じた固定の形、describe の `ops` tag、再開なし）、コンソールの送りの列と reset の後の待ち（f0c68bf）、長い probe.config の項目
+（d34dafa）、既存の connection に加わる attach（59dd028）と、2026-10-06 の構造（2e5dc4c〜9c837a9、0304f37）: 本体は名前を
+持たない（fn 0、list に載らない）、plan と再起動と線の試験はインターフェース `oep.probe.plan`、`oep.probe.restart`、
+`oep.probe.link`、subscribe / unsubscribe は通知を送るインターフェース自身の op 0x30 / 0x32（heartbeat は無い）、fn 0 の `clock` が
+probe の時刻を返す、ops の値の符号は 1 つ（core §7.4）。凍結までは日本語の文（`.ja.md`）が仕様の作業の文。
 
 入っているもの:
 
@@ -24,17 +26,19 @@ probe.config の項目（d34dafa）、oep.link の source の len（4bd3a87）�
   パイプライン、push と出来事。応答はどれも core §4.4 の下限 ― 引数の時間 + 1000 ms + シリアルの口の転送時間、
   `Link.waitFloorMs` ― 以上待つ。length のフレームでの transports §5 の立て直しは、host の最後の書き込みから 250 ms 待ってから confirm し、
   TCP のフレームの途中の休みでは立て直さない。送り直しにも応答が無ければ経路の失敗 `TransportFailed` で、次の要求の前に
-  confirm で立て直す（COBS でも）。header より短いフレームは壊れたフレーム。fn 0 の heartbeat を読み、その boot_id を見る）、
+  confirm で立て直す（COBS でも）。header より短いフレームは壊れたフレーム）、
   host（confirm ― この host が来た経路の番号 `limits.transport`、2 回目からは使っている revision を求める。core §7.1 の範囲の外の
-  confirm や 1..600000 の外の max_op_ms は、その probe を `NotUsable` にする ―、セッション ― open はいつも新しい乱数の id を
+  confirm、1..600000 の外の max_op_ms、core §7.4 の符号に合わない fn 0 の ops は、その probe を `NotUsable` にし、合わない fn の ops は
+  その fn を `FnNotUsable` にする ―、`clock()` ― fn 0 の clock をこの host の `performance.now()` と突き合わせる:
+  `{ hostBeforeMs, hostAfterMs, roundTripMs, uptimeNs, bootId }`。probe の時刻は往復の半分の不確かさで中点に当たる ―、セッション ― open はいつも新しい乱数の id を
   要求の見出しに置いて新しいセッションを開く。end、lease の期限切れ、force はセッションが作ったものをすべて解放し、終わった
-  セッションの要求は `NoSession`（再開なし）―、ロック、購読、再起動 ― `requestRestart()` と `restartProbe({ reopen, waitMs })`: fn 0 の
+  セッションの要求は `NoSession`（再開なし）―、ロック、購読 ― `subscribe(fn, minBytes, maxDelayMs)` / `unsubscribe(fn)`: fn 自身の
+  op 0x30 / 0x32（core §11.3）―、再起動 ― `requestRestart()` と `restartProbe({ reopen, waitMs })`: oep.probe.restart（名前で探す）の
   restart の後、restart_after_answer_ms 待ち、`reopen` があればそれで開き直し（無ければ link のまま）、confirm する。probe の
-  restart_max_ms（`core.restartMaxMs`。restart の前に読む。宣言が無ければ 10 s）まで繰り返し、過ぎれば probe は無くなったものとして
-  最後のエラーを投げる。新しい boot_id を返す。
-  同じなら `NotRestarted` ―）、list / describe（fn ごとの `ops`: `core.ops` / `offers`、
-  `Interface.ops()` / `.offers(op)`。`core.require` は送らずに、probe が答えるのと同じ detail unknown_operation の `Rejected` を
-  投げる）/ plan
+  restart_max_ms（`core.restartMaxMs`。そのインターフェースの describe。restart の前に読む。宣言が無ければ 10 s）まで繰り返し、
+  過ぎれば probe は無くなったものとして最後のエラーを投げる。新しい boot_id を返す。同じなら `NotRestarted` ―）、list / describe
+  （fn ごとの `ops`: `core.ops` / `offers`、`Interface.ops()` / `.offers(op)`。`core.require` は送らずに、probe が答えるのと同じ
+  detail unknown_operation の `Rejected` を投げる）/ plan（`core.planApply` / `planRelease` / `planRoles` は oep.probe.plan を名前で探す）
 - インターフェース: debug の線（rvswd、swio、swd）と riscv-dm、ARM の ADI / MEM-AP / Cortex-M、target のコンソール、
   fixture（gpio、uart、i2c-target、spi-target）、キャプチャ（ロジック、アナログ、capture-group、sigrok の .sr）、probe.config、
   `oep dump` の表示
@@ -46,7 +50,7 @@ probe.config の項目（d34dafa）、oep.link の source の len（4bd3a87）�
   filter を付けないので、UART bridge や内蔵の USB serial も選べる
 - firmware の更新: USB の DFU（ESP32-P4）と、Release の firmware-<version>.json
 - ページ: つなぐ、probe の宣言を読む、設定の編集と保存、GPIO と UART、port_speed、DFU での更新
-- port_speed（oep-if-link §3 は握手だけで、任意のインターフェース `oep.link` の op。probe は ops が立てるときに持つ。手順は
+- port_speed（oep-if-link §3 は握手だけで、任意のインターフェース `oep.probe.link` の op。probe は ops が立てるときに持つ。手順は
   oep-spec の host 開発ガイド §17。使うときだけ）:
   `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, idleMs, port, record })`（または
   `connect` / `openWebSerial` / `openSerial` の `portSpeed: true | [候補]` と `flows` / `verify` / `record`）で、セッションの間
@@ -54,13 +58,13 @@ probe.config の項目（d34dafa）、oep.link の source の len（4bd3a87）�
   切り替える）→ host は要求した baud に切り替える（platform が断ったときだけ probe の応答の baud）→ 20 ms → `confirm`（100 ms、
   3 回まで）→ `決める`。**完全な形**（`verify: true` か `flows` を渡す）: 起動時の速さの基準を流し方ごとに取り（このセッションの
   フレーム、無ければ 60 フレーム）、候補ごとに使う流し方だけ流す。流し方 = `'in' | 'out' | 'duplex'` か `[流し方, n]`（in =
-  oep.link の source probe → host、out = oep.link の sink host → probe、duplex = 両方を交互。`n` は同時数、0 = link が出す最大）で、
+  oep.probe.link の source probe → host、out = oep.probe.link の sink host → probe、duplex = 両方を交互。`n` は同時数、0 = link が出す最大）で、
   max_frame − 26（oep-if-link §2）のフレームを 16 個流し、壊れと失われを数え KB/s を測る。壊れ + 失われが 3 以上で割合が max(基準 × 2, 5 %) を
   超えたら流し方は通らず、n = 1 で流し直し（通れば n = 1 が link の上限 `inflightCap`）、1 つでも通らなければ候補は通らない。
   通らない候補は戻して（step 2）起動時の速さに戻り confirm し直す。最初に通った候補を使う。probe の UART が作れない速さは飛ばす。
   結果（`host.link.speed`: `base`、`rate`、`chosen`、`baseline`、`flows` と `inKBs` / `outKBs` / `duplexKBs` を持つ `trials`、
   `stepDowns`、`skipped`。`speedText(report)`）はキャプチャや書き込みの予算を立てるのに使う。WebSerial は同じ口を閉じて開き直して
-  速さを変え（すぐに DTR / RTS を一緒に立て直す）、Node の `serialport` は `update` で変える。`end` と戻すの応答で link は
+  速さを変え（すぐに DTR / RTS を一緒に立て直す）、Node の `serialport` は `update` で変える。`end`、戻す、restart の応答で link は
   すぐ起動時の速さに戻る。上げている間は `idleMs` の半分より短く（1 秒）黙れば keepalive を送り、長く黙る呼び出し側は
   `host.link.keepAlive()` で同じことをする。上げた速さで応答の来ない要求は起動時の速さに戻って port_speed_idle_max_ms + 1 秒の内に
   confirm し（通らなければ Error。上げた速さへは戻さない）、そこでもう一度送る（待つ 1 回は lease の 4 分の 1 まで）。使っている間、
@@ -98,9 +102,10 @@ probe.config の項目（d34dafa）、oep.link の source の len（4bd3a87）�
   describe のキャプチャの mode と background
 
 wire は oep-spec の 2026-10-01 のゼロベース見直しを 2026-10-06 に単純化した形です（session_id を持つ要求の見出し 1 つ、
-TLV の形 1 つ、要素に長さを置かない並び、閉じた固定の形、`ops` tag、再開なし、`oep.link`。変更履歴を参照）。
-oep-client-python の fake の probe と台本のデバイスで試しています（281 件。oep-spec の試験ベクタを含み、sessions.json と
-ops.json も）。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
+TLV の形 1 つ、要素に長さを置かない並び、閉じた固定の形、`ops` tag、再開なし。変更履歴を参照）に、2026-10-06 の構造（名前の
+無い本体、oep.probe のインターフェース、インターフェースごとの通知）を加えたもの。
+oep-client-python の fake の probe と台本のデバイスで試しています（297 件。oep-spec の試験ベクタを含み、sessions.json、
+ops.json、ops_encoding.json も）。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
 
 v1 の凍結までは仕様が壊れることがあり、この package は probe の firmware
 （[OpenEmbeddedProbe](https://github.com/Open-Embedded-Probe/oep-probe-arduino)）と

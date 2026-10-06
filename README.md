@@ -12,11 +12,14 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 
 **A first full port, ahead of the v1 freeze: expect it to be redone as the spec settles.**
 
-**The spec this implements: oep-spec commit `59dd028`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
+**The spec this implements: oep-spec commit `0304f37`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
 revision 1 alone does not fix the forms, so an implementation names the spec it implements). That is the 2026-10-06
-simplification (one 10-byte request header, TLV len u16, closed fixed forms, the `ops` describe tag, no resume,
-`oep.link`), the console's send queue and the reset settle wait (f0c68bf), a longer probe.config item (d34dafa),
-oep.link source's len (4bd3a87) and an attach joining a connection (59dd028), with fn 0's optional restart from `ecd1ab9` (core §6.6) and its describe value restart_max_ms from `3c96daf` (core §7.5); the same spec as oep-client-python. Until the freeze the Japanese text (`.ja.md`) is
+simplification (one 10-byte request header, TLV len u16, closed fixed forms, the `ops` describe tag, no resume), the
+console's send queue and the reset settle wait (f0c68bf), a longer probe.config item (d34dafa), an attach joining a
+connection (59dd028) and the 2026-10-06 structure (2e5dc4c .. 9c837a9, 0304f37): the core has no name (fn 0, never
+listed), the plan, restart and link test are the interfaces `oep.probe.plan`, `oep.probe.restart` and `oep.probe.link`,
+subscribe / unsubscribe are ops 0x30 / 0x32 of the interface that sends the notifications (no heartbeat), fn 0's `clock`
+gives the probe's time, and an ops value has one encoding (core §7.4). Until the freeze the Japanese text (`.ja.md`) is
 the specification's working text.
 
 What is there:
@@ -25,17 +28,21 @@ What is there:
   resend, pipelining, pushes and events; every answer waited at least core §4.4's floor - argument time + 1000 ms + a
   serial port's transfer time, `Link.waitFloorMs` -; the transports §5 resync on length frames, its confirm 250 ms after the
   host's last write, none for a pause inside a TCP frame; an unanswered resend fails the transport, `TransportFailed`,
-  and the next request first recovers with a confirm, COBS included; a frame shorter than its header is broken; fn 0's
-  heartbeats read and their boot_id watched), the host (confirm - `limits.transport`, the index this host came in on;
-  later confirms ask for the revision in use; one outside core §7.1's bounds, or a max_op_ms outside 1..600000, makes the
-  probe `NotUsable` -, session - every open a new one under a new random id in the request header; end, a lapsed lease
+  and the next request first recovers with a confirm, COBS included; a frame shorter than its header is broken), the host
+  (confirm - `limits.transport`, the index this host came in on; later confirms ask for the revision in use; one outside
+  core §7.1's bounds, a max_op_ms outside 1..600000 or an fn 0 ops outside core §7.4's one encoding makes the probe
+  `NotUsable`, an fn's ops outside it that fn `FnNotUsable` -, `clock()` - fn 0's clock against this host's
+  `performance.now()`: `{ hostBeforeMs, hostAfterMs, roundTripMs, uptimeNs, bootId }`, the probe's time matching the
+  midpoint within half the round trip -, session - every open a new one under a new random id in the request header; end, a lapsed lease
   or force release everything the session made, and a request of an ended session is `NoSession` (no resume) -, lock,
-  subscribe, restart - `requestRestart()`, and `restartProbe({ reopen, waitMs })`: fn 0's restart, then wait
-  restart_after_answer_ms, open again through `reopen` when given (or keep the link) and confirm, retried until the
-  probe's restart_max_ms (`core.restartMaxMs`, read before the restart; 10 s when it declares none; past it the probe is
-  gone and the last error is thrown), and return the new boot_id,
-  `NotRestarted` when it stayed the same), list / describe (each fn's `ops`: `core.ops` / `offers`, `Interface.ops()` / `.offers(op)`; `core.require`
-  throws, without sending, the same `Rejected` with detail unknown_operation the probe answers) / plan;
+  subscribe - `subscribe(fn, minBytes, maxDelayMs)` / `unsubscribe(fn)`: fn's own ops 0x30 / 0x32 (core §11.3) -,
+  restart - `requestRestart()`, and `restartProbe({ reopen, waitMs })`: oep.probe.restart's restart (found by name), then
+  wait restart_after_answer_ms, open again through `reopen` when given (or keep the link) and confirm, retried until the
+  probe's restart_max_ms (`core.restartMaxMs`, that interface's describe, read before the restart; 10 s when it declares
+  none; past it the probe is gone and the last error is thrown), and return the new boot_id, `NotRestarted` when it
+  stayed the same), list / describe (each fn's `ops`: `core.ops` / `offers`, `Interface.ops()` / `.offers(op)`;
+  `core.require` throws, without sending, the same `Rejected` with detail unknown_operation the probe answers) / plan
+  (`core.planApply` / `planRelease` / `planRoles` on oep.probe.plan, found by name);
 - the interfaces: the debug wires (rvswd, swio, swd) and riscv-dm, ARM ADI / MEM-AP / Cortex-M, the target console, the
   fixtures (gpio, uart, i2c-target, spi-target), the captures (logic, analog, capture-group, sigrok .sr), probe.config and
   the `oep dump` view;
@@ -47,7 +54,7 @@ What is there:
   WebSerial chooser has no default filter, so a UART bridge or a built-in USB serial stays selectable;
 - the firmware update: USB DFU (the ESP32-P4) and the Release's firmware-<version>.json;
 - the page: connect, read what the probe declares, edit and save its settings, GPIO and UART, port_speed, a DFU update;
-- port_speed (oep-if-link §3 is the handshake, an op of the optional interface `oep.link` that the probe offers when its
+- port_speed (oep-if-link §3 is the handshake, an op of the optional interface `oep.probe.link` that the probe offers when its
   ops set it; the procedure is the oep-spec host guide §17, opt-in):
   `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, idleMs, port, record })` (or
   `portSpeed: true | [candidates]` with `flows` / `verify` / `record` on `connect` / `openWebSerial` / `openSerial`) runs
@@ -56,7 +63,7 @@ What is there:
   probe's answered baud only when the platform refuses it) -> 20 ms -> a `confirm` (100 ms, up to 3) -> `commit`. The
   **full form** (`verify: true`, or `flows` given): a baseline at the boot speed per flow (this session's frames, or 60
   measured), then for each candidate every flow the session will use - `flows` of `'in' | 'out' | 'duplex'` or
-  `[flow, n]` (in = oep.link source probe -> host, out = oep.link sink host -> probe, duplex = both interleaved; `n` in flight,
+  `[flow, n]` (in = oep.probe.link source probe -> host, out = oep.probe.link sink host -> probe, duplex = both interleaved; `n` in flight,
   0 = the most the link keeps) - 16 frames at max_frame - 26 (oep-if-link §2), counting broken and lost and measuring KB/s; a flow fails
   on broken + lost >= 3 over max(2 x baseline, 5 %), runs once more at n = 1 first (then n = 1 is the link's cap,
   `inflightCap`), and one failed flow fails the candidate. A failed candidate reverts (step 2) and goes back to the boot
@@ -64,7 +71,7 @@ What is there:
   report (`host.link.speed`: `base`, `rate`, `chosen`, `baseline`, `trials` with `flows`, `inKBs` / `outKBs` /
   `duplexKBs`, `stepDowns`, `skipped`; `speedText(report)`) is there to budget a capture or a write. WebSerial changes
   the rate by closing and opening the same port again (DTR / RTS asserted again together at once), Node's
-  `serialport` by `update`. An `end` or a revert takes the link back to the boot speed at once; while raised the link
+  `serialport` by `update`. An `end`, a revert or a restart takes the link back to the boot speed at once; while raised the link
   sends a keepalive when quiet for less than half of `idleMs` (1 s), and `host.link.keepAlive()` does the same for a
   caller that sits idle. A request unanswered at a raised rate falls back to the boot speed, confirmed within
   port_speed_idle_max_ms + 1 s (an Error when no confirm comes, never the raised rate again), and goes once more there;
@@ -109,9 +116,10 @@ What is there:
   its background in describe.
 
 The wire is oep-spec's 2026-10-06 simplification of the zero-base rewrite of 2026-10-01 (one request header with
-session_id, one TLV form, sequences without element lengths, closed fixed forms, the `ops` tag, no resume, `oep.link`;
-see the changelog). Tested against oep-client-python's fake probe and scripted devices (281 tests, oep-spec's test
-vectors among them, sessions.json and ops.json included); the browser transports, DFU and the page are not yet checked on
+session_id, one TLV form, sequences without element lengths, closed fixed forms, the `ops` tag, no resume; see the
+changelog), with the 2026-10-06 structure (the nameless core, the oep.probe interfaces, notifications per interface).
+Tested against oep-client-python's fake probe and scripted devices (297 tests, oep-spec's test
+vectors among them, sessions.json, ops.json and ops_encoding.json included); the browser transports, DFU and the page are not yet checked on
 hardware.
 
 Until the v1 freeze the spec may break and this package follows it at once, with the probe firmware

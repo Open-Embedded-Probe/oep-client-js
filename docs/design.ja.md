@@ -7,7 +7,7 @@ oep-client-js の構成と、何をどこに置くか、何を作らないか。
 ## 1. 何のためのものか
 
 - ブラウザと Node から OEP の probe と話す、JavaScript の host の実装です。[oep-spec](https://github.com/Open-Embedded-Probe/oep-spec)
-  の v1（`docs/oep-core.ja.md` と `docs/oep-if-*.ja.md`）に従います。
+  の v1（`docs/oep-core.ja.md` と `interfaces/*.ja.md`）に従います。
 - 同じライブラリを使った Web ページ（「OEP Probe Tool」）を GitHub Pages に置きます。probe の設定と firmware の更新を、ブラウザだけで
   できるようにします。
 - Python の [oep-client-python](https://github.com/Open-Embedded-Probe/oep-client-python) と対になります。仕様を追う道具の 1 つで、
