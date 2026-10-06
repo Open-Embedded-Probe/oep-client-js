@@ -75,6 +75,27 @@ test('attach twice returns the same connection; max_speed goes critical', { skip
   assert.deepEqual(await wire.connections(), []);
 }));
 
+test('a join carries idle_clock only when given (high included), lowers the speed only; a scan leaves a live connection', { skip: !haveFake }, () => withFake(X035, async (hst) => {
+  // oep-spec 59dd028 (debug §1, §3): a join keeps the settings it does not carry; the fake's side is checked in
+  // oep-client-python's tests/test_spec_59dd028.py (the rest itself is not visible on the wire)
+  const log = tap(hst);
+  const wire = await Wire.open(hst);
+  const speed = (/** @type {number} */ hz) => [0x81, 4, 0, ...w().u32(hz).done()];
+  const { conn } = await wire.attach({ halt: false, maxSpeed: 1_000_000, idleClock: 'low' });
+  assert.deepEqual([...log.at(-1)?.[2] ?? []], [0, ...speed(1_000_000), 0x84, 1, 0, 1]);
+  await wire.attach({ halt: false, maxSpeed: 4_000_000 });                 // a join: no idle_clock TLV, the rest kept
+  assert.deepEqual([...log.at(-1)?.[2] ?? []], [0, ...speed(4_000_000)]);
+  assert.ok(wire.existing && wire.speedHz === 1_000_000);                  // a join never raises the speed
+  await wire.attach({ halt: false, maxSpeed: 1_000_000, idleClock: 'high' });   // the target's high, sent explicitly
+  assert.deepEqual([...log.at(-1)?.[2] ?? []], [0, ...speed(1_000_000), 0x84, 1, 0, 0]);
+  await wire.attach({ halt: false, maxSpeed: 500_000 });
+  assert.ok(wire.existing && /** @type {number} */ (wire.speedHz) === 500_000);   // lowered
+  const found = await wire.scan([[2, 54]], { maxSpeed: 100_000, idleClock: 'low' });
+  assert.deepEqual(found.map((f) => f.pins), [[2, 54]]);
+  const [c] = await wire.connections();
+  assert.ok(c.conn === conn && c.speedHz === 500_000);                     // the scan did not touch it
+}));
+
 test('scan and attach take the pin pair and refuse one not allowed', { skip: !haveFake }, () => withFake(X035, async (hst) => {
   const wire = await Wire.open(hst);
   const found = await wire.scan();

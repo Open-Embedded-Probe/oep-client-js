@@ -12,11 +12,11 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 
 **A first full port, ahead of the v1 freeze: expect it to be redone as the spec settles.**
 
-**The spec this implements: oep-spec commit `4bd3a87`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
+**The spec this implements: oep-spec commit `59dd028`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
 revision 1 alone does not fix the forms, so an implementation names the spec it implements). That is the 2026-10-06
 simplification (one 10-byte request header, TLV len u16, closed fixed forms, the `ops` describe tag, no resume,
-`oep.link`), the console's send queue and the reset settle wait (f0c68bf), a longer probe.config item (d34dafa) and
-oep.link source's len (4bd3a87); the same spec as oep-client-python. Until the freeze the Japanese text (`.ja.md`) is
+`oep.link`), the console's send queue and the reset settle wait (f0c68bf), a longer probe.config item (d34dafa),
+oep.link source's len (4bd3a87) and an attach joining a connection (59dd028); the same spec as oep-client-python. Until the freeze the Japanese text (`.ja.md`) is
 the specification's working text.
 
 What is there:

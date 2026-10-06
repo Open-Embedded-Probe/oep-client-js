@@ -182,7 +182,8 @@ export class WireBase extends Interface {
    * Try `pairs` of [swdio, swclk]; none = every pair the probe allows and nothing holds (describe's channel_group /
    * role_channels, §1). A pair the probe does not allow, or one whose pins something holds, refuses the whole scan
    * (rejected unavailable). maxSpeed (critical; none: the probe's slowest) and idleClock ('high' / 'low', rvswd only,
-   * critical) are the target's line settings (§3). The probe tries at most 255 pairs a request and stops early when
+   * critical) are the target's line settings (§3); they do not change a live connection's settings (a live pair is read
+   * over its connection, §1). The probe tries at most 255 pairs a request and stops early when
    * its answer would not fit one frame; this goes on until every pair is tried (count 0: with skip until tried = 0;
    * the probe tries at least one pair while any remain).
    * @param {[number, number][] | null} pairs @param {{ maxSpeed?: number | null, idleClock?: 'high' | 'low' | null }} [opts]
@@ -322,8 +323,11 @@ export class Wire extends WireBase {
    * a pending havereset was acknowledged first (a V00x's DMSTATUS halt / run bits stay frozen until then);
    * this.halted / this.dpc: the hart is halted and where (attach flags bit3, TLV dpc); this.speedHz: the speed the
    * probe chose; maxSpeed: the ceiling the probe must keep (critical, required; null: the wire's declared
-   * max_clock_hz); idleClock: 'high' / 'low', how rvswd rests SWCLK (critical). Both are the target's, known by the
-   * host (§3). reset = [channel, holdMs]: hold that reset line (one of resetChannels()) low for holdMs, then attach -
+   * max_clock_hz); idleClock: 'high' / 'low', how rvswd rests SWCLK (critical; sent whenever given, high included).
+   * Both are the target's, known by the host (§3). An attach that joins a live connection (a slot's, another
+   * session's) changes only what it carries: idleClock null keeps the connection's current rest (null means high only
+   * for a new connection), and maxSpeed only lowers its speed (§1) - a caller that knows the target's rest (a slot's
+   * idleClock) passes it, high included. reset = [channel, holdMs]: hold that reset line (one of resetChannels()) low for holdMs, then attach -
    * halting before the first instruction with halt - the way back from firmware that turns the debug pins into GPIOs
    * (on an existing connection: the target is reset, mark reset detail 3). this.targetId: [scheme, value] of the
    * target's identity when the probe could read one; this.searchRetries: the answer's failed speed-search tries. The
