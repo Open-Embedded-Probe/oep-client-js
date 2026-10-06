@@ -122,6 +122,15 @@ export async function maxOpMs(hst) {
   return reg.REFERENCE.max_op_ms;
 }
 
+/** The longest the probe takes from restart's answer until it answers confirm again on the same transport (oep.core
+ * describe restart_max_ms, core §6.6, §7.5; required when restart is in fn 0's ops). null: not declared (a probe
+ * without restart, or one that does not conform).
+ * @param {import('./host.js').Host} hst @returns {Promise<number | null>} */
+export async function restartMaxMs(hst) {
+  for (const [tag, v] of await describe(hst, 0)) if ((tag & 0x7f) === D.restart_max_ms && v.length >= 4) return getU32(v);
+  return null;
+}
+
 /** The firmware's fixed channel labels from oep.core's describe (tag 0x46) as [channel, text], in describe order -
  * every one, two channels with the same text included (probe.config §1.3 step (c) finds none then). Text shown as core
  * §2.1 says (`m.shown`). @param {import('./host.js').Host} hst @returns {Promise<[number, string][]>} */
@@ -133,7 +142,8 @@ export async function firmwareLabels(hst) {
 /**
  * oep.core's describe decoded (core §7.5). Text values are shown as core §2.1 says (control characters replaced). labels: the firmware's fixed channel labels (0x46); the labels the settings
  * gave are read from oep.probe.config (config.ProbeConfig.items(), Label). discoverable: the probe also enumerates with the
- * project's USB VID:PID (transports §3, core §7.5). maxOpMs: the longest one request may take.
+ * project's USB VID:PID (transports §3, core §7.5). maxOpMs: the longest one request may take. restartMaxMs: the longest
+ * from restart's answer until confirm is answered again (core §6.6; null without restart).
  * @param {import('./host.js').Host} hst
  */
 export async function probeInfo(hst) {
@@ -144,6 +154,7 @@ export async function probeInfo(hst) {
     /** @type {number[]} */ reserved: [], /** @type {Map<string, number>} */ labels: new Map(),
     /** @type {{ index: number, kind: number, usbInterface: number }[]} */ transports: [],
     discoverable: false, planRoles: /** @type {number | null} */ (null), maxOpMs: /** @type {number | null} */ (null),
+    restartMaxMs: /** @type {number | null} */ (null),
     /** @type {[number, Uint8Array][]} */ other: [],
   };
   for (const [tag, v] of await describe(hst, 0)) {
@@ -160,6 +171,7 @@ export async function probeInfo(hst) {
     else if (t === D.discoverable) info.discoverable = v[0] === 1;
     else if (t === D.plan_roles && v.length >= 4) info.planRoles = getU32(v);
     else if (t === D.max_op_ms && v.length >= 4) info.maxOpMs = getU32(v);
+    else if (t === D.restart_max_ms && v.length >= 4) info.restartMaxMs = getU32(v);
     else info.other.push([tag, v]);
   }
   return info;

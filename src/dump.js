@@ -28,7 +28,8 @@ const REQUIRED_CORE_TAGS = /** @type {const} */ (['unit_id', 'transport', 'max_o
 
 /**
  * core §1.2 (C-10) as far as a lock-free look shows it: confirm's answer carries TLV transport (§7.1), fn 0's describe
- * carries unit_id, transport and max_op_ms. -> what is missing (empty: nothing seen missing).
+ * carries unit_id, transport and max_op_ms, and restart_max_ms when its ops set restart (core §6.6, §7.5). -> what is
+ * missing (empty: nothing seen missing).
  * @param {{ revision: number, transport: number | null }} limits confirm's answer (Host.limits)
  * @param {[number, Uint8Array][]} coreDescribe fn 0's describe TLVs @returns {string[]}
  */
@@ -38,6 +39,10 @@ export function requiredMissing(limits, coreDescribe) {
   const have = new Set(coreDescribe.map(([tag]) => tag & 0x7f));
   for (const [tag, name] of REQUIRED_CORE_TAGS) if (!have.has(tag)) out.push(`describe of fn 0: ${name}`);
   if (!have.has(m.TAG_OPS)) out.push('describe of fn 0: ops');   // every fn's describe carries it (core §1.2, §7.4)
+  else if (!have.has(reg.CORE.tlv.describe.restart_max_ms)
+    && coreDescribe.some(([tag, v]) => (tag & 0x7f) === m.TAG_OPS && catalog.unpackOps(v).has(m.OP.restart))) {
+    out.push('describe of fn 0: restart_max_ms (restart is in ops)');   // core §1.2, §6.6, §7.5
+  }
   return out;
 }
 

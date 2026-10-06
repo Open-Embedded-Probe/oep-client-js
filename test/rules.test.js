@@ -397,6 +397,12 @@ test('C-10: dump says what a probe must give and did not', async () => {
     [reg.DESCRIBE_COMMON.ops, packOps([1, 2, 3])]]), []);
   assert.deepEqual(dump.requiredMissing({ revision: 1, transport: null }, []),
     ['confirm\'s transport TLV', 'describe of fn 0: unit_id', 'describe of fn 0: transport', 'describe of fn 0: max_op_ms', 'describe of fn 0: ops']);
+  /** @type {[number, Uint8Array][]} */
+  const withRestart = [[D.unit_id, utf8('u')], [D.transport, Uint8Array.of(0, 1)], [D.max_op_ms, new Uint8Array(4)],
+    [reg.DESCRIBE_COMMON.ops, packOps([1, 2, 3, m.OP.restart])]];
+  assert.deepEqual(dump.requiredMissing({ revision: 1, transport: 0 }, withRestart),
+    ['describe of fn 0: restart_max_ms (restart is in ops)']);                 // core §1.2, §6.6, §7.5
+  assert.deepEqual(dump.requiredMissing({ revision: 1, transport: 0 }, [...withRestart, [D.restart_max_ms, new Uint8Array(4)]]), []);
   const text = dump.toText({ revision: 1, maxFrame: 256, offers: [], requests: { confirm: 1, list: 1, describe: 0 }, missing: ['describe of fn 0: unit_id'] });
   assert.match(text, /\nMISSING what every probe must give \(core §1\.2, §7\.4\): describe of fn 0: unit_id\n/);
   assert.deepEqual(JSON.parse(dump.toJson({ revision: 1, maxFrame: 256, offers: [], requests: { confirm: 1, list: 1, describe: 0 }, missing: ['x'] })).missingRequired, ['x']);

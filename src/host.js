@@ -23,6 +23,7 @@ import * as reg from './registry.js';
 import { Writer, text, utf8 } from './bytes.js';
 import * as m from './message.js';
 import { Failed, InUse, Locked, NoSession, NotRestarted, NotUsable, NotV1, OepError, Rejected, Timeout, rejection } from './errors.js';
+import { restartMaxMs } from './core.js';   // core imports host too: used only inside restartProbe
 
 export const MIN_REVISION = 1, MAX_REVISION = 1;
 const OWNER = reg.CORE.tlv.open.owner;
@@ -66,7 +67,7 @@ export function checkMaxOpMs(value) {
 
 /** fn 0's restart: the probe begins its restart at most this long after its answer has left (core §6.6). */
 export const RESTART_AFTER_ANSWER_MS = reg.LIMITS.restart_after_answer_ms;
-/** restartProbe: how long the probe may take to answer a confirm again, by default. */
+/** restartProbe: the wait for a probe that declares no restart_max_ms (core §7.5). */
 export const RESTART_WAIT_MS = 10000;
 
 /** @param {number} ms */
@@ -414,15 +415,19 @@ export class Host {
    * Link, started (a serial port at its boot speed, a USB device found again once it has re-enumerated, a TCP
    * connection made again); the old link is then closed, RESTART_AFTER_ANSWER_MS waited, and reopen + confirm retried
    * until `waitMs`. Without it the link stays (a transport the restart leaves open: a UART bridge, a broker, the fake
-   * over TCP): the host waits and confirms again until `waitMs`. When the answer is lost, the same: a resend the
+   * over TCP): the host waits and confirms again until `waitMs`. `waitMs` undefined: the probe's restart_max_ms (fn 0
+   * describe, core §7.5, read before the restart), or RESTART_WAIT_MS (10 s) when it declares none (a probe that does
+   * not conform); a confirm sent before then is waited for as core §4.4 says, and none answered by then means the probe
+   * is gone (the last error is thrown, core §6.6). When the answer is lost, the same: a resend the
    * restarted probe refused no_session counts as the restart having happened. The confirm's boot_id must differ from
    * the one before (NotRestarted otherwise); everything this host remembered of the old boot is dropped (core §6.5).
    * @param {{ reopen?: () => Promise<import('./link.js').Link>, waitMs?: number }} [opts]
    * @returns {Promise<number>}
    */
-  async restartProbe({ reopen, waitMs = RESTART_WAIT_MS } = {}) {
+  async restartProbe({ reopen, waitMs } = {}) {
     await this.requireV1();
     const before = this.bootId ?? (await this.confirm()).bootId;
+    if (waitMs === undefined) waitMs = (await restartMaxMs(this)) ?? RESTART_WAIT_MS;
     const epoch = this.epoch;
     try {
       await this.call(m.CORE_FN, m.OP.restart);

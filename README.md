@@ -16,7 +16,7 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 revision 1 alone does not fix the forms, so an implementation names the spec it implements). That is the 2026-10-06
 simplification (one 10-byte request header, TLV len u16, closed fixed forms, the `ops` describe tag, no resume,
 `oep.link`), the console's send queue and the reset settle wait (f0c68bf), a longer probe.config item (d34dafa),
-oep.link source's len (4bd3a87) and an attach joining a connection (59dd028), with fn 0's optional restart from `ecd1ab9` (core §6.6); the same spec as oep-client-python. Until the freeze the Japanese text (`.ja.md`) is
+oep.link source's len (4bd3a87) and an attach joining a connection (59dd028), with fn 0's optional restart from `ecd1ab9` (core §6.6) and its describe value restart_max_ms from `3c96daf` (core §7.5); the same spec as oep-client-python. Until the freeze the Japanese text (`.ja.md`) is
 the specification's working text.
 
 What is there:
@@ -31,7 +31,9 @@ What is there:
   probe `NotUsable` -, session - every open a new one under a new random id in the request header; end, a lapsed lease
   or force release everything the session made, and a request of an ended session is `NoSession` (no resume) -, lock,
   subscribe, restart - `requestRestart()`, and `restartProbe({ reopen, waitMs })`: fn 0's restart, then wait
-  restart_after_answer_ms, open again through `reopen` when given (or keep the link), confirm and return the new boot_id,
+  restart_after_answer_ms, open again through `reopen` when given (or keep the link) and confirm, retried until the
+  probe's restart_max_ms (`core.restartMaxMs`, read before the restart; 10 s when it declares none; past it the probe is
+  gone and the last error is thrown), and return the new boot_id,
   `NotRestarted` when it stayed the same), list / describe (each fn's `ops`: `core.ops` / `offers`, `Interface.ops()` / `.offers(op)`; `core.require`
   throws, without sending, the same `Rejected` with detail unknown_operation the probe answers) / plan;
 - the interfaces: the debug wires (rvswd, swio, swd) and riscv-dm, ARM ADI / MEM-AP / Cortex-M, the target console, the

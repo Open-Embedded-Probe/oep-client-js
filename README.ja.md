@@ -15,7 +15,7 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 **実装する仕様: oep-spec の commit `59dd028`**（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
 だけでは形が決まらないので、実装は実装する仕様を名乗る）。2026-10-06 の単純化（10 byte の要求の見出し 1 つ、TLV の len は u16、
 閉じた固定の形、describe の `ops` tag、再開なし、`oep.link`）、コンソールの送りの列と reset の後の待ち（f0c68bf）、長い
-probe.config の項目（d34dafa）、oep.link の source の len（4bd3a87）、既存の connection に加わる attach（59dd028）と、`ecd1ab9` の fn 0 の任意の restart（core §6.6）。oep-client-python と同じ仕様。凍結までは日本語の文
+probe.config の項目（d34dafa）、oep.link の source の len（4bd3a87）、既存の connection に加わる attach（59dd028）と、`ecd1ab9` の fn 0 の任意の restart（core §6.6）と `3c96daf` の describe の restart_max_ms（core §7.5）。oep-client-python と同じ仕様。凍結までは日本語の文
 （`.ja.md`）が仕様の作業の文。
 
 入っているもの:
@@ -29,7 +29,9 @@ probe.config の項目（d34dafa）、oep.link の source の len（4bd3a87）�
   confirm や 1..600000 の外の max_op_ms は、その probe を `NotUsable` にする ―、セッション ― open はいつも新しい乱数の id を
   要求の見出しに置いて新しいセッションを開く。end、lease の期限切れ、force はセッションが作ったものをすべて解放し、終わった
   セッションの要求は `NoSession`（再開なし）―、ロック、購読、再起動 ― `requestRestart()` と `restartProbe({ reopen, waitMs })`: fn 0 の
-  restart の後、restart_after_answer_ms 待ち、`reopen` があればそれで開き直し（無ければ link のまま）、confirm して新しい boot_id を返す。
+  restart の後、restart_after_answer_ms 待ち、`reopen` があればそれで開き直し（無ければ link のまま）、confirm する。probe の
+  restart_max_ms（`core.restartMaxMs`。restart の前に読む。宣言が無ければ 10 s）まで繰り返し、過ぎれば probe は無くなったものとして
+  最後のエラーを投げる。新しい boot_id を返す。
   同じなら `NotRestarted` ―）、list / describe（fn ごとの `ops`: `core.ops` / `offers`、
   `Interface.ops()` / `.offers(op)`。`core.require` は送らずに、probe が答えるのと同じ detail unknown_operation の `Rejected` を
   投げる）/ plan
