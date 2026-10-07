@@ -1,6 +1,25 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) **Follow oep-spec 0098b56 .. 2c6d18d (the external review's interface re-check of 0991759), as
+  oep-client-python.** Registry and test/vectors synced; README names 2c6d18d. Breaking (wire and API):
+  `LogicCapture.configure` keeps capture §3.3's contract before sending (RangeError: samples required in one-shot and
+  repeat and refused in streaming, segments in repeat only, pretrigger only with a trigger; a pretrigger of 0 without one
+  is left out); generations wrap to 1 after 0xFFFFFFFF (`nextGeneration`) and every capture event carries one -
+  `parseCaptureEvent` / `parseGroupEvent` read it, `nextEvent` passes over an earlier start's (`staleEvents`); the
+  capture-group start answer's fixed part (`GROUP_GENERATIONS` gone; `CaptureGroup.generation`, `GroupStatus.generation`);
+  marks and segments page by common §1.3 (from the last serial + 1 mod 2^32 until more is false); `Console.streams` sends
+  first(u16); a step that is not status ok throws StepError with before / after null; `runWhere(run)`; `wireBits` /
+  `packWireBits` for spi-target data. Tests: every new vector and the ops.json events list.
+- (JA) **oep-spec 0098b56〜2c6d18d（0991759 の外部レビューのインターフェース再確認）に oep-client-python と同じく合わせた。**
+  registry と test/vectors を同期し、README は 2c6d18d を名乗る。壊れる変更（wire と API）: `LogicCapture.configure` は送る前に
+  キャプチャ §3.3 の契約を確かめる（RangeError: samples はワンショットとリピートで必須、ストリーミングでは断る。segments はリピート
+  だけ、pretrigger はトリガがあるときだけ。トリガ無しの pretrigger 0 は送らない）。世代は 0xFFFFFFFF の次が 1（`nextGeneration`）で、
+  キャプチャの出来事はどれも世代を持つ ― `parseCaptureEvent` / `parseGroupEvent` が読み、`nextEvent` は前の start のものを飛ばす
+  （`staleEvents`）。capture-group の start の応答の固定部（`GROUP_GENERATIONS` は無くなった。`CaptureGroup.generation`、
+  `GroupStatus.generation`）。marks と segments は共通部品 §1.3 でページングする（最後の serial + 1、2^32 の余りから more が false まで）。
+  `Console.streams` は first(u16) を送る。status ok でない step は before / after を null にして StepError。`runWhere(run)`。spi-target の
+  data に `wireBits` / `packWireBits`。テスト: 新しい vector すべてと ops.json の events。
 - (EN) **Discovery verifies what it finds (oep-spec 0991759, host guide §4.1), as oep-client-python.** The DNS-SD
   service name `oep` is not registered, so another service may advertise `_oep._tcp`. `src/node/discovery.js`:
   `check(found)` connects to an instance, sends confirm (an `OEP!` answer, the probing rule) and fn 0's describe, whose

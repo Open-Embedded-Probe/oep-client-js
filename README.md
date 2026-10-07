@@ -12,8 +12,11 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 
 **A first full port, ahead of the v1 freeze: expect it to be redone as the spec settles.**
 
-**The spec this implements: oep-spec commit `9118dc0`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
-revision 1 alone does not fix the forms, so an implementation names the spec it implements). That is the 2026-10-06
+**The spec this implements: oep-spec commit `2c6d18d`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
+revision 1 alone does not fix the forms, so an implementation names the spec it implements). That is the interface
+re-check of 0991759 (0098b56 .. 2c6d18d: marks and capture segments page by serial from from_serial inclusive, console
+streams' first is u16, capture's configure contract, generations that wrap past 0xFFFFFFFF to 1 and ride on every event,
+the capture-group start answer's fixed part, step / run / transfer details, spi-target bit packing), the 2026-10-06
 simplification (one 10-byte request header, TLV len u16, closed fixed forms, the `ops` describe tag, no resume), the
 console's send queue and the reset settle wait (f0c68bf), a longer probe.config item (d34dafa), an attach joining a
 connection (59dd028) and the 2026-10-06 structure (2e5dc4c .. 9c837a9, 0304f37): the core has no name (fn 0, never
