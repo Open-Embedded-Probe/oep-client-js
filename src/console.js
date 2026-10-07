@@ -82,7 +82,8 @@ export class PositionStream extends Interface {
   /** @param {bigint | number} position @param {number} maximum */
   readFrom(position, maximum = 1000) { return this.read(PositionStream.FROM_POSITION, position, maximum); }
 
-  /** One answer's marks with serial >= fromSerial (in serial order).
+  /** One answer's marks from `fromSerial` on, in serial order (common §1.3: fromSerial included; from the serial the
+   * next mark gets, none and more false; a serial no longer kept starts at the oldest kept - the serials then jump).
    * @param {number} fromSerial @returns {Promise<{ marks: Mark[], more: boolean }>} */
   async marksPage(fromSerial = 0) {
     const body = new Writer().u32(fromSerial).done();
@@ -189,14 +190,14 @@ export class Console extends PositionStream {
     /** @type {StreamInfo[]} */
     const out = [];
     for (;;) {
-      const rd = new m.Reader((await this.call(Console.STREAMS, Uint8Array.of(out.length), { locked: false })).payload);
+      const rd = new m.Reader((await this.call(Console.STREAMS, new Writer().u16(out.length).done(), { locked: false })).payload);   // first(u16)
       const more = rd.u8(), count = rd.u8();
       for (let i = 0; i < count; i++) {   // count x entry (core §2.3)
         const stream = rd.u16(), connection = rd.u16(), mechanism = rd.u8(), users = rd.u8(), state = rd.u8();
         out.push({ stream, connection, mechanism, users, state, open: state === STREAM_STATE.open });
       }
       rd.tail();
-      if (!more || !count || out.length > 0xff) return out;
+      if (!more || !count || out.length > 0xffff) return out;
     }
   }
 }

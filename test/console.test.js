@@ -88,6 +88,34 @@ test('marks are count x mark (22 bytes, no element length, core §2.3), paged wi
   assert.equal(MARK_DETAIL.closed.connection_closed, 4);
 });
 
+test('marks page by common §1.3: the last serial + 1 (wrapping) until more 0; streams take first(u16) past 255', async () => {
+  const kept = [0xfffffffe, 0xffffffff, 0, 1, 2];                      // the next mark gets 3
+  /** @param {number} serial */
+  const mark = (serial) => new Writer().u32(serial).u64(1).u8(7).u64(1).u8(0).done();
+  const { hst, log } = scripted({
+    [`${CONSOLE}:${Console.MARKS}`]: (p) => {
+      const from = new m.Reader(p.slice(2)).u32();
+      const at = from === 3 ? kept.length : Math.max(0, kept.indexOf(from));
+      const page = kept.slice(at, at + 2);
+      return ok(concat(Uint8Array.of(at + page.length < kept.length ? 1 : 0, page.length), ...page.map(mark)));
+    },
+    [`${CONSOLE}:${Console.STREAMS}`]: (p) => {
+      const first = new m.Reader(p).u16();
+      const n = Math.min(100, 300 - first);
+      const rows = Array.from({ length: n }, (_, i) => new Writer().u16(1000 + first + i).u16(1).u8(2).u8(1).u8(0).done());
+      return ok(concat(Uint8Array.of(first + n < 300 ? 1 : 0, n), ...rows));
+    },
+  });
+  const con = await Console.open(hst);
+  assert.deepEqual((await con.marks(0xfffffffe)).map((k) => k.serial), kept);
+  assert.deepEqual(log.map(([, , p]) => new m.Reader(p.slice(2)).u32()), [0xfffffffe, 0, 2]);   // last + 1 mod 2^32
+  assert.deepEqual(await con.marksPage(3), { marks: [], more: false });
+  log.length = 0;
+  const streams = await con.streams();
+  assert.equal(streams.length, 300);
+  assert.deepEqual(log.map(([, , p]) => [p.length, new m.Reader(p).u16()]), [[2, 0], [2, 100], [2, 200]]);
+});
+
 test('console write: completed partial is no error, accepted 0 is failed, write() waits for the rest', async () => {
   const taken = [3, 0, 2];
   const { hst, log } = scripted({
