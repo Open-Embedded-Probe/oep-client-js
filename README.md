@@ -12,7 +12,7 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 
 **A first full port, ahead of the v1 freeze: expect it to be redone as the spec settles.**
 
-**The spec this implements: oep-spec commit `30b2b36`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
+**The spec this implements: oep-spec commit `9118dc0`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
 revision 1 alone does not fix the forms, so an implementation names the spec it implements). That is the 2026-10-06
 simplification (one 10-byte request header, TLV len u16, closed fixed forms, the `ops` describe tag, no resume), the
 console's send queue and the reset settle wait (f0c68bf), a longer probe.config item (d34dafa), an attach joining a
@@ -27,7 +27,8 @@ internal times leave the text (attach, scan and riscv-dm's reset answer within m
 (baud, step, verify_ms), probe.config without slot lock / boot_reset and one stream a bind, gpio drive a u8 level,
 interface names 1 to 48 bytes, and a host that may run again ends the session its previous run left (host guide §5) -
 and after it (c2b8007 .. 30b2b36) probe.config's wifi item with its write-only passphrase, unset's len counting the key
-alone, and TCP discovery (DNS-SD `_oep._tcp` over mDNS, transports §3).
+alone, and TCP discovery (DNS-SD `_oep._tcp` over mDNS, transports §3), and (29902a6 .. 9118dc0) a probe with the wifi
+item answering max_frame 112 or more on every transport (`wifi_min_max_frame`) and TCP advertising as the probe's choice.
 Until the freeze the Japanese text (`.ja.md`) is the specification's working text.
 
 What is there:

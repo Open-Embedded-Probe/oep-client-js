@@ -1,6 +1,18 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) oep-spec 2b17990 .. 9118dc0, as oep-client-python c4b48b7: registry (hash 2a89c89c0d0f9244) and test/vectors
+  synced; README (EN / JA) names 9118dc0. probe.config §1.4: a probe with the wifi item answers max_frame 112 or more on
+  every transport (`wifi_min_max_frame`, `config.WIFI_MIN_MAX_FRAME`); `ProbeConfig.set` refuses a request longer than
+  the transport's max_frame before sending (RangeError naming the size, max_frame and, for a wifi set below 112, the
+  §1.4 rule; no passphrase in it). The new vector (the longest wifi set, 112 bytes, corr 0x7C) passes; 9 wifi vectors.
+  transports §3: TCP advertising is the probe's choice (openTcp with a port already works without it).
+- (JA) oep-spec 2b17990〜9118dc0（oep-client-python c4b48b7 と同じ）: registry（hash 2a89c89c0d0f9244）と test/vectors を同期し、
+  README（EN / JA）は 9118dc0 を名乗る。probe.config §1.4: wifi の項目を持つ probe はどの経路でも max_frame 112 以上を答える
+  （`wifi_min_max_frame`、`config.WIFI_MIN_MAX_FRAME`）。`ProbeConfig.set` は経路の max_frame より長い要求を送る前に断る（大きさと
+  max_frame、112 未満の probe への wifi の set なら §1.4 の規則も書いた RangeError。passphrase は入れない）。新しい vector（いちばん
+  長い wifi の set、112 byte、corr 0x7C）は通る。wifi の vector は 9 個。transports §3: TCP の probe が知らせるかは probe が選ぶ
+  （port を指す openTcp は知らせが無くても使える）。
 - (EN) The page's DFU progress: `onProgress` gets a `DfuProgress` (phase, written, total, block), not a number - the bar and the status line now show written / total bytes, and "the probe checks the image" in the manifest phase (they showed "[object Object] / N bytes" before). The other users (`usbDfuUpdate`, `updateFirmware`, test/dfu.test.js) pass it through as typed. `src/node/discovery.js`: the `_oep._tcp` query goes out of every IPv4 interface that is up and not internal (`interfaceAddresses()`, from os.networkInterfaces(): one socket each, bound to that address with `setMulticastInterface`), and once more with the system's choice; the 5353 socket joins the group on each; the answers are merged (`browse({ interfaces })`). One send from 0.0.0.0 left by one adapter only - on Windows WSL's vEthernet - and missed the probes on Wi-Fi (found by ch32rv). An interface that cannot send is left out. Tests: interfaceAddresses on a made-up interface list, a browse with an unusable address, the loopback responder sees a query from every interface address. README / docs/design (EN / JA).
 - (JA) ページの DFU の進み: `onProgress` が受けるのは数ではなく `DfuProgress`（phase、written、total、block）。バーと状態の行は書いた byte 数 / 全体を見せ、manifest の間は「probe が image を確かめている」と言う（これまでは「[object Object] / N bytes」と出ていた）。ほかの使い手（`usbDfuUpdate`、`updateFirmware`、test/dfu.test.js）は型のとおりに渡していて問題なし。`src/node/discovery.js`: `_oep._tcp` の問い合わせを、上がっていて internal でない IPv4 の口すべてから送る（`interfaceAddresses()`、os.networkInterfaces() から。口ごとに socket を 1 つ、その address に bind して `setMulticastInterface`）。加えてシステムが選ぶ口からも 1 回送る。5353 の socket は口ごとに group に入る。答えはまとめる（`browse({ interfaces })`）。0.0.0.0 から 1 回送るだけでは 1 つのアダプタ ― Windows では WSL の vEthernet ― からしか出ず、Wi-Fi の probe を見落としていた（ch32rv の発見）。送れない口は外す。試験: 作った口の一覧での interfaceAddresses、使えない address を含む browse、loopback の応答器がどの口の address からも問い合わせを受けること。README / docs/design（EN / JA）。
 - (EN) **Breaking (wire and API): oep-spec f8bb2de .. 30b2b36** (the wifi item c2b8007 / 0e0e4e3, TCP discovery 62c1988, unset's len 22f695e), as oep-client-python fa85689. `src/registry.js` is oep-spec 30b2b36's `generated/oep-v1/oep_v1_registry.js` (hash 8c9931c7fb73fc3f); `test/vectors` synced (ops.json's 8 wifi cases, corr 0x74-0x7B).

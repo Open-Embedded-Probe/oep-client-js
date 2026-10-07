@@ -39,6 +39,9 @@ export const SSID_MAX = reg.LIMITS.wifi_ssid_max_bytes;
 export const PASS_MIN = reg.LIMITS.wifi_passphrase_min_bytes;
 export const PASS_MAX = reg.LIMITS.wifi_passphrase_max_bytes;
 export const PSK_HEX = reg.LIMITS.wifi_psk_hex_digits;
+/** A probe with the wifi item answers max_frame at least this on every transport: one set of the longest wifi item
+ * (probe.config §1.4). */
+export const WIFI_MIN_MAX_FRAME = reg.LIMITS.wifi_min_max_frame;
 /** pass_len in get: a passphrase is set (none follows); in a set: keep the entry's. */
 export const PASS_SET = CFG.enum.wifi_pass_len.hidden;
 
@@ -497,10 +500,26 @@ export class ProbeConfig extends Interface {
     let hash = 0;
     if (rest.length || !removals.length) {
       const body = concat(...rest.map((it) => (it instanceof Uint8Array ? it : item(it))));
+      await this.checkFits(body);
       hash = ProbeConfig.hashAnswer(await this.call(ProbeConfig.SET, body));
     }
     if (removals.length) hash = await this.unset(removals.map((r) => /** @type {[ItemKind, number]} */ ([r.kind, r.key])));
     return hash;
+  }
+
+  /** A set request longer than the probe's max_frame is refused here, before anything is sent (RangeError): the probe
+   * could not take it. One set of the longest wifi item is wifi_min_max_frame (112) bytes, and a probe with the wifi
+   * item answers at least that on every transport (probe.config §1.4); several items may need several sets.
+   * @param {Uint8Array} body */
+  async checkFits(body) {
+    const size = m.REQUEST_HEADER + this.prefix.length + body.length;
+    const limit = (await this.host.confirmed()).maxFrame;
+    if (size <= limit) return;
+    const wifi = m.splitTlvs(body).some(([t]) => (t & 0x7f) === ITEM.wifi);
+    throw new RangeError(`probe.config set of ${size} bytes exceeds this transport's max_frame ${limit}: `
+      + (wifi && limit < WIFI_MIN_MAX_FRAME ? `a probe with the wifi item answers max_frame ${WIFI_MIN_MAX_FRAME} or more on `
+        + 'every transport (probe.config §1.4) - this one does not; ' : '')
+      + 'send fewer items per set');
   }
 
   /** Remove the items of these [kind, key] (probe.config §2 unset): a key that is not there is nothing; the whole must

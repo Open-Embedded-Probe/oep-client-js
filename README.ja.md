@@ -12,7 +12,7 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 
 **v1 の凍結の前に、ひととおり移した版です。仕様が固まるにつれて作り直す前提です。**
 
-**実装する仕様: oep-spec の commit `30b2b36`**（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
+**実装する仕様: oep-spec の commit `9118dc0`**（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
 だけでは形が決まらないので、実装は実装する仕様を名乗る）。2026-10-06 の単純化（10 byte の要求の見出し 1 つ、TLV の len は u16、
 閉じた固定の形、describe の `ops` tag、再開なし）、コンソールの送りの列と reset の後の待ち（f0c68bf）、長い probe.config の項目
 （d34dafa）、既存の connection に加わる attach（59dd028）と、2026-10-06 の構造（2e5dc4c〜9c837a9、0304f37）: 本体は名前を
@@ -25,7 +25,8 @@ TLV は無い（知らない非 critical の TLV は跡を残さず無視し、�
 port_speed は握手だけ（baud、step、verify_ms）、probe.config は slot の錠も boot_reset も無く bind はストリーム 1 本、gpio の drive は
 u8 の段、インターフェースの名前は 1〜48 byte、走り直す host は前の実行が残したセッションを終える（host ガイド §5）― に、その後
 （c2b8007〜30b2b36）の probe.config の wifi の項目（passphrase は書くだけ）、unset の len は key だけを数えること、TCP の probe の
-見つけ方（mDNS の DNS-SD `_oep._tcp`、transports §3）を加えたもの。
+見つけ方（mDNS の DNS-SD `_oep._tcp`、transports §3）、（29902a6〜9118dc0）wifi の項目を持つ probe はどの経路でも max_frame 112
+以上を答えること（`wifi_min_max_frame`）、TCP の probe が自分を知らせるかは probe が選ぶことを加えたもの。
 凍結までは日本語の文（`.ja.md`）が仕様の作業の文。
 
 入っているもの:

@@ -522,6 +522,12 @@ async function wifiOnClient(c, a) {
   const refused = (/** @type {number} */ detail) => (/** @type {unknown} */ e) => e instanceof Rejected && e.result.detail === detail;
   if (name.startsWith('probe.config set: wifi entry 0')) {
     assert.equal(await p.set([new config.Wifi({ index: 0, ssid: 'lab', passphrase: 'password1' })]), 0x5A5A0001);
+  } else if (name.includes('the longest wifi item')) {
+    // 32-byte ssid and 64 hex digits: a 112-byte request (wifi_min_max_frame), sent at a max_frame of 112
+    /** @type {any} */ (hst.limits).maxFrame = reg.LIMITS.wifi_min_max_frame;
+    const w = new config.Wifi({ index: 0, ssid: 's'.repeat(config.SSID_MAX), passphrase: '0123456789abcdef'.repeat(4) });
+    assert.equal(await p.set([w]), 0x5A5A0003);
+    assert.equal(sent[0].length, config.WIFI_MIN_MAX_FRAME);
   } else if (name.startsWith('probe.config get')) {
     const { hash, items } = await p.get();
     const [w] = items.map(([t, v]) => config.decode(t, v));
@@ -554,7 +560,17 @@ async function wifiOnClient(c, a) {
 
 test('ops: the wifi vectors (probe.config §1.4, §3.3) are all known here', () => {
   const wifi = OPS.filter((/** @type {any} */ c) => c.name.startsWith('probe.config') && c.state.startsWith('items has wifi'));
-  assert.equal(wifi.length, 8);
+  assert.equal(wifi.length, 9);
+});
+
+test('ops: a wifi set past the probe\'s max_frame is refused before sending (probe.config §1.4)', async () => {
+  const c = OPS.find((/** @type {any} */ x) => x.name.includes('the longest wifi item'));
+  const { hst, sent } = client(c, S);
+  /** @type {any} */ (hst.limits).maxFrame = reg.MIN_MAX_FRAME;
+  const w = new config.Wifi({ index: 0, ssid: 's'.repeat(config.SSID_MAX), passphrase: '0123456789abcdef'.repeat(4) });
+  await assert.rejects(new config.ProbeConfig(hst, 8, config.ProbeConfig.NAME).set([w]),
+    (e) => e instanceof RangeError && e.message.includes('max_frame 64') && e.message.includes('112') && !e.message.includes('0123'));
+  assert.equal(sent.length, 0);
 });
 
 test('ops: where this client has the op, its request is the case\'s and its reading gives the case\'s values', async () => {
