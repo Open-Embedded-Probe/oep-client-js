@@ -263,3 +263,13 @@ test('the uart stream is the plan\'s and its position never goes back (fixture ย
     bench.stop();
   }
 });
+
+test('spi-target wire bits: MSB / LSB first, a partial last byte (fixture ยง4)', async () => {
+  const { wireBits, packWireBits } = await import('../src/fixture.js');
+  const wire = [1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1];
+  for (const [order, packed] of /** @type {[number, number[]][]} */ ([[0, [0xc0, 0xb0]], [1, [0x03, 0x0d]]])) {
+    assert.deepEqual([...packWireBits(wire, order)], packed);
+    assert.deepEqual(wireBits(Uint8Array.from(packed), 12, order), wire);
+    assert.equal(wireBits(Uint8Array.from(packed), 99, order).length, 16);   // never past the bytes there are
+  }
+});

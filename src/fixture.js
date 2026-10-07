@@ -351,7 +351,7 @@ export class I2cTarget extends Interface {
    * without them the bus needs its own. */
   async internalPullups() { return (await this.declarations()).internalPullups; }
 
-  /** @type {bigint | null} when the probe received the last frame readRx gave (its clock, ns), when it says */
+  /** @type {bigint | null} the STOP or next START that ended the last frame readRx gave (its clock, ns), when it says */
   lastNs = null;
 
   /** The plan's (fn, role, channel) assignments for core.planApply. @param {number} sda @param {number} scl
@@ -403,6 +403,22 @@ export class I2cTarget extends Interface {
 }
 
 /** @typedef {{ state: number, mode: number, bitOrder: number, armed: boolean, queued: number, transactions: number, errors: number }} SpiStatus */
+
+/** The wire bits of an spi-target transaction in the order they came (fixture §4): wire bit k is in byte k / 8, at bit
+ * 7 - k mod 8 MSB first (bitOrder 0) or k mod 8 LSB first (1); at most the bits `data` holds.
+ * @param {Uint8Array} data @param {number} bits @param {number} bitOrder @returns {number[]} */
+export function wireBits(data, bits, bitOrder = 0) {
+  const n = Math.min(bits, 8 * data.length);
+  return Array.from({ length: n }, (_, k) => (data[k >> 3] >> (bitOrder ? k & 7 : 7 - (k & 7))) & 1);
+}
+
+/** The inverse of wireBits: the bytes for these wire bits (a partial last byte's missing bits 0).
+ * @param {number[]} seq @param {number} bitOrder */
+export function packWireBits(seq, bitOrder = 0) {
+  const out = new Uint8Array((seq.length + 7) >> 3);
+  seq.forEach((b, k) => { if (b) out[k >> 3] |= 1 << (bitOrder ? k & 7 : 7 - (k & 7)); });
+  return out;
+}
 
 /**
  * oep.fixture.spi-target (fixture §4): one CS-framed transaction at a time - arm() with the MISO bytes, then readRx()
@@ -458,8 +474,10 @@ export class SpiTarget extends Interface {
     await this.call(SpiTarget.ARM, concat(new Writer().u16(length).u16(tx.length).done(), tx));
   }
 
-  /** -> transactions still queued, bits clocked, the MOSI bytes of the oldest finished transaction and ns: when it
-   * ended on the probe's clock (TLV ns, else null; also this.lastNs). */
+  /** -> transactions still queued, bits clocked (saturating at 0xFFFFFFFF), the MOSI bytes of the oldest finished
+   * transaction and ns: when CS went inactive, ending it, on the probe's clock (TLV ns, else null; also this.lastNs).
+   * The bytes hold the wire bits as wireBits reads them (fixture §4: bit k in byte k / 8, MSB or LSB first by
+   * bit_order, a partial last byte's missing bits 0). */
   async readRx() {
     const rd = new m.Reader((await this.call(SpiTarget.READ_RX)).payload);
     const pending = rd.u8(), bits = rd.u32(), data = rd.counted(2);
