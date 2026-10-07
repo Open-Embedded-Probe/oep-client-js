@@ -416,9 +416,9 @@ test('API: searchRetries, StepError.stepLeft, internalPullups', async () => {
   assert.equal(w.searchRetries, 3);
   assert.equal(w.dpc, 0x100);
   const dm = await RiscvDm.on(hst, 1);
-  await assert.rejects(dm.step(), (e) => e instanceof StepError && e instanceof TargetError && e.stepLeft && e.before === 0x100);
+  await assert.rejects(dm.step(), (e) => e instanceof StepError && e instanceof TargetError && e.stepLeft && e.before === null);   // not read unless ok (§4.2)
   stepTail = new Uint8Array();
-  await assert.rejects(dm.step(), (e) => e instanceof StepError && !e.stepLeft && e.after === 0x104);
+  await assert.rejects(dm.step(), (e) => e instanceof StepError && !e.stepLeft && e.after === null);
   stepStatus = 0;
   await assert.rejects(dm.step(), StepError);                      // outcome failed: not a step that worked
 

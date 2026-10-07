@@ -81,15 +81,18 @@ export class TargetError extends OepError {
 }
 
 /**
- * step did not get the hart back to debug mode (oep-if-debug §4.2, P2-○4): `stepLeft` - the probe could not halt it
- * again (the hart runs, dcsr.step may still be set: halt it and clear dcsr.step); otherwise it is halted again with
- * `after` (dpc) valid.
+ * step did not succeed (oep-if-debug §4.2, P2-○4): `stepLeft` - the probe could not halt the hart again (it runs,
+ * dcsr.step may still be set: halt it and clear dcsr.step); otherwise the hart is halted again (or was not halted to
+ * begin with). moved, dpc_before and dpc_after mean something only with status ok - the probe sends 0 otherwise and they
+ * are not read: `before` / `after` are null; a halted hart's dpc is read with dmi.
  */
 export class StepError extends TargetError {
-  /** @param {number} status @param {m.Result} result @param {number} before @param {number} after @param {boolean} stepLeft */
-  constructor(status, result, before, after, stepLeft) {
+  /** @param {number} status @param {m.Result} result @param {boolean} stepLeft */
+  constructor(status, result, stepLeft) {
     super('step', status, result);
-    this.before = before; this.after = after; this.stepLeft = stepLeft;
+    /** @type {number | null} */ this.before = null;
+    /** @type {number | null} */ this.after = null;
+    this.stepLeft = stepLeft;
   }
 }
 
@@ -417,10 +420,17 @@ export class StepListError extends TargetError {
 
 /** run's answer (§4.4). stopped: the hart halted on its own (ebreak) before timeoutMs; notHalted: the limit passed and
  * the probe could not halt the hart (dpc and values mean nothing); notRun: the preparation (registers, dcsr, pc) failed
- * - the hart was not run and is still halted, the loader did not run (dpc means nothing); values: the registers asked
- * for in `outs`, in order.
+ * - the hart was not run and is still halted, the loader did not run (dpc means nothing); an invalid dpc is 0, so
+ * runWhere() shows it only when it means something; elapsedUs: from the resumereq that started the hart to the halt
+ * seen, made or given up (the probe's measure), 0 when not run; values: the registers asked for in `outs`, in order.
  * @typedef {{ status: number, stopped: boolean, notHalted: boolean, notRun: boolean, dpc: number, elapsedUs: number,
  *   values: number[] }} RunResult */
+
+/** The dpc of a run for a message, never an invalid one (debug §4.4). @param {RunResult} run */
+export function runWhere(run) {
+  if (run.notRun) return 'not run';
+  return run.notHalted ? 'not halted, dpc unknown' : `dpc 0x${run.dpc.toString(16)}`;
+}
 
 /** run's `stopped`: 0 the limit passed and the probe halted it, 1 stopped on its own, 2 not halted, 3 not run. */
 export const RUN_STOPPED = RV.enum.run_stopped;
@@ -609,8 +619,9 @@ export class RiscvDm extends Interface {
   async resetHalt() { return (await this.resetMode(RiscvDm.RESET_HALT)).pc; }
 
   /** One instruction (dcsr.step, one resume, privilege kept). -> { moved, before, after } (dpc before / after, §4.2). A
-   * hart that did not come back throws StepError (§4.2, P2-○4): `stepLeft` false - the probe halted it with haltreq
-   * and restored it, `after` valid; true (answer TLV step_left) - it could not halt it again: the hart runs and
+   * hart that did not come back, and any status but ok, throws StepError (§4.2, P2-○4) without moved or the dpcs (0
+   * unless status ok, not read): `stepLeft` false - the probe halted it with haltreq and restored it (read its dpc with
+   * dmi); true (answer TLV step_left) - it could not halt it again: the hart runs and
    * dcsr.step may still be set, so the host halts it and clears dcsr.step. DATA0 is written back first (`restoreData`). */
   async step() {
     await this.restoreData();
@@ -618,7 +629,7 @@ export class RiscvDm extends Interface {
     const rd = ran(r);
     const status = rd.u8(), moved = rd.u8() !== 0, before = rd.u32(), after = rd.u32();
     const tail = rd.tail();
-    if (status !== OK || !r.succeeded) throw new StepError(status, r, before, after, tail.get(RiscvDm.TAG_STEP_LEFT) !== undefined);
+    if (status !== OK || !r.succeeded) throw new StepError(status, r, tail.get(RiscvDm.TAG_STEP_LEFT) !== undefined);   // §4.2
     return { moved, before, after };
   }
 
