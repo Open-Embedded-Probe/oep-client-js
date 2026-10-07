@@ -90,8 +90,8 @@ test('a segment without a trigger, and bytes after the known ones skipped', () =
   const ev = c.parseCaptureEvent(Uint8Array.of(0x05, 3, 0, 7, 0, c.EVENT_SEGMENT, ...b));
   assert.deepEqual([ev.fn, ev.seq, ev.segment?.samples], [3, 7, 200192]);
   const trig = c.parseCaptureEvent(Uint8Array.of(0x05, 3, 0, 8, 0, c.EVENT_TRIGGERED,
-    ...new Writer().u32(0).u32(5).u64(12345n).u8(1).done()));
-  assert.deepEqual([trig.serial, trig.triggerIndex, trig.triggerNs], [0, 5, 12345n]);
+    ...new Writer().u32(0).u32(5).u64(12345n).u32(3).u8(1).done()));   // ... generation(u32), then a later revision's byte
+  assert.deepEqual([trig.serial, trig.triggerIndex, trig.triggerNs, trig.generation, ev.generation], [0, 5, 12345n, 3, 3]);
 });
 
 /** A data frame (core §11.2): role fn seq position(u64) len(u16) data [TLV generation].
@@ -256,7 +256,7 @@ test('the classic ESP32 sampler takes a byte a sample', opts, () => withBench(as
 
 test('a rate is the source divided by a whole number; query changes nothing', opts, () => withBench(async ({ hst, lc }) => {
   await planApply(hst, [[lc.fn, 0, 20]]);
-  const q = await lc.query({ rate: 3_000_000 });
+  const q = await lc.query({ rate: 3_000_000, samples: 100 });
   assert.equal(q.rateNum * 7, q.rateDen * 20_000_000);   // at or under the one asked
   assert.equal(lc.config, null);
 }));
@@ -477,8 +477,9 @@ test('a group starts logic and analog together and marks the trigger on both', o
   const { startNs } = await grp.start([lc, an]);
   assert.ok(lc.armedMs !== null && an.armedMs === lc.armedMs);
   assert.deepEqual([...grp.generations], [[lc.fn, 1], [an.fn, 1]]);       // the group's start names each track's generation
-  assert.deepEqual([lc.generation, an.generation], [1, 1]);
+  assert.deepEqual([lc.generation, an.generation, grp.generation], [1, 1, 1]);   // the group's own generation (§4.1)
   const st = await grp.wait();
+  assert.equal(st.generation, 1);
   assert.deepEqual([st.startNs, st.triggerFn], [startNs, lc.fn]);
   const [ls] = await lc.segments();
   const [as] = await an.segments();
@@ -492,9 +493,9 @@ test('a group starts logic and analog together and marks the trigger on both', o
   assert.equal(as.triggerIndex, expect);
   assert.equal(expect, 37);
   const trig = await grp.nextEvent([c.GROUP_EVENT_TRIGGERED], 2000);
-  assert.deepEqual([trig?.triggerFn, trig?.triggerNs], [lc.fn, st.triggerNs]);
+  assert.deepEqual([trig?.triggerFn, trig?.triggerNs, trig?.generation], [lc.fn, st.triggerNs, 1]);
   const stopped = await grp.nextEvent([c.GROUP_EVENT_STOPPED], 2000);
-  assert.equal(stopped?.reason, c.STOPPED_REASON.complete);
+  assert.deepEqual([stopped?.reason, stopped?.generation], [c.STOPPED_REASON.complete, 1]);
   await grp.bind([]);
   await an.start();                                                    // unbound: its own again
 }));
@@ -532,14 +533,14 @@ test('what the probe cannot do is refused unsupported, naming the tag', opts, ()
 test('configure: a value the probe does not handle is unsupported with the tag as received, bit 7 set or not (core §2.3, capture §3.3)', opts, () => withBench(async ({ hst, lc }) => {
   await planApply(hst, [[lc.fn, 0, 20]]);
   for (const critical of [false, true]) {
-    const body = concat(m.tlv(c.MODE, [c.ONE_SHOT], true), m.tlv(c.RATE, u32(1), critical));   // a rate under rate_range
+    const body = concat(m.tlv(c.MODE, [c.ONE_SHOT], true), m.tlv(c.RATE, u32(1), critical), m.tlv(c.SAMPLES, u32(100)));   // a rate under rate_range
     for (const op of [c.LogicCapture.CONFIGURE, c.LogicCapture.QUERY_OP]) {
       await assert.rejects(hst.request(lc.fn, op, body, { locked: op === c.LogicCapture.CONFIGURE }),
         (e) => e instanceof Unsupported && e.result.payload[0] === (c.RATE | (critical ? c.CRITICAL : 0)));
     }
   }
   const r = await hst.request(lc.fn, c.LogicCapture.CONFIGURE, concat(m.tlv(c.MODE, [c.ONE_SHOT]), m.tlv(c.RATE, u32(1_000_000)),
-    m.tlv(0x7e, [1])));                                                // an unknown non-critical TLV: skipped silently
+    m.tlv(c.SAMPLES, u32(100)), m.tlv(0x7e, [1])));                                                // an unknown non-critical TLV: skipped silently
   const tags = new Set(m.splitTlvs(r.payload).map(([t]) => t));
   assert.ok(tags.has(c.ACTUAL_RATE) && ![0x54, 0x5a, 0x7f].some((t) => tags.has(t)));   // no timing, rate_accuracy, ignored
 }));
@@ -554,4 +555,42 @@ test('describe: mode is mode max_samples max_segments; no background, budgets or
     assert.ok(!d.some(([t]) => [0x42, 0x43, 0x47, 0x48, 0x49].includes(t & 0x7f)));
   }
   assert.deepEqual((await describe(hst, grp.fn)).map(([t]) => t & 0x7f).filter((t) => t >= 0x40), [0x40]);   // tracks only
+}));
+
+test('events of an earlier start are passed over (capture §3.4)', opts, () => withBench(async ({ hst, lc }) => {
+  await planApply(hst, [[lc.fn, 0, 20]]);
+  await lc.configure({ rate: 1_000_000, samples: 64 });
+  await lc.subscribe();
+  await lc.start();                                                    // generation 1: segment, stopped
+  await lc.start();                                                    // generation 2: its events after 1's
+  const seg = await lc.nextEvent(null, 2000);
+  assert.deepEqual([seg?.kind, seg?.generation, lc.staleEvents], [c.EVENT_SEGMENT, 2, 2]);
+  const stopped = await lc.nextEvent(null, 2000);
+  assert.deepEqual([stopped?.kind, stopped?.reason, stopped?.generation], [c.EVENT_STOPPED, c.STOPPED_REASON.complete, 2]);
+}));
+
+test('the configure contract is kept before sending (capture §3.3)', async () => {
+  const sent = [];
+  const lc = new c.LogicCapture(/** @type {any} */ ({ call: () => { sent.push(1); throw new Error('sent'); } }), 7, c.LogicCapture.NAME);
+  for (const [o, words] of /** @type {[any, RegExp][]} */ ([
+    [{}, /samples is required/], [{ mode: c.REPEAT }, /samples is required/], [{ mode: c.STREAMING, samples: 10 }, /no samples/],
+    [{ samples: 10, segments: 2 }, /repeat only/], [{ samples: 10, pretrigger: 5 }, /needs a trigger/],
+    [{ samples: 10, trigger: [c.IMMEDIATE, 0, 0], pretrigger: 5 }, /needs a trigger/]])) {
+    await assert.rejects(lc.configure({ rate: 1_000_000, ...o }), (e) => e instanceof RangeError && words.test(e.message));
+  }
+  assert.equal(sent.length, 0);
+  assert.deepEqual([c.nextGeneration(0), c.nextGeneration(0xffffffff), c.nextGeneration(41)], [1, 1, 42]);
+});
+
+test('the group start answer\'s fixed part, the group\'s generation in status (capture §4.1)', opts, () => withBench(async ({ hst, lc }) => {
+  const an = await c.AnalogCapture.open(hst);
+  const grp = await c.CaptureGroup.open(hst);
+  await planApply(hst, [[lc.fn, 0, 20], [an.fn, 0, 16]]);
+  await lc.configure({ rate: 1_000_000, samples: 100 });
+  await an.configure({ rate: 10_000, samples: 100 });
+  await grp.bind([an, lc]);                                            // bind order: analog first
+  await grp.start([lc, an]);
+  await grp.start([lc, an]);
+  assert.deepEqual([grp.generation, [...grp.generations]], [2, [[an.fn, 2], [lc.fn, 2]]]);
+  assert.equal((await grp.status()).generation, 2);
 }));

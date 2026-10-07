@@ -20,7 +20,7 @@ import * as m from '../src/message.js';
 import { fromHex, hex } from '../src/bytes.js';
 import { FnNotUsable, Locked, NotUsable, Rejected, Unsupported, rejection } from '../src/errors.js';
 import * as reg from '../src/registry.js';
-import { getU32 } from '../src/bytes.js';
+import { concat, getU32 } from '../src/bytes.js';
 import { Host } from '../src/host.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -464,7 +464,28 @@ async function onClient(c) {
       });
     }
     else if (name.includes('n = 0')) assert.deepEqual(await dm.dmi([]), { done: 0, values: [] });
+    else if (name.includes('step on a running hart')) {            // debug §4.2: moved and the dpcs are not read
+      await assert.rejects(dm.step(), (e) => e instanceof rv.StepError && e.status === reg.STATUS.state && e.before === null
+        && e.after === null && !e.stepLeft);
+      return sent.slice(-1);
+    }
     else assert.deepEqual(await dm.dmi([rv.RiscvDm.stepRead(0x11)]), { done: 1, values: [0x00400382] });
+    return sent;
+  }
+  if (name.startsWith('arm-adi transfer')) {
+    const { ArmAdi } = await import('../src/arm.js');
+    const { hst, sent } = client(c, S);
+    const adi = new ArmAdi(hst, r.fn, ArmAdi.NAME, r.payload.slice(0, 2));
+    assert.deepEqual(await adi.transfer(new Uint8Array()), []);         // n = 0: success, done 0 (debug §6)
+    assert.equal(adi.lastAck, 0);
+    return sent;
+  }
+  if (name.startsWith('spi-target read_rx')) {
+    const { SpiTarget, wireBits } = await import('../src/fixture.js');
+    const { hst, sent } = client(c, S);
+    const got = await new SpiTarget(hst, r.fn, SpiTarget.NAME).readRx();
+    assert.deepEqual([got.pending, got.bits, got.ns], [0, 12, null]);
+    assert.deepEqual(wireBits(got.data, got.bits, name.includes('LSB first') ? 1 : 0), [1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1]);
     return sent;
   }
   if (name.startsWith('console')) {
@@ -472,7 +493,16 @@ async function onClient(c) {
     const { hst, sent } = client(c);
     const con = new Console(hst, r.fn, Console.NAME);
     con.stream = 2;
-    if (name.startsWith('console marks')) {
+    if (name.startsWith('console marks') && c.state.includes('marks 5 to 8 kept')) {   // common §1.3
+      const from = getU32(r.payload, 2);
+      const { marks, more } = await con.marksPage(from);
+      const want = /** @type {Record<number, [number[], boolean]>} */ ({ 3: [[5, 6], true], 5: [[5, 6], true], 7: [[7, 8], false], 9: [[], false] })[from];
+      assert.deepEqual([marks.map((k) => k.serial), more], want);
+      for (const k of marks) assert.deepEqual([Number(k.position), Number(k.timeNs), k.detail], [10 * k.serial, 1_000_000 * k.serial, k.serial]);
+    } else if (name.startsWith('console streams') && name.includes('beyond the count')) {
+      const rd = new m.Reader((await hst.call(r.fn, Console.STREAMS, Uint8Array.of(1, 0), { locked: false })).payload);
+      assert.deepEqual([rd.u8(), rd.u8()], [0, 0]);                     // first(u16) past the count: the last page
+    } else if (name.startsWith('console marks')) {
       const { marks, more } = await con.marksPage(0);
       assert.equal(more, false);
       assert.deepEqual(marks.map((k) => [k.serial, Number(k.position), k.kind, Number(k.timeNs), k.detail]), [[0, 0, 3, 1_000_000, 0]]);
@@ -503,12 +533,45 @@ async function onClient(c) {
   }
   if (name.startsWith('logic segments')) {
     const { hst, sent } = client(c);
-    const { segments, more } = await new LogicCapture(hst, 9, LogicCapture.NAME).segmentsPage(0);
+    const { segments, more } = await new LogicCapture(hst, 9, LogicCapture.NAME).segmentsPage(getU32(r.payload));
     assert.equal(more, false);
-    assert.deepEqual(segments.map((s) => [s.serial, Number(s.position), Number(s.samples), Number(s.startNs), s.generation]), [[0, 0, 1000, 5_000_000, 1]]);
+    if (name.includes('from_serial = serial_done')) assert.deepEqual(segments, []);   // common §1.3 paging 2
+    else assert.deepEqual(segments.map((s) => [s.serial, Number(s.position), Number(s.samples), Number(s.startNs), s.generation]), [[0, 0, 1000, 5_000_000, 1]]);
+    return sent;
+  }
+  if (name.startsWith('logic configure without rate')) return null;   // the client always sends mode and rate
+  if (name.startsWith('logic configure') || name.startsWith('logic query')) {
+    const cap = await import('../src/capture.js');
+    const { hst, sent } = client(c, c.state.includes('session S') ? S : null);
+    const lc = new LogicCapture(hst, 9, LogicCapture.NAME);
+    if (name.includes('streaming with samples')) {
+      await assert.rejects(lc.configure({ rate: 1_000_000, mode: cap.STREAMING, samples: 1000, query: true }), /streaming takes no samples/);
+      assert.equal(sent.length, 0);
+      return null;                                                    // refused before sending
+    }
+    const got = await lc.configure({ rate: 20_000_000, samples: 200_000 });
+    assert.deepEqual([got.rate, got.width, got.positions, got.samples, got.segments, got.blockingMs], [20_000_000, 2, [0, 1], 200_000, 1, 0]);
+    return [uncritical(sent[0])];
+  }
+  if (name.startsWith('capture-group start')) {
+    const { AnalogCapture, CaptureGroup } = await import('../src/capture.js');
+    const { hst, sent } = client(c, S);
+    const logic = new LogicCapture(hst, 9, LogicCapture.NAME), analog = new AnalogCapture(hst, 13, AnalogCapture.NAME);
+    const grp = new CaptureGroup(hst, 12, CaptureGroup.NAME);
+    const { blockingMs, startNs } = await grp.start([logic, analog]);
+    assert.deepEqual([blockingMs, Number(startNs), grp.generation, [...grp.generations], logic.generation, analog.generation],
+      [0, 7_000_000, 5, [[9, 4], [13, 2]], 4, 2]);
     return sent;
   }
   return null;
+}
+
+/** A request with bit 7 of its TLV tags cleared: this client sends mode and rate critical (its own choice, capture §3.3),
+ * the vectors send them plain - the same request otherwise. @param {Uint8Array} frame */
+function uncritical(frame) {
+  const q = m.Request.unpack(frame);
+  const body = concat(...m.splitTlvs(q.payload).map(([t, v]) => m.tlv(t & 0x7f, v)));
+  return new m.Request(q.corr, q.fn, q.op, body, q.session).pack();
 }
 
 /** The wifi vectors (probe.config §1.4, §3.3: every case whose state starts "items has wifi") as this client sends and
@@ -649,4 +712,39 @@ test('ops encoding: an fn whose ops is invalid is not used (FnNotUsable), the re
   }
   const { hst } = describing(good, catalog.packOps([1, 2, 0x30, 0x32]));
   assert.deepEqual(await core.ops(hst, 5), new Set([1, 2, 0x30, 0x32]));
+});
+
+// ---- notification frames (ops.json events): capture events carry their generation (capture §3.4, §4.2) ---------------
+
+const EVENTS = load('ops.json').events;
+
+test('events: each read with its generation; one of an earlier generation is passed over', async () => {
+  const cap = await import('../src/capture.js');
+  assert.equal(EVENTS.length, 4);
+  for (const c of EVENTS) {
+    const frame = hx(c.event_hex);
+    const fn = frame[1] | (frame[2] << 8);
+    const group = c.fns[String(fn)] === 'oep.fixture.capture-group';
+    const e = (group ? cap.parseGroupEvent : cap.parseCaptureEvent)(frame);
+    assert.equal(e.generation, c.generation, c.name);
+    // the current generation: the logic's start answered 4, the group is at 5
+    const events = [frame];
+    const link = { events, nextEvent: (/** @type {(f: Uint8Array) => boolean} */ match) => {
+      const at = events.findIndex(match);
+      return Promise.resolve(at >= 0 ? events.splice(at, 1)[0] : null);
+    } };
+    const hst = /** @type {any} */ ({ link });
+    const track = group ? new cap.CaptureGroup(hst, fn, cap.CaptureGroup.NAME) : new cap.LogicCapture(hst, fn, cap.LogicCapture.NAME);
+    track.generation = group ? 5 : 4;
+    const current = await track.nextEvent(null, 0);
+    if (c.name.includes('previous generation')) {
+      assert.deepEqual([e.kind, e.reason, current, track.staleEvents], [cap.EVENT_STOPPED, cap.STOPPED_REASON.host, null, 1], c.name);
+    } else if (group && e.kind === cap.GROUP_EVENT_TRIGGERED) {
+      assert.deepEqual([e.triggerFn, Number(e.triggerNs), current?.generation], [9, 7_050_000, 5], c.name);
+    } else if (e.kind === cap.EVENT_TRIGGERED) {
+      assert.deepEqual([e.serial, e.triggerIndex, Number(e.triggerNs), current?.generation], [0, 1000, 7_050_000, 4], c.name);
+    } else {
+      assert.deepEqual([e.kind, e.reason, e.error, current?.generation], [cap.GROUP_EVENT_STOPPED, cap.STOPPED_REASON.complete, 0, 5], c.name);
+    }
+  }
 });

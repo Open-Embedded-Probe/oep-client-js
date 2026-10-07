@@ -6,12 +6,16 @@
 // uncertainty, the probe's known corrections applied. Stream positions are u64 too (BigInt). Analog values are always
 // raw; the probe's 1st-order scale, its calibration data and its reference are for the host to choose from.
 //
-// Every start begins a new generation (u32, from 1): segment serials and positions count from 0 inside it, and read and
-// release name it, so a read sent for the last capture never returns the next one's bytes (oep-if-capture §3.2). The
+// Every start begins a new generation (u32: 1 at the first start after boot, 0xFFFFFFFF followed by 1, 0 only before the
+// first start; compared for equality only): segment serials and positions count from 0 inside it, and read and release
+// name it, so a read sent for the last capture never returns the next one's bytes (oep-if-capture §3.2, §3.4). The
 // client keeps it (`LogicCapture.generation`, from start / status / the group's start) and passes it on; `readSegment`
-// takes the segment's own.
+// takes the segment's own. Every event carries the generation it was made in (the group's events the group's): one of an
+// earlier start may come after the start's answer (core §11.4), so `nextEvent` passes over it (`staleEvents`). Segment
+// serials wrap (core §2.6) and segments pages by common §1.3.
 //
-// configure: a value of one of its TLVs the probe cannot honour is refused (rejected unsupported, 0x0B, payload = the
+// configure (§3.3's contract, checked before sending - RangeError): mode and rate always; samples in modes 1 and 2,
+// never in mode 3; segments in mode 2 only; pretrigger only with a trigger (type other than 0). A value of one of its TLVs the probe cannot honour is refused (rejected unsupported, 0x0B, payload = the
 // tag as sent; oep-core §2.3, oep-if-capture §3.3) - every capture probe implements these tags, so the critical bit
 // changes nothing there; this host sends mode, rate, trigger, pretrigger and frontend critical anyway (its own choice,
 // for a probe that does not know a tag). The probe rounds samples down to its limit and the answer (Config.samples /
@@ -46,8 +50,9 @@ export const FACTORY = ANA.tlv.calibration_answer.factory, VREFINT = ANA.tlv.cal
 export const STATUS_ERROR = CAP.tlv.status_answer.error;
 /** a data frame's TLV: its generation (always there in streaming) */
 export const DATA_GENERATION = CAP.tlv.data.generation;
-/** the group's start answer TLV: n × (fn, generation) */
-export const GROUP_GENERATIONS = GRP.tlv.start_answer.generations;
+/** The generation after `g` (oep-if-capture §3.4): u32, 0xFFFFFFFF is followed by 1 (0 means "before the first start").
+ * @param {number} g */
+export const nextGeneration = (g) => ((g + 1) >>> 0) || 1;
 /** @type {Record<number, string>} */
 export const REFERENCE_SOURCE = Object.fromEntries(Object.entries(ANA.enum.reference_source).map(([k, v]) => [v, k]));
 /** configure's TLVs this host sends critical (its own choice: the rule is the same with or without bit 7, core §2.3). */
@@ -269,10 +274,12 @@ export function takePushes(link, fn) {
 
 /**
  * A capture track's event (oep-if-capture §3.4) decoded: `kind fixed-part [TLV]`. Bytes after the known fields (a
- * later revision's) are skipped; a kind this client does not know comes back with only its payload. error: a stopped
- * event's reason 3 says why (the same values as status's error).
- * @typedef {{ fn: number, seq: number, kind: number, payload: Uint8Array, segment?: Segment, reason?: number, error?: number,
- *   serial?: number, triggerIndex?: number | null, triggerNs?: bigint | null, triggerFn?: number }} CaptureEvent
+ * later revision's) are skipped; a kind this client does not know comes back with only its payload (generation null).
+ * error: a stopped event's reason 3 says why (the same values as status's error). generation: the start it was made in
+ * (§3.4; the group's for the group's events, §4.2) - a fixed part too short for it throws ShortPayload.
+ * @typedef {{ fn: number, seq: number, kind: number, payload: Uint8Array, generation: number | null, segment?: Segment,
+ *   reason?: number, error?: number, serial?: number, triggerIndex?: number | null, triggerNs?: bigint | null,
+ *   triggerFn?: number }} CaptureEvent
  */
 
 /** @param {Uint8Array} frame  role(0x05) fn(u16) seq(u16) kind(u8) payload @returns {CaptureEvent} */
@@ -280,21 +287,22 @@ export function parseEvent(frame) {
   const rd = new m.Reader(frame);
   rd.u8();
   const fn = rd.u16(), seq = rd.u16(), kind = rd.u8();
-  return { fn, seq, kind, payload: frame.slice(rd.at) };
+  return { fn, seq, kind, payload: frame.slice(rd.at), generation: null };
 }
 
 /** @param {Uint8Array} frame */
 export function parseCaptureEvent(frame) {
   const e = parseEvent(frame);
   const rd = new m.Reader(e.payload);
-  if (e.kind === EVENT_SEGMENT) e.segment = Segment.read(rd);
-  else if (e.kind === EVENT_STOPPED) { e.reason = rd.u8(); if (rd.left) e.error = rd.u8(); }
+  if (e.kind === EVENT_SEGMENT) { e.segment = Segment.read(rd); e.generation = e.segment.generation; }
+  else if (e.kind === EVENT_STOPPED) { e.reason = rd.u8(); e.error = rd.u8(); e.generation = rd.u32(); }
   else if (e.kind === EVENT_TRIGGERED) {
     e.serial = rd.u32();
     const i = rd.u32();
     e.triggerIndex = i === NO_INDEX ? null : i;
     const ns = rd.u64();
     e.triggerNs = ns === NO_TIME ? null : ns;
+    e.generation = rd.u32();
   }
   return e;
 }
@@ -308,8 +316,29 @@ export function parseGroupEvent(frame) {
     e.triggerFn = rd.u16();
     const ns = rd.u64();
     e.triggerNs = ns === NO_TIME ? null : ns;
-  } else if (e.kind === GROUP_EVENT_STOPPED) { e.reason = rd.u8(); if (rd.left) e.error = rd.u8(); }
+    e.generation = rd.u32();                                      // the group's (§4.2)
+  } else if (e.kind === GROUP_EVENT_STOPPED) { e.reason = rd.u8(); e.error = rd.u8(); e.generation = rd.u32(); }
   return e;
+}
+
+/**
+ * The next event of `iface`'s fn (of one of `kinds`) of its current generation; one of another generation is an
+ * earlier start's (§3.4, §4.2): passed over and counted in iface.staleEvents. A host that did not start it asks status
+ * first. null after timeoutMs.
+ * @param {LogicCapture | CaptureGroup} iface @param {(f: Uint8Array) => CaptureEvent} parse
+ * @param {number[] | null} kinds @param {number} timeoutMs
+ */
+async function currentEvent(iface, parse, kinds, timeoutMs) {
+  const deadline = now() + timeoutMs;
+  for (;;) {
+    const f = await iface.host.link.nextEvent((e) => frameFn(e) === iface.fn && (!kinds || kinds.includes(e[5])),
+      Math.max(0, deadline - now()));
+    if (!f) return null;
+    const e = parse(f);
+    if (e.generation !== null && iface.generation === null) await iface.status();
+    if (e.generation === null || e.generation === iface.generation) return e;
+    iface.staleEvents++;
+  }
 }
 
 /**
@@ -350,6 +379,7 @@ export class LogicCapture extends Interface {
     /** @type {Config | null} */ this.config = null;
     /** @type {number | null} performance.now() at the last start() */ this.armedMs = null;
     /** @type {number | null} the current capture's generation (start / status / the group's start) */ this.generation = null;
+    /** events of an earlier generation nextEvent passed over */ this.staleEvents = 0;
   }
 
   /** @returns {boolean} */
@@ -366,6 +396,16 @@ export class LogicCapture extends Interface {
    * segments). Read Config.samples / .segments: the probe rounds samples down.
    * @param {ConfigureOptions} opts */
   async configure({ rate, mode = ONE_SHOT, samples, segments, trigger, pretrigger, query = false, critical = [], frontends }) {
+    // §3.3's contract, before anything is sent
+    if ((mode === ONE_SHOT || mode === REPEAT) && samples === undefined) {
+      throw new RangeError('capture configure: samples is required in one-shot and repeat (oep-if-capture §3.3)');
+    }
+    if (mode === STREAMING && samples !== undefined) throw new RangeError('capture configure: streaming takes no samples (oep-if-capture §3.3)');
+    if (segments !== undefined && mode !== REPEAT) throw new RangeError('capture configure: segments is for repeat only (oep-if-capture §3.3)');
+    if (pretrigger !== undefined && (trigger === undefined || trigger[0] === IMMEDIATE)) {
+      if (pretrigger) throw new RangeError('capture configure: a pretrigger needs a trigger (oep-if-capture §3.3)');
+      pretrigger = undefined;                                       // 0 without a trigger: simply not sent
+    }
     const crit = new Set([...ALWAYS_CRITICAL, ...critical]);
     const w = new Writer();
     /** @param {number} tag @param {Uint8Array} value */
@@ -381,6 +421,7 @@ export class LogicCapture extends Interface {
     // query is its own operation: the lock is decided per operation, before the payload is looked at
     const op = query ? LogicCapture.QUERY_OP : LogicCapture.CONFIGURE;
     const c = parseConfig((await this.call(op, w.done(), { locked: !query })).payload, this.analog);
+    if (mode === ONE_SHOT && !c.segments) c.segments = 1;          // one-shot's answer has no actual_segments (§3.3)
     if (!query) this.config = c;
     return c;
   }
@@ -395,12 +436,10 @@ export class LogicCapture extends Interface {
 
   unsubscribe() { return this.host.unsubscribe(this.fn); }
 
-  /** The next event of this fn (of one of `kinds`, if given), decoded; null after timeoutMs.
+  /** The next event of this fn (of one of `kinds`, if given) of the current generation, decoded - one of an earlier
+   * start is passed over (staleEvents, §3.4); null after timeoutMs.
    * @param {number[] | null} kinds @param {number} timeoutMs */
-  async nextEvent(kinds = null, timeoutMs = 1000) {
-    const f = await this.host.link.nextEvent((e) => frameFn(e) === this.fn && (!kinds || kinds.includes(e[5])), timeoutMs);
-    return f ? parseCaptureEvent(f) : null;
-  }
+  nextEvent(kinds = null, timeoutMs = 1000) { return currentEvent(this, parseCaptureEvent, kinds, timeoutMs); }
 
   /**
    * Streaming: collect data pushes until `nbytes` have arrived or `ms` have passed (at least one is needed). A
@@ -509,7 +548,8 @@ export class LogicCapture extends Interface {
     await this.call(LogicCapture.RELEASE, new Writer().u32(await this.generationOf(generation)).u32(serial).done());
   }
 
-  /** One answer's segment records from `fromSerial` on. @param {number} fromSerial
+  /** One answer's segment records from `fromSerial` on (common §1.3: fromSerial included; from serial_done none and
+   * more false; a serial no longer kept starts at the oldest kept). @param {number} fromSerial
    * @returns {Promise<{ segments: Segment[], more: boolean }>} */
   async segmentsPage(fromSerial = 0) {
     const rd = new m.Reader((await this.call(LogicCapture.SEGMENTS, new Writer().u32(fromSerial).done(), { locked: false })).payload);
@@ -520,7 +560,8 @@ export class LogicCapture extends Interface {
     return { segments, more: !!more };
   }
 
-  /** Every segment record from `fromSerial` on, following `more`. @param {number} fromSerial */
+  /** Every segment record from `fromSerial` on, following `more`: each next page from the last serial + 1 (mod 2^32)
+   * until more is false. @param {number} fromSerial */
   async segments(fromSerial = 0) {
     /** @type {Segment[]} */
     const out = [];
@@ -815,7 +856,8 @@ export class AnalogCapture extends LogicCapture {
   }
 }
 
-/** @typedef {{ state: number, startNs: bigint | null, triggerNs: bigint | null, triggerFn: number | null }} GroupStatus */
+/** generation: the group's (§4.1; 0 before its first start)
+ * @typedef {{ state: number, startNs: bigint | null, triggerNs: bigint | null, triggerFn: number | null, generation: number }} GroupStatus */
 
 /**
  * oep.fixture.capture-group (§4): tracks (LogicCapture / AnalogCapture, each configured as usual) started together,
@@ -833,6 +875,10 @@ export class CaptureGroup extends Interface {
 
   /** @type {Map<number, number>} fn -> the generation the last start gave each track */
   generations = new Map();
+  /** @type {number | null} the group's current generation (start / status, §4.1) */
+  generation = null;
+  /** the group's events of an earlier generation nextEvent passed over */
+  staleEvents = 0;
 
   /** Bind these (configured) tracks; [] unbinds. `trigger`: the track whose configure trigger starts them all (a
    * critical TLV). An fn not in the group's `tracks` is rejected Unsupported (tag null, `.fn` names it).
@@ -844,15 +890,18 @@ export class CaptureGroup extends Interface {
     await this.call(CaptureGroup.BIND, w.done());
   }
 
-  /** -> {blockingMs, startNs: the group's start}. `tracks`: whose armedMs and generation to set (the answer's TLV
-   * generations names each track's new generation; this.generations keeps them by fn).
+  /** -> {blockingMs, startNs: the group's start}. The answer's fixed part: blocking_ms start_ns generation (the
+   * group's) n, then n x (fn, generation) - each bound track's new generation in bind order (§4.1); this.generation is
+   * the group's, this.generations the tracks' by fn. `tracks`: whose armedMs and generation to set.
    * @param {LogicCapture[]} tracks */
   async start(tracks = []) {
     const rd = new m.Reader((await this.call(CaptureGroup.START)).payload);   // the answer comes before any blocking (§3.2)
     const blockingMs = rd.u32(), startNs = rd.u64();
-    const gens = rd.tail().get(GROUP_GENERATIONS) ?? new Uint8Array();
+    this.generation = rd.u32();
+    const n = rd.u8();
     this.generations = new Map();
-    for (let at = 0; at + 6 <= gens.length; at += 6) this.generations.set(getU16(gens, at), getU32(gens, at + 2));
+    for (let i = 0; i < n; i++) { const fn = rd.u16(); this.generations.set(fn, rd.u32()); }
+    rd.tail();
     const t = now();
     for (const tr of tracks) {
       tr.armedMs = t;
@@ -870,17 +919,17 @@ export class CaptureGroup extends Interface {
   /** @returns {Promise<GroupStatus>} */
   async status() {
     const rd = new m.Reader((await this.call(CaptureGroup.STATUS, new Uint8Array(), { locked: false })).payload);
-    const state = rd.u8(), start = rd.u64(), trig = rd.u64(), fn = rd.u16();
+    const state = rd.u8(), start = rd.u64(), trig = rd.u64(), fn = rd.u16(), generation = rd.u32();
     rd.tail();
-    return { state, startNs: start === NO_TIME ? null : start, triggerNs: trig === NO_TIME ? null : trig, triggerFn: fn || null };
+    this.generation = generation;
+    return { state, startNs: start === NO_TIME ? null : start, triggerNs: trig === NO_TIME ? null : trig, triggerFn: fn || null,
+      generation };
   }
 
-  /** The group's next event (of one of `kinds`, if given), decoded; null after timeoutMs.
+  /** The group's next event (of one of `kinds`, if given) of its current generation, decoded - one of an earlier
+   * start is passed over (staleEvents, §4.2); null after timeoutMs.
    * @param {number[] | null} kinds @param {number} timeoutMs */
-  async nextEvent(kinds = null, timeoutMs = 1000) {
-    const f = await this.host.link.nextEvent((e) => frameFn(e) === this.fn && (!kinds || kinds.includes(e[5])), timeoutMs);
-    return f ? parseGroupEvent(f) : null;
-  }
+  nextEvent(kinds = null, timeoutMs = 1000) { return currentEvent(this, parseGroupEvent, kinds, timeoutMs); }
 
   subscribe(minBytes = 0, maxDelayMs = 0) { return this.host.subscribe(this.fn, minBytes, maxDelayMs); }
 
