@@ -18,9 +18,9 @@ import * as core from '../src/core.js';
 import * as config from '../src/config.js';
 import * as m from '../src/message.js';
 import { fromHex, hex } from '../src/bytes.js';
-import { FnNotUsable, Locked, NotUsable, Rejected, Unsupported, rejection } from '../src/errors.js';
+import { FnNotUsable, Locked, NotUsable, Rejected, Unavailable, Unsupported, rejection } from '../src/errors.js';
 import * as reg from '../src/registry.js';
-import { concat, getU32 } from '../src/bytes.js';
+import { Writer, concat, getU32 } from '../src/bytes.js';
 import { Host } from '../src/host.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -363,6 +363,7 @@ async function onClient(c) {
   const name = /** @type {string} */ (c.name);
   const a = m.Result.unpack(hx(c.answer_hex));
   const r = m.Request.unpack(hx(c.request_hex));
+  if (isMultirate(c)) return multirateOnClient(c);
   if (name.startsWith('restart')) {                                 // oep.probe.restart (oep-if-restart), found by name
     const { hst, sent } = client(c, name.includes('without a session') ? null : S);
     if (a.resolution === m.COMPLETED) {
@@ -576,11 +577,78 @@ async function onClient(c) {
 }
 
 /** A request with bit 7 of its TLV tags cleared: this client sends mode and rate critical (its own choice, capture §3.3),
- * the vectors send them plain - the same request otherwise. @param {Uint8Array} frame */
-function uncritical(frame) {
+ * the vectors send them plain - the same request otherwise; multirate (0xE0) stays critical (§5.2).
+ * @param {Uint8Array} frame @param {number} [fixed]  the bytes of the fixed part before the TLVs */
+function uncritical(frame, fixed = 0) {
   const q = m.Request.unpack(frame);
-  const body = concat(...m.splitTlvs(q.payload).map(([t, v]) => m.tlv(t & 0x7f, v)));
+  const body = concat(q.payload.slice(0, fixed), ...m.splitTlvs(q.payload.slice(fixed)).map(([t, v]) => m.tlv(t & 0x7f, v, t === 0xe0)));
   return new m.Request(q.corr, q.fn, q.op, body, q.session).pack();
+}
+
+/** The multirate vectors' logic fn (capture §5, the describe vector): one-shot and repeat, rate_range 1 kHz-100 MHz exact,
+ * 4 channels, triggers with max_pretrigger 1000000, multirate policies 7, d 2-128 powers of 2 only. */
+const MULTIRATE_LOGIC = /** @type {[number, Uint8Array][]} */ ([
+  [0x40, new Writer().u8(1).u32(1_000_000).u32(1).done()], [0x40, new Writer().u8(2).u32(1_000_000).u32(8).done()],
+  [0x41, new Writer().u32(1000).u32(100_000_000).u8(1).done()], [0x44, Uint8Array.of(4)],
+  [0x45, new Writer().u32(7).u32(1_000_000).done()], [0x60, new Writer().u32(7).u32(2).u32(128).u8(1).done()]]);
+
+/** @param {any} c */
+const isMultirate = (c) => c.state.includes('multirate policies 7') || c.state.includes('configured multirate')
+  || c.name.startsWith('logic configure multirate on a fn');
+
+/** The multirate vectors (capture §5) as this client sends and reads them, as oep-client-python's: what describe
+ * declares, configure / query with Multirate roles (checked against describe first: the malformed and undeclared forms
+ * are refused before sending), the block layout, a multirate segment record, a bind of a multirate track.
+ * @param {any} c @returns {Promise<Uint8Array[] | null>} */
+async function multirateOnClient(c) {
+  const cap = await import('../src/capture.js');
+  const mr = await import('../src/multirate.js');
+  const name = /** @type {string} */ (c.name);
+  const { hst, sent } = client(c, c.state.includes('session S') ? S : null);
+  const fn = m.Request.unpack(hx(c.request_hex)).fn;
+  if (name.startsWith('logic describe')) {
+    hst.describes.delete(9);
+    assert.deepEqual(await new cap.LogicCapture(hst, 9, cap.LogicCapture.NAME).multirateDeclared(), new mr.Declared(7, 2, 128, true));
+    return sent;
+  }
+  if (!name.includes('does not declare')) hst.describes.set(fn, MULTIRATE_LOGIC);
+  const lc = new cap.LogicCapture(hst, fn, cap.LogicCapture.NAME);
+  const { ANY_ACTIVE: A, SAMPLE: S_, EDGE_LATCH: E, Multirate: M } = mr;
+  const example = [new M(0, A, 32, 0), new M(3, S_, 4, 1)];
+  /** @type {[string, import('../src/multirate.js').Multirate[]][]} */
+  const forms = [['d 0', [new M(0, A, 0, 0)]], ['phase = d', [new M(3, S_, 4, 4)]], ['param 2', [new M(0, A, 32, 2)]],
+    ['d 1, malformed', [new M(0, E, 1, 1)]], ['same role twice', [new M(3, S_, 4, 1), new M(3, S_, 8, 0)]],
+    ['reserved policy', [new M(0, 3, 4, 0)]], ['d 3 where', [new M(3, S_, 3, 0)]], ['d 256', [new M(3, S_, 256, 0)]],
+    ['does not declare', example]];
+  for (const [key, specs] of forms) {
+    if (!name.includes(key)) continue;
+    await assert.rejects(lc.configure({ rate: 100_000_000, samples: 96, multirate: specs }), (e) => e instanceof RangeError && /multirate/.test(e.message));
+    assert.equal(sent.length, 0);
+    return null;                                                      // refused before sending
+  }
+  if (name.includes('not in the plan')) {
+    await assert.rejects(lc.configure({ rate: 100_000_000, samples: 96, multirate: [new M(4, S_, 4, 0)] }), Unavailable);
+    return [uncritical(sent[0])];
+  }
+  if (name.startsWith('logic segments multirate')) {
+    const { segments, more } = await lc.segmentsPage(0);
+    assert.deepEqual([more, segments.map((x) => [x.samples, x.triggerIndex, x.flags, x.generation])], [false, [[72, 13, 2, 1]]]);
+    return sent;
+  }
+  if (name.startsWith('capture-group bind')) {
+    const logic = new cap.LogicCapture(hst, 9, cap.LogicCapture.NAME);
+    await new cap.CaptureGroup(hst, 12, cap.CaptureGroup.NAME).bind([logic, new cap.AnalogCapture(hst, 13, cap.AnalogCapture.NAME)], logic);
+    return [uncritical(sent[0], 5)];                                  // trigger_track: critical here, plain there
+  }
+  if (name.includes('heavy')) {
+    const got = await lc.configure({ rate: 100_000_000, samples: 96, query: true, multirate: [0, 1, 2, 3].map((k) => new M(k, E, 2, 1)) });
+    assert.deepEqual([got.rate, got.width, got.positions, got.block, got.samples], [40_000_000, 1, [], 32, 96]);
+    return [uncritical(sent[0])];
+  }
+  const got = await lc.configure({ rate: 100_000_000, samples: name.includes('72') ? 72 : 96, query: name.includes('query'), multirate: example });
+  assert.deepEqual([got.rate, got.width, got.positions, got.block, got.samples, got.blockingMs], [100_000_000, 2, [0, 1], 32, 96, 0]);
+  assert.deepEqual([got.multirateLayout()?.blockBytes(), got.bytes], [10, 30]);   // B 10 (§5.7), 96 base samples
+  return [uncritical(sent[0])];
 }
 
 /** The wifi vectors (probe.config §1.4, §3.3: every case whose state starts "items has wifi") as this client sends and
@@ -756,6 +824,27 @@ test('events: each read with its generation; one of an earlier generation is pas
       assert.deepEqual([e.serial, e.triggerIndex, Number(e.triggerNs), current?.generation], [0, 1000, 7_050_000, 4], c.name);
     } else {
       assert.deepEqual([e.kind, e.reason, e.error, current?.generation], [cap.GROUP_EVENT_STOPPED, cap.STOPPED_REASON.complete, 0, 5], c.name);
+    }
+  }
+});
+
+// ---- multirate streams (multirate.json, capture §5.5) ------------------------------------------------------------------
+
+test('multirate.json: each segment decodes to its levels and values, and encodes back byte for byte', async () => {
+  const mr = await import('../src/multirate.js');
+  const cases = load('multirate.json').cases;
+  assert.equal(cases.length, 14);
+  for (const v of cases) {
+    const specs = v.roles.flatMap((/** @type {any} */ r, /** @type {number} */ k) => (r ? [new mr.Multirate(k, mr.POLICY[r.policy], r.d, r.param)] : []));
+    const d1Roles = v.roles.flatMap((/** @type {any} */ r, /** @type {number} */ k) => (!r || (r.policy === 'sample' && r.d === 1) ? [k] : []));
+    const lay = new mr.Layout(v.layout.w, v.layout.pos, v.L, specs);
+    for (const seg of v.segments) {
+      const stream = hx(seg.stream_hex), n = seg.samples, ch = seg.channels;
+      assert.equal(lay.segmentBytes(n), stream.length, v.name);
+      const got = lay.decode(stream, n);
+      assert.deepEqual(got.d1.map((x) => x.join('')), d1Roles.map((/** @type {number} */ r) => ch[r]), v.name);
+      for (const s of specs.filter((/** @type {any} */ x) => x.reduced)) assert.deepEqual(got.reduced.get(s.role), s.values(ch[s.role]), v.name);
+      assert.equal(hex(lay.encode((role, i) => Number(ch[role][i]), n, d1Roles)), seg.stream_hex, v.name);
     }
   }
 });

@@ -38,6 +38,7 @@ export * as dump from './dump.js';
 export * as config from './config.js';
 export * as riscv from './riscv.js';
 export * as arm from './arm.js';
+export * as multirate from './multirate.js';
 export * as targetConsole from './console.js';   // oep.target.console (not the global console)
 export * as fixture from './fixture.js';
 export * as capture from './capture.js';

@@ -21,6 +21,13 @@
 // for a probe that does not know a tag). The probe rounds samples down to its limit and the answer (Config.samples /
 // .segments) is what holds.
 //
+// multirate (§5, a second definition of oep.fixture.logic): configure({ multirate: [new Multirate(role, policy, d,
+// param), ...] }) sends one TLV 0xE0 per role (critical), after checking them against the fn's describe
+// (`multirateDeclared()`; RangeError for a malformed TLV, a role twice, a policy or d not declared, or no multirate). The
+// answer's block L and the layout of the D = 1 channels go to Config.block / Config.multirateLayout();
+// `decodeMultirate(data, samples)` reads a segment's blocks (multirate.js). rate, samples, pretrigger and trigger_index
+// count base samples.
+//
 // blocking_ms (P2-○9): a start whose answer says blocking_ms > 0 is followed by nothing on any transport for that long
 // (`blocked`), then - on a length-prefixed link - the resync of transports §5; neither the lease nor the answer's wait
 // counts it.
@@ -29,7 +36,9 @@ import * as reg from './registry.js';
 import { Writer, getU16, getU32, getU64, text } from './bytes.js';
 import * as m from './message.js';
 import { Failed, ProtocolError, Timeout } from './errors.js';
-import { Interface } from './core.js';
+import { Interface, describe } from './core.js';
+import * as mr from './multirate.js';
+export { Multirate, SAMPLE, ANY_ACTIVE, EDGE_LATCH } from './multirate.js';
 
 const CAP = reg.FIXTURE_LOGIC;
 const ANA = reg.FIXTURE_ANALOG;
@@ -154,6 +163,13 @@ export class Config {
     /** @type {Map<number, number>} analog: the frontend each channel took */ this.frontend = new Map();
     /** @type {{ source: string, mv: number, measured: boolean } | null} analog: the ADC's reference */ this.reference = null;
     this.blockingMs = 0;
+    /** @type {number | null} multirate: L, base samples a block (§5.3) */ this.block = null;
+    /** @type {mr.Multirate[]} multirate: the reduced channels asked, role order */ this.multirate = [];
+  }
+
+  /** The block layout of a multirate configuration (§5.5), else null. */
+  multirateLayout() {
+    return this.block === null ? null : new mr.Layout(this.width, this.positions, this.block, this.multirate);
   }
 
   /** The actual rate in Hz (a float; rateNum / rateDen exactly). */
@@ -166,6 +182,8 @@ export class Config {
 /** Bytes of `samples` samples in this layout.
  * @param {Config} c @param {number} samples */
 export function segmentBytes(c, samples) {
+  const lay = c.multirateLayout();
+  if (lay) return lay.segmentBytes(samples);
   if (c.width) return Math.floor((samples * c.width + 7) / 8);
   return Math.floor((samples * c.order.length * c.slot) / 8);
 }
@@ -195,6 +213,7 @@ export function parseConfig(payload, analog) {
       const source = rd.u8(), mv = rd.u32(), how = rd.u8();
       c.reference = { source: REFERENCE_SOURCE[source] ?? String(source), mv, measured: how === 1 };
     } else if (tag === BLOCKING) c.blockingMs = rd.u32();
+    else if (tag === mr.BLOCK && !analog) c.block = rd.u32();
   }
   return c;
 }
@@ -361,6 +380,8 @@ async function currentEvent(iface, parse, kinds, timeoutMs) {
  * @property {Iterable<number>} [critical]  more tags the probe must honour or reject (samples, segments; mode, rate,
  *   trigger, pretrigger and frontend always are: ALWAYS_CRITICAL) - Unsupported, .tag = the one it cannot
  * @property {Map<number, number> | Record<number, number>} [frontends]  analog: role -> frontend (describe frontend)
+ * @property {mr.Multirate[]} [multirate]  logic: the roles to reduce (§5; a role left out is a D = 1 channel), checked
+ *   against describe before sending, each sent as TLV 0xE0
  */
 
 /** Basic logic capture. Channels are the plan's roles 0..C-1. */
@@ -395,7 +416,7 @@ export class LogicCapture extends Interface {
    * (§3.3). mode, rate, trigger, pretrigger and frontend go critical; `critical`: more tags to send critical (samples,
    * segments). Read Config.samples / .segments: the probe rounds samples down.
    * @param {ConfigureOptions} opts */
-  async configure({ rate, mode = ONE_SHOT, samples, segments, trigger, pretrigger, query = false, critical = [], frontends }) {
+  async configure({ rate, mode = ONE_SHOT, samples, segments, trigger, pretrigger, query = false, critical = [], frontends, multirate }) {
     // §3.3's contract, before anything is sent
     if ((mode === ONE_SHOT || mode === REPEAT) && samples === undefined) {
       throw new RangeError('capture configure: samples is required in one-shot and repeat (oep-if-capture §3.3)');
@@ -418,12 +439,34 @@ export class LogicCapture extends Interface {
     if (pretrigger !== undefined) put(PRETRIGGER, new Writer().u32(pretrigger).done());
     const fe = frontends instanceof Map ? [...frontends] : Object.entries(frontends ?? {}).map(([k, v]) => [Number(k), v]);
     for (const [role, f] of fe.sort((a, b) => a[0] - b[0])) put(FRONTEND, Uint8Array.of(role, f));   // analog: the input range
+    const specs = multirate && multirate.length ? mr.check(multirate, await this.multirateDeclared()) : [];
+    for (const spec of specs) w.raw(m.tlv(mr.TAG, spec.value(), true));   // critical: a probe without multirate refuses (§5.2)
     // query is its own operation: the lock is decided per operation, before the payload is looked at
     const op = query ? LogicCapture.QUERY_OP : LogicCapture.CONFIGURE;
     const c = parseConfig((await this.call(op, w.done(), { locked: !query })).payload, this.analog);
     if (mode === ONE_SHOT && !c.segments) c.segments = 1;          // one-shot's answer has no actual_segments (§3.3)
+    if (specs.length) {
+      if (c.block === null || c.block < 1) throw new ProtocolError('a multirate configure answered without block L (oep-if-capture §5.3)');
+      c.multirate = specs.filter((x) => x.reduced);
+      try { c.multirateLayout(); } catch (e) { throw new ProtocolError(/** @type {Error} */ (e).message); }   // L divisible by every d
+    } else c.block = null;                                          // not asked: not this host's form
     if (!query) this.config = c;
     return c;
+  }
+
+  /** describe's multirate (§5.1), null when this fn does not declare it (analog never does). */
+  async multirateDeclared() {
+    if (this.analog) return null;
+    const v = (await describe(this.host, this.fn)).find(([t]) => (t & 0x7f) === mr.DECLARED)?.[1];
+    return v && v.length >= 13 ? mr.Declared.unpack(v) : null;
+  }
+
+  /** A multirate segment's stream (readSegment's bytes) -> its D = 1 channels' levels (role order, as the layout's pos)
+   * and each reduced role's values (§5.5). @param {Uint8Array} data @param {number} samples */
+  decodeMultirate(data, samples) {
+    const lay = this.cfg.multirateLayout();
+    if (!lay) throw new RangeError('decodeMultirate: not a multirate configuration');
+    return lay.decode(data, samples);
   }
 
   /** configure's values checked without setting anything (no lock).
@@ -678,6 +721,7 @@ export class LogicCapture extends Interface {
    * @param {Uint8Array} data @param {number} k @param {number} [samples] */
   channel(data, k, samples) {
     const c = this.cfg;
+    if (c.block !== null) throw new RangeError('a multirate segment is blocks (§5.5): use decodeMultirate');
     const n = samples ?? Math.floor((data.length * 8) / c.width);
     const bit0 = c.positions[k];
     const out = new Array(n);

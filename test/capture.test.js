@@ -637,3 +637,25 @@ test('data dropped inside a segment: not handed out, the track stops in error (c
     bench.stop();
   }
 });
+
+test('multirate: configure, capture and decode against the virtual bench (capture §5)', opts, () => withBench(async ({ hst, lc }) => {
+  const mr = await import('../src/multirate.js');
+  await planApply(hst, [0, 1, 2, 3].map((k) => /** @type {[number, number, number]} */ ([lc.fn, k, 20 + k])));
+  const decl = await lc.multirateDeclared();
+  assert.ok(decl && decl.acceptsD(1) && decl.acceptsPolicy(mr.EDGE_LATCH));   // d 1 sample: always (dd5a886)
+  const specs = [new mr.Multirate(0, mr.ANY_ACTIVE, 8, 1), new mr.Multirate(2, mr.EDGE_LATCH, 4, 1), new mr.Multirate(3, mr.SAMPLE, 4, 3)];
+  const cfg = await lc.configure({ rate: 1_000_000, samples: 100, multirate: specs });
+  assert.deepEqual([cfg.block, cfg.samples, cfg.positions], [32, 128, [0]]);   // rounded up to L; role 1 is D = 1
+  await lc.start();
+  const [seg] = await lc.wait();
+  const data = await lc.readSegment(seg);
+  assert.equal(data.length, 4 * /** @type {any} */ (cfg.multirateLayout()).blockBytes());
+  const got = lc.decodeMultirate(data, seg.samples);
+  const levels = (/** @type {number} */ role) => Array.from({ length: 128 }, (_, i) => (i >> role) & 1);
+  assert.deepEqual(got.d1, [levels(1)]);
+  for (const s of specs) assert.deepEqual(got.reduced.get(s.role), s.values(levels(s.role)));
+  await assert.rejects(lc.configure({ rate: 1_000_000, samples: 64, multirate: [new mr.Multirate(0, mr.ANY_ACTIVE, 0, 0)] }), RangeError);
+  await assert.rejects(lc.configure({ rate: 1_000_000, samples: 64, multirate: [new mr.Multirate(9, mr.SAMPLE, 4, 0)] }), Unavailable);
+  const an = await c.AnalogCapture.open(hst);
+  await assert.rejects(an.configure({ rate: 10_000, samples: 64, multirate: [new mr.Multirate(0, mr.SAMPLE, 2, 0)] }), /declares no multirate/);
+}));
