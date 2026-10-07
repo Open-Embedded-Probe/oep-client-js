@@ -1,6 +1,21 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) **Follow oep-spec 66c49e7 .. dd5a886 (logic capture: any w, seamless segments, multirate), as
+  oep-client-python.** Registry and test/vectors synced (logic_layout.json, multirate.json); README names dd5a886.
+  §1.1: w is any integer 1-128 - `channel()` already read bit i*w + pos[k]. §2.2: a segment not kept seamless is not
+  handed out and the track stops with state 6, stopped reason 3, error 2 - already read (status errorName, wait(), the
+  stopped event); tested with the virtual bench's `capture-overflow`. §5 multirate: new `src/multirate.js` (`Multirate`,
+  `Declared` - d 1 sample always accepted, minD / maxD bound d >= 2 (dd5a886) -, `Layout` with decode / encode, `check`,
+  the policy enum); `LogicCapture.configure({ multirate })` sends TLV 0xE0 per role after checking describe
+  (`multirateDeclared()`), `Config.block` / `multirateLayout()`, `readSegment` and `decodeMultirate(data, samples)`.
+- (JA) **oep-spec 66c49e7〜dd5a886（ロジックキャプチャ: 任意の w、連続な区画、multirate）に oep-client-python と同じく合わせた。**
+  registry と test/vectors（logic_layout.json、multirate.json）を同期し、README は dd5a886 を名乗る。§1.1: w は 1〜128 の任意の整数 ―
+  `channel()` はもともとビット i·w + pos[k] を読む。§2.2: 連続に保てない区画は出さず、トラックは state 6、stopped reason 3、error 2 で
+  止まる ― もともと読める（status の errorName、wait()、出来事 stopped）。仮想ベンチの `capture-overflow` で試す。§5 multirate: 新しい
+  `src/multirate.js`（`Multirate`、`Declared` ― d 1 の sample はいつも扱い、minD / maxD は d ≥ 2 だけを縛る（dd5a886）―、decode / encode
+  を持つ `Layout`、`check`、方針の enum）。`LogicCapture.configure({ multirate })` は describe を確かめてから（`multirateDeclared()`）
+  役割ごとに TLV 0xE0 を送る。`Config.block` / `multirateLayout()`、`readSegment` と `decodeMultirate(data, samples)`。
 - (EN) **Follow oep-spec 0098b56 .. 2c6d18d (the external review's interface re-check of 0991759), as
   oep-client-python.** Registry and test/vectors synced; README names 2c6d18d. Breaking (wire and API):
   `LogicCapture.configure` keeps capture §3.3's contract before sending (RangeError: samples required in one-shot and
