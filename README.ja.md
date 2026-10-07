@@ -12,7 +12,7 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 
 **v1 の凍結の前に、ひととおり移した版です。仕様が固まるにつれて作り直す前提です。**
 
-**実装する仕様: oep-spec の commit `dd5a886`**（66c49e7〜dd5a886: 2026-10-07 のロジックキャプチャの変更 ― layout の w は 1〜128 の任意の整数、連続に保てない区画は出さずにトラックをエラーで止める、multirate（`multirate.Multirate`、`LogicCapture.decodeMultirate`）。0098b56〜2c6d18d: 0991759 のインターフェースの再確認 ― marks とキャプチャの segments の通し番号のページング、console の streams の first(u16)、キャプチャの configure の契約、一周してどの出来事にも付く世代、capture-group の start の応答の固定部、step / run / transfer の細部、spi-target のビットの詰め方を含む）（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
+**実装する仕様: oep-spec の commit `c6ab5d9`**（66c49e7〜dd5a886: 2026-10-07 のロジックキャプチャの変更 ― layout の w は 1〜128 の任意の整数、連続に保てない区画は出さずにトラックをエラーで止める、multirate（`multirate.Multirate`、`LogicCapture.decodeMultirate`）。0098b56〜2c6d18d: 0991759 のインターフェースの再確認 ― marks とキャプチャの segments の通し番号のページング、console の streams の first(u16)、キャプチャの configure の契約、一周してどの出来事にも付く世代、capture-group の start の応答の固定部、step / run / transfer の細部、spi-target のビットの詰め方を含む）（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
 だけでは形が決まらないので、実装は実装する仕様を名乗る）。2026-10-06 の単純化（10 byte の要求の見出し 1 つ、TLV の len は u16、
 閉じた固定の形、describe の `ops` tag、再開なし）、コンソールの送りの列と reset の後の待ち（f0c68bf）、長い probe.config の項目
 （d34dafa）、既存の connection に加わる attach（59dd028）と、2026-10-06 の構造（2e5dc4c〜9c837a9、0304f37）: 本体は名前を

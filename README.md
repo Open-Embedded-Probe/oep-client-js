@@ -12,7 +12,7 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 
 **A first full port, ahead of the v1 freeze: expect it to be redone as the spec settles.**
 
-**The spec this implements: oep-spec commit `dd5a886`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
+**The spec this implements: oep-spec commit `c6ab5d9`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
 revision 1 alone does not fix the forms, so an implementation names the spec it implements). That is the logic capture
 changes of 2026-10-07 (66c49e7 .. dd5a886: the layout's w is any integer 1-128, a segment not kept seamless is not handed
 out and stops the track in error, and multirate - `multirate.Multirate`, `LogicCapture.decodeMultirate`), the interface

@@ -1,6 +1,19 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) **Follow oep-spec d801f02 .. c6ab5d9 (capture: the probe's and the clients' questions).** Registry and vectors synced;
+  README names c6ab5d9. configure sends the §3.3 table's TLVs and trigger_track without the critical bit, only multirate
+  critical; rate / samples / segments of 0 and a type 0 trigger's role and value (sent 0) are handled before sending;
+  nothing relies on the order of refusals. After an error stop the bytes received at or past status's write_pos are
+  dropped (Received drop_from / dropFrom, finish). A capture-group's pretrigger is the trigger_track's alone (bind refuses a
+  track with its own before sending; P_k helper; bind's unavailable cause 2 names the fn). A broken multirate declaration
+  is not used.
+- (JA) **oep-spec d801f02〜c6ab5d9（キャプチャ: probe と client の実装からの質問）に合わせた。** registry と vectors を同期し、
+  README は c6ab5d9 を名乗る。configure は §3.3 の表の TLV と trigger_track を critical の bit 無しで送り、critical は multirate だけ。
+  rate / samples / segments の 0 は送る前に断り、type 0 のトリガは role と value を 0 で送る。断りの順には頼らない。エラーで止まったら
+  status の write_pos 以降に受け取ったバイトを捨てる（Received の drop_from / dropFrom、finish）。capture-group の pretrigger は
+  trigger_track のものだけ（自分の pretrigger を持つトラックは送る前に断る。P_k の計算。bind の unavailable cause 2 は fn を名指す）。
+  壊れた multirate の宣言は使わない。
 - (EN) **Follow oep-spec 66c49e7 .. dd5a886 (logic capture: any w, seamless segments, multirate), as
   oep-client-python.** Registry and test/vectors synced (logic_layout.json, multirate.json); README names dd5a886.
   §1.1: w is any integer 1-128 - `channel()` already read bit i*w + pos[k]. §2.2: a segment not kept seamless is not
