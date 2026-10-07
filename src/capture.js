@@ -16,9 +16,8 @@
 //
 // configure (§3.3's contract, checked before sending - RangeError): mode and rate always; samples in modes 1 and 2,
 // never in mode 3; segments in mode 2 only; pretrigger only with a trigger (type other than 0). A value of one of its TLVs the probe cannot honour is refused (rejected unsupported, 0x0B, payload = the
-// tag as sent; oep-core §2.3, oep-if-capture §3.3) - every capture probe implements these tags, so the critical bit
-// changes nothing there; this host sends mode, rate, trigger, pretrigger and frontend critical anyway (its own choice,
-// for a probe that does not know a tag). The probe rounds samples down to its limit and the answer (Config.samples /
+// tag as sent; oep-core §2.3, oep-if-capture §3.3) - every capture probe implements these tags, so they go without
+// the critical bit; only multirate is sent critical. The probe rounds samples down to its limit and the answer (Config.samples /
 // .segments) is what holds.
 //
 // multirate (§5, a second definition of oep.fixture.logic): configure({ multirate: [new Multirate(role, policy, d,
@@ -397,8 +396,6 @@ async function currentEvent(iface, parse, kinds, timeoutMs) {
  * @property {[number, number, number]} [trigger]  (type, role, value)
  * @property {number} [pretrigger]
  * @property {boolean} [query]              ask only (query op, no lock, nothing changes)
- * @property {Iterable<number>} [critical]  accepted for older callers and not used: the table's TLVs go without the
- *   critical bit, only multirate is critical (§3.3, oep-spec c6ab5d9)
  * @property {Map<number, number> | Record<number, number>} [frontends]  analog: role -> frontend (describe frontend)
  * @property {mr.Multirate[]} [multirate]  logic: the roles to reduce (§5; a role left out is a D = 1 channel), checked
  *   against describe before sending, each sent as TLV 0xE0
