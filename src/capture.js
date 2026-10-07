@@ -64,8 +64,6 @@ export const DATA_GENERATION = CAP.tlv.data.generation;
 export const nextGeneration = (g) => ((g + 1) >>> 0) || 1;
 /** @type {Record<number, string>} */
 export const REFERENCE_SOURCE = Object.fromEntries(Object.entries(ANA.enum.reference_source).map(([k, v]) => [v, k]));
-/** configure's TLVs this host sends critical (its own choice: the rule is the same with or without bit 7, core §2.3). */
-export const ALWAYS_CRITICAL = Object.freeze(new Set([MODE, RATE, TRIGGER, PRETRIGGER, FRONTEND]));
 export const CRITICAL = m.TAG_CRITICAL;
 export const ONE_SHOT = CAP.enum.mode.one_shot, REPEAT = CAP.enum.mode.repeat, STREAMING = CAP.enum.mode.streaming;
 const LT = CAP.enum.trigger, AT = ANA.enum.trigger;   // logic: immediate / level / edge; analog: immediate / cross_up / cross_down
@@ -163,6 +161,7 @@ export class Config {
     /** @type {Map<number, number>} analog: the frontend each channel took */ this.frontend = new Map();
     /** @type {{ source: string, mv: number, measured: boolean } | null} analog: the ADC's reference */ this.reference = null;
     this.blockingMs = 0;
+    /** what this host asked (a group's pretrigger: the trigger_track's) */ this.pretrigger = 0;
     /** @type {number | null} multirate: L, base samples a block (§5.3) */ this.block = null;
     /** @type {mr.Multirate[]} multirate: the reduced channels asked, role order */ this.multirate = [];
   }
@@ -245,12 +244,33 @@ export class Received {
     /** push frames missing by seq */ this.seqLost = 0;
     this.frames = 0;
     /** pushes of an earlier generation, dropped */ this.stale = 0;
+    /** bytes at or past an error stop's write_pos, dropped */ this.droppedAfterError = 0;
     this.skipped = 0n;
     /** @type {number | null} */ this.expectSeq = null;
     /** @type {Set<number>} events share the fn's seq (they stay on the link for the caller) */ this.eventSeqs = new Set();
   }
 
   get data() { return this.buf.subarray(0, this.length); }
+
+  /** Drop every byte at stream position `position` or later (§2.2: after an error stop, status's write_pos).
+   * @param {bigint} position */
+  dropFrom(position) {
+    if (this.start === null) return;
+    let skipped = 0n, from = 0, keep = this.length;
+    const gaps = [...this.gaps].sort((a, b) => a[0] - b[0]);
+    for (const [index, n] of [...gaps, [this.length, 0]]) {
+      if (position < this.start + BigInt(index) + skipped) {
+        keep = Math.max(from, Number(position - this.start - skipped));
+        break;
+      }
+      skipped += BigInt(n);
+      from = index;
+    }
+    this.droppedAfterError += this.length - keep;
+    this.length = keep;
+    this.gaps = this.gaps.filter(([i]) => i < keep);
+    this.skipped = this.gaps.reduce((t, [, n]) => t + BigInt(n), 0n);
+  }
 
   /** The stream position just after the last byte collected (null: nothing yet). */
   get reached() { return this.start === null ? null : this.start + BigInt(this.length) + this.skipped; }
@@ -377,8 +397,8 @@ async function currentEvent(iface, parse, kinds, timeoutMs) {
  * @property {[number, number, number]} [trigger]  (type, role, value)
  * @property {number} [pretrigger]
  * @property {boolean} [query]              ask only (query op, no lock, nothing changes)
- * @property {Iterable<number>} [critical]  more tags the probe must honour or reject (samples, segments; mode, rate,
- *   trigger, pretrigger and frontend always are: ALWAYS_CRITICAL) - Unsupported, .tag = the one it cannot
+ * @property {Iterable<number>} [critical]  accepted for older callers and not used: the table's TLVs go without the
+ *   critical bit, only multirate is critical (§3.3, oep-spec c6ab5d9)
  * @property {Map<number, number> | Record<number, number>} [frontends]  analog: role -> frontend (describe frontend)
  * @property {mr.Multirate[]} [multirate]  logic: the roles to reduce (§5; a role left out is a D = 1 channel), checked
  *   against describe before sending, each sent as TLV 0xE0
@@ -413,11 +433,16 @@ export class LogicCapture extends Interface {
   }
 
   /** -> the probe's actual values. A value the probe cannot honour is refused: Unsupported, .tag = the TLV as sent
-   * (§3.3). mode, rate, trigger, pretrigger and frontend go critical; `critical`: more tags to send critical (samples,
-   * segments). Read Config.samples / .segments: the probe rounds samples down.
+   * (§3.3; with several refusals the probe answers any one - nothing here relies on the order). The TLVs go without the
+   * critical bit, only multirate is critical; rate, samples and segments 1 or more; a type 0 trigger goes as role 0
+   * value 0 (RangeError before sending otherwise). Read Config.samples / .segments: the probe rounds samples down.
    * @param {ConfigureOptions} opts */
-  async configure({ rate, mode = ONE_SHOT, samples, segments, trigger, pretrigger, query = false, critical = [], frontends, multirate }) {
+  async configure({ rate, mode = ONE_SHOT, samples, segments, trigger, pretrigger, query = false, frontends, multirate }) {
     // §3.3's contract, before anything is sent
+    for (const [n, v] of /** @type {[string, number | undefined][]} */ ([['rate', rate], ['samples', samples], ['segments', segments]])) {
+      if (v !== undefined && !(v >= 1)) throw new RangeError(`capture configure: ${n} ${v} - 1 or more (oep-if-capture §3.3)`);
+    }
+    if (trigger !== undefined && trigger[0] === IMMEDIATE) trigger = [IMMEDIATE, 0, 0];   // role and value not used (§3.3)
     if ((mode === ONE_SHOT || mode === REPEAT) && samples === undefined) {
       throw new RangeError('capture configure: samples is required in one-shot and repeat (oep-if-capture §3.3)');
     }
@@ -427,10 +452,9 @@ export class LogicCapture extends Interface {
       if (pretrigger) throw new RangeError('capture configure: a pretrigger needs a trigger (oep-if-capture §3.3)');
       pretrigger = undefined;                                       // 0 without a trigger: simply not sent
     }
-    const crit = new Set([...ALWAYS_CRITICAL, ...critical]);
     const w = new Writer();
     /** @param {number} tag @param {Uint8Array} value */
-    const put = (tag, value) => w.raw(m.tlv(tag, value, crit.has(tag)));
+    const put = (tag, value) => w.raw(m.tlv(tag, value));          // not critical (§3.3)
     put(MODE, Uint8Array.of(mode));
     put(RATE, new Writer().u32(rate).done());
     if (samples !== undefined) put(SAMPLES, new Writer().u32(samples).done());
@@ -444,6 +468,7 @@ export class LogicCapture extends Interface {
     // query is its own operation: the lock is decided per operation, before the payload is looked at
     const op = query ? LogicCapture.QUERY_OP : LogicCapture.CONFIGURE;
     const c = parseConfig((await this.call(op, w.done(), { locked: !query })).payload, this.analog);
+    c.pretrigger = pretrigger ?? 0;
     if (mode === ONE_SHOT && !c.segments) c.segments = 1;          // one-shot's answer has no actual_segments (§3.3)
     if (specs.length) {
       if (c.block === null || c.block < 1) throw new ProtocolError('a multirate configure answered without block L (oep-if-capture §5.3)');
@@ -458,7 +483,8 @@ export class LogicCapture extends Interface {
   async multirateDeclared() {
     if (this.analog) return null;
     const v = (await describe(this.host, this.fn)).find(([t]) => (t & 0x7f) === mr.DECLARED)?.[1];
-    return v && v.length >= 13 ? mr.Declared.unpack(v) : null;
+    const decl = v && v.length >= 13 ? mr.Declared.unpack(v) : null;
+    return decl && !decl.broken ? decl : null;                      // a broken declaration is not used (§5.1)
   }
 
   /** A multirate segment's stream (readSegment's bytes) -> its D = 1 channels' levels (role order, as the layout's pos)
@@ -534,11 +560,17 @@ export class LogicCapture extends Interface {
     }
   }
 
-  /** Streaming, after stop(): collect the pushes still to come, up to the last byte captured (status's write
-   * position), or until `timeoutMs`.
+  /** Streaming, after stop() or an error stop: collect the pushes still to come, up to the last byte captured
+   * (status's write position), or until `timeoutMs`. In state 6 the bytes at or past write_pos are dropped (§2.2).
    * @param {Received} got @param {number} timeoutMs */
   async finish(got, timeoutMs = 5000) {
-    const end = (await this.status()).writePos;
+    const st = await this.status();
+    const end = st.writePos;
+    if (st.state === STATE.error) {
+      await this.stream({ ms: Math.min(100, timeoutMs), into: got });
+      got.dropFrom(end);                                            // §2.2: nothing at or past write_pos is data
+      return got;
+    }
     const deadline = now() + timeoutMs;
     while (now() < deadline) {
       if (got.reached === end) return got;
@@ -925,13 +957,29 @@ export class CaptureGroup extends Interface {
   /** the group's events of an earlier generation nextEvent passed over */
   staleEvents = 0;
 
-  /** Bind these (configured) tracks; [] unbinds. `trigger`: the track whose configure trigger starts them all (a
-   * critical TLV). An fn not in the group's `tracks` is rejected Unsupported (tag null, `.fn` names it).
+  /** P_k (§4.1): the samples before the trigger `track` keeps for the trigger_track's pretrigger P, the same time:
+   * ceil(P * num_k * den_t / (den_k * num_t)) by the actual rates (base samples for multirate).
+   * @param {LogicCapture} track @param {LogicCapture} trigger */
+  static pretriggerOf(track, trigger) {
+    const t = trigger.cfg, k = track.cfg;
+    const num = BigInt(t.pretrigger) * BigInt(k.rateNum) * BigInt(t.rateDen), den = BigInt(k.rateDen) * BigInt(t.rateNum);
+    return Number((num + den - 1n) / den);
+  }
+
+  /** Bind these (configured) tracks; [] unbinds. `trigger`: the track whose configure trigger starts them all; its
+   * pretrigger is the group's, every other track keeping it as the same time (P_k, pretriggerOf). Only the trigger
+   * track may have a pretrigger (RangeError before sending, §4.1). A track that cannot keep P_k is refused Unavailable
+   * cause 2 with `.fn` naming it; an fn not in the group's `tracks` is refused Unsupported (tag null, `.fn`).
    * @param {LogicCapture[]} tracks @param {LogicCapture | null} trigger */
   async bind(tracks, trigger = null) {
+    for (const t of tracks) {
+      if (t !== trigger && t.config && t.config.pretrigger) {
+        throw new RangeError(`capture-group bind: fn ${t.fn} has a pretrigger of its own - the group's is the trigger_track's alone (oep-if-capture §4.1)`);
+      }
+    }
     const w = new Writer().u8(tracks.length);
     for (const t of tracks) w.u16(t.fn);
-    if (trigger) w.raw(m.tlv(CaptureGroup.TAG_TRIGGER_TRACK, new Writer().u16(trigger.fn).done(), true));
+    if (trigger) w.raw(m.tlv(CaptureGroup.TAG_TRIGGER_TRACK, new Writer().u16(trigger.fn).done()));   // not critical (§3.3)
     await this.call(CaptureGroup.BIND, w.done());
   }
 

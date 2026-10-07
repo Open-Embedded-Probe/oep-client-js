@@ -81,11 +81,17 @@ export class Multirate {
 
 /** describe 0x60 (§5.1). */
 export class Declared {
-  /** @param {number} policies @param {number} minD @param {number} maxD @param {boolean} pow2 */
+  /** @param {number} policies @param {number} minD @param {number} maxD @param {boolean | number} pow2  a number past 1: broken */
   constructor(policies, minD, maxD, pow2) { this.policies = policies; this.minD = minD; this.maxD = maxD; this.pow2 = pow2; }
 
   /** @param {Uint8Array} v */
-  static unpack(v) { return new Declared(getU32(v, 0), getU32(v, 4), getU32(v, 8), v[12] !== 0); }
+  static unpack(v) { return new Declared(getU32(v, 0), getU32(v, 4), getU32(v, 8), v[12] > 1 ? v[12] : v[12] !== 0); }
+
+  /** policies bit 0 clear, minD < 2, minD > maxD or pow2 other than 0 / 1: not used, the fn is taken as not declaring
+   * multirate (§5.1, oep-spec c6ab5d9). */
+  get broken() {
+    return !(this.policies & 1) || this.minD < 2 || this.minD > this.maxD || typeof this.pow2 !== 'boolean';
+  }
 
   /** @param {number} policy */
   acceptsPolicy(policy) { return policy in POLICY_NAME && ((this.policies >>> policy) & 1) === 1; }

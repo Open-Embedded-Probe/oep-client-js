@@ -447,14 +447,14 @@ test('API: describe shows the capture mode, channels and trigger, oep.probe.link
 
 // ---- P2-○8 / P2-○9: capture ------------------------------------------------------------------------------------------
 
-test('P2-○8: capture configure sends mode, rate, trigger and pretrigger critical; the answer\'s samples hold', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
+test('P2-○8: capture configure sends the table\'s TLVs without the critical bit (oep-spec c6ab5d9); the answer\'s samples hold', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
   await hst.open(3000);
   const cap = await capture.LogicCapture.open(hst);
   await planApply(hst, [[cap.fn, 0, 4]]);
   const log = recording(hst);
   const c = await cap.configure({ rate: 1_000_000, samples: 1 << 20, trigger: [capture.LEVEL, 0, 1], pretrigger: 4 });
   const tags = new Set(m.splitTlvs(log[log.length - 1].payload).map(([t]) => t));
-  for (const t of [capture.MODE | 0x80, capture.RATE | 0x80, capture.TRIGGER | 0x80, capture.PRETRIGGER | 0x80, capture.SAMPLES]) assert.ok(tags.has(t), `0x${t.toString(16)}`);
+  assert.deepEqual([...tags].sort(), [capture.MODE, capture.RATE, capture.SAMPLES, capture.TRIGGER, capture.PRETRIGGER].sort());
   assert.equal(c.samples, 65536);                                   // rounded down: the answer holds
   await hst.end();
 }));

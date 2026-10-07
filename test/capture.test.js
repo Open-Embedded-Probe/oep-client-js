@@ -520,10 +520,11 @@ test('a group refuses what it cannot bind', opts, () => withBench(async ({ hst, 
 
 test('what the probe cannot do is refused unsupported, naming the tag', opts, () => withBench(async ({ hst, lc }) => {
   await planApply(hst, [[lc.fn, 0, 20]]);
-  for (const o of [{ frontends: { 0: 1 }, critical: [c.FRONTEND] }, { trigger: /** @type {[number, number, number]} */ ([c.CROSS_UP, 0, 100]) }]) {
+  // (a frontend sent to the logic is a TLV it does not know: without the critical bit it is ignored, core §2.3)
+  for (const o of [{ trigger: /** @type {[number, number, number]} */ ([c.CROSS_UP, 0, 100]) }]) {
     await assert.rejects(lc.configure({ rate: 1_000_000, samples: 64, ...o }), (e) => {
       assert.ok(e instanceof Unsupported);
-      assert.equal(e.tag, (o.frontends ? c.FRONTEND : c.TRIGGER) | c.CRITICAL);
+      assert.equal(e.tag, c.TRIGGER);                                // sent without the critical bit (§3.3)
       return true;
     });
   }
@@ -659,3 +660,25 @@ test('multirate: configure, capture and decode against the virtual bench (captur
   const an = await c.AnalogCapture.open(hst);
   await assert.rejects(an.configure({ rate: 10_000, samples: 64, multirate: [new mr.Multirate(0, mr.SAMPLE, 2, 0)] }), /declares no multirate/);
 }));
+
+test('c6ab5d9: a broken multirate declaration is not used; dropFrom across a gap; a track with its own pretrigger is not bound', async () => {
+  const mr = await import('../src/multirate.js');
+  for (const raw of [[6, 2, 128, 1], [7, 1, 128, 0], [7, 8, 4, 0], [7, 2, 128, 2]]) {
+    const v = new Writer().u32(raw[0]).u32(raw[1]).u32(raw[2]).u8(raw[3]).done();
+    assert.equal(mr.Declared.unpack(v).broken, true, String(raw));
+  }
+  assert.equal(mr.Declared.unpack(new Writer().u32(7).u32(2).u32(128).u8(1).done()).broken, false);
+  const got = new c.Received();
+  got.start = 100n;
+  got.append(Uint8Array.from({ length: 10 }, (_, i) => i));
+  got.gaps.push([4, 6]); got.skipped = 6n;                             // data 0-3 at 100-103, 4-9 at 110-115
+  got.dropFrom(112n);
+  assert.deepEqual([[...got.data], got.droppedAfterError, got.reached], [[0, 1, 2, 3, 4, 5], 4, 112n]);
+  const grp = new c.CaptureGroup(/** @type {any} */ ({ call: () => { throw new Error('sent'); } }), 12, c.CaptureGroup.NAME);
+  const a = new c.LogicCapture(/** @type {any} */ ({}), 7, c.LogicCapture.NAME), b = new c.LogicCapture(/** @type {any} */ ({}), 11, c.LogicCapture.NAME);
+  a.config = Object.assign(new c.Config(), { pretrigger: 1000, rateNum: 20_000_000, rateDen: 1 });
+  b.config = Object.assign(new c.Config(), { pretrigger: 5, rateNum: 48_000, rateDen: 1 });
+  await assert.rejects(grp.bind([a, b], a), /trigger_track's alone/);
+  b.config.pretrigger = 0;
+  assert.equal(c.CaptureGroup.pretriggerOf(b, a), 3);                  // ceil(1000 x 48000 / 20 MHz) = ceil(2.4) (§4.1)
+});

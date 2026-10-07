@@ -543,13 +543,40 @@ async function onClient(c) {
     else assert.deepEqual(segments.map((s) => [s.serial, Number(s.position), Number(s.samples), Number(s.startNs), s.generation]), [[0, 0, 1000, 5_000_000, 1]]);
     return sent;
   }
+  if (name.startsWith('logic status') && name.includes('streaming')) {
+    const { hst, sent } = client(c);
+    const st = await new LogicCapture(hst, 9, LogicCapture.NAME).status();
+    assert.deepEqual([st.state, st.segmentsDone, Number(st.writePos), st.dropped, st.errorName], [6, 2, 32, true, 'storage']);
+    return sent;
+  }
   if (name.startsWith('logic status')) {                             // capture §2.2: state 6, error 2, flags bit0
     const { hst, sent } = client(c);
     const st = await new LogicCapture(hst, 9, LogicCapture.NAME).status();
     assert.deepEqual([st.state, st.segmentsDone, Number(st.writePos), st.dropped, st.generation, st.errorName], [6, 2, 2000, true, 1, 'storage']);
     return sent;
   }
-  if (name.startsWith('logic configure without rate')) return null;   // the client always sends mode and rate
+  if (name.startsWith('logic configure without rate')) return null;
+  if (name.startsWith('logic query: an immediate trigger')) {        // type 0 goes as role 0 value 0 (§3.3)
+    const { hst, sent } = client(c);
+    await new LogicCapture(hst, 9, LogicCapture.NAME).configure({ rate: 20_000_000, samples: 200_000, trigger: [0, 5, 9], query: true });
+    const trig = m.splitTlvs(m.Request.unpack(sent[0]).payload).find(([t]) => t === 0x45);
+    assert.deepEqual([...(trig?.[1] ?? [])], [0, 0, 0, 0, 0, 0]);
+    return null;                                                      // the vector's role 5 is the probe's side
+  }
+  if (name.startsWith('logic query: samples 0')) {
+    const { hst, sent } = client(c);
+    await assert.rejects(new LogicCapture(hst, 9, LogicCapture.NAME).configure({ rate: 20_000_000, samples: 0, query: true }), /1 or more/);
+    assert.equal(sent.length, 0);
+    return null;                                                      // refused before sending
+  }
+  if (name.startsWith('capture-group bind: a track cannot keep')) {
+    const { AnalogCapture, CaptureGroup } = await import('../src/capture.js');
+    const { hst, sent } = client(c, S);
+    const logic = new LogicCapture(hst, 9, LogicCapture.NAME);
+    await assert.rejects(new CaptureGroup(hst, 12, CaptureGroup.NAME).bind([logic, new AnalogCapture(hst, 13, AnalogCapture.NAME)], logic),
+      (e) => e instanceof Unavailable && e.cause === 'limit' && e.fn === 13);   // cause 2, TLV fn (§4.1)
+    return sent;
+  }   // the client always sends mode and rate
   if (name.startsWith('logic configure') || name.startsWith('logic query')) {
     const cap = await import('../src/capture.js');
     const { hst, sent } = client(c, c.state.includes('session S') ? S : null);
@@ -846,5 +873,20 @@ test('multirate.json: each segment decodes to its levels and values, and encodes
       for (const s of specs.filter((/** @type {any} */ x) => x.reduced)) assert.deepEqual(got.reduced.get(s.role), s.values(ch[s.role]), v.name);
       assert.equal(hex(lay.encode((role, i) => Number(ch[role][i]), n, d1Roles)), seg.stream_hex, v.name);
     }
+  }
+});
+
+test('data frames: what the host keeps after an error stop (capture §2.2)', async () => {
+  const cap = await import('../src/capture.js');
+  const data = load('ops.json').data;
+  assert.ok(data.length);
+  for (const v of data) {
+    const p = cap.unpackPush(hx(v.frame_hex));
+    assert.equal(p.generation, v.generation, v.name);
+    const got = new cap.Received();
+    got.start = p.position;
+    got.append(p.data);
+    got.dropFrom(32n);                                                // the status vector's write_pos
+    assert.deepEqual([got.length, got.droppedAfterError], [v.keep, p.data.length - v.keep], v.name);
   }
 });
