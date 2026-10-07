@@ -44,10 +44,11 @@ test('slot and bind values as probe.config §1.1 / §1.2 say, and back', () => {
   assert.deepEqual([...b.value()], [3, 2, 5, 0]);                    // port(u8) kind(u8) id(u16): one stream (§1.2)
   assert.deepEqual(config.decode(config.ITEM.bind, b.value()), b);
   assert.deepEqual(config.decode(config.ITEM.bind, Uint8Array.of(0, 1, 0, 0)), new Bind({ port: 0, stream: ['slot', 0] }));
-  // removals are unset's keys: len tag key (probe.config §2)
-  assert.deepEqual([...config.remove('bind', 3).encoded()], [2, config.ITEM.bind, 3]);
-  assert.deepEqual([...config.remove('plan', 0x105).encoded()], [3, config.ITEM.plan, 5, 1]);
-  assert.deepEqual([...config.remove('uart', 7).encoded()], [3, config.ITEM.uart, 7, 0]);
+  // removals are unset's keys: len tag key, len the key's bytes alone (probe.config §2)
+  assert.deepEqual([...config.remove('bind', 3).encoded()], [1, config.ITEM.bind, 3]);
+  assert.deepEqual([...config.remove('plan', 0x105).encoded()], [2, config.ITEM.plan, 5, 1]);
+  assert.deepEqual([...config.remove('uart', 7).encoded()], [2, config.ITEM.uart, 7, 0]);
+  assert.deepEqual([...config.remove('wifi', 2).encoded()], [1, config.ITEM.wifi, 2]);
   assert.throws(() => config.remove(/** @type {any} */ ('x'), 1), RangeError);
   // a slot without a console; the uart item
   const none = new Slot({ slot: 2, wireFn: 1, pins: [2, 54], name: 'n', mechanism: 'none' });
@@ -241,7 +242,7 @@ test('the disable item: its value, decode, removal and order', () => {
   assert.equal(config.ITEM.disable, 0x07);
   assert.deepEqual([...config.item(d)], [0x07, 2, 0, 40, 0]);
   assert.deepEqual(config.decode(config.ITEM.disable, d.value()), d);
-  assert.deepEqual([...config.remove('disable', 41).encoded()], [3, 0x07, 41, 0]);
+  assert.deepEqual([...config.remove('disable', 41).encoded()], [2, 0x07, 41, 0]);
   const order = config.ordered([new Disable({ channel: 9 }), new Label({ channel: 1, text: 'NC' }), new Disable({ channel: 3 })]);
   assert.deepEqual(order.map(([t, v]) => [t, v[0]]), [[2, 1], [7, 3], [7, 9]]);
 });

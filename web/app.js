@@ -29,6 +29,8 @@ const WORDS = {
     locked: 'lock held', noLock: 'no lock',
     speedHint: 'A UART bridge (serial) probe that offers port_speed runs faster for this session: each candidate is tried, confirmed at the new rate and committed - the first that passes is kept (the probe goes back to 115200 when the lock is released); in use, a rate whose frames keep breaking is left for the session. Which rates pass depends on the bridge chip. The default is 500000: a faster rate is tried only when you enter it here, and is used only after full frames ran 1 s each way at it (host guide §17).',
     speedTry: 'Try the rates',
+    wifi: 'Wi-Fi network', wifiOpen: 'Open network (no passphrase)',
+    wifiHint: 'The probe tries the entries in index order. The passphrase is write-only: the probe never gives it back and this page never shows it. Left empty, the entry keeps the passphrase it has. Changing the entry in use drops the probe\'s TCP link.',
   },
   ja: {
     unsupported: 'このブラウザには WebUSB / WebSerial / WebHID がありません。Chrome か Edge で、HTTPS か localhost で開いてください。',
@@ -50,6 +52,8 @@ const WORDS = {
     locked: 'ロックあり', noLock: 'ロックなし',
     speedHint: 'port_speed を持つ UART bridge（シリアル）の probe は、このセッションの間速くできます。候補を順に試し、新しい速さで confirm して決め、最初に通った速さを使います（ロックを放すと probe は 115200 に戻る）。使っている間にフレームが壊れ続ける速さはそのセッションでは降ります。通る速さは変換チップで決まります。既定は 500000 で、それより速い速さはここに入れたときだけ試し、両方向それぞれ 1 秒、最大のフレームを流して通ったときだけ使います（oep-if-link §3 の義務 7）。',
     speedTry: '速さを試す',
+    wifi: 'Wi-Fi のネットワーク', wifiOpen: '開いたネットワーク（passphrase なし）',
+    wifiHint: 'probe は entry を index の順に試します。passphrase は書くだけで、probe は返さず、このページも表示しません。空のままなら、その entry の今の passphrase を保ちます。使っている entry を変えると、probe の TCP のつながりは切れます。',
   },
 };
 /** @type {'en' | 'ja'} */
@@ -208,6 +212,10 @@ function itemText(it) {
   if (it instanceof config.Disable) return `disable ${it.channel}`;
   if (it instanceof config.Plan) return `plan fn ${it.fn} role ${it.role} → channel ${it.channel}`;
   if (it instanceof config.Uart) return `uart fn ${it.fn} ${it.baud} baud, format 0x${it.format.toString(16).padStart(2, '0')}`;
+  if (it instanceof config.Wifi) {                                 // never the passphrase: shown() says set / none
+    const w = it.shown();
+    return `wifi ${w.index} "${w.ssid}", passphrase ${w.passphrase}`;
+  }
   return `tag 0x${it.tag?.toString(16)}`;
 }
 
@@ -221,6 +229,7 @@ function itemKey(it) {
   if (it instanceof config.Disable) return ['disable', it.channel];
   if (it instanceof config.Plan) return ['plan', it.fn];
   if (it instanceof config.Uart) return ['uart', it.fn];
+  if (it instanceof config.Wifi) return ['wifi', it.index];
   return null;
 }
 
@@ -232,9 +241,11 @@ async function readSettings() {
   const slots = state.slots.map((s) => `slot ${s.slot}: ${s.state}${s.connection ? ` (connection ${s.connection})` : ''}`
     + (s.lastTryAtNs !== null ? ` (last try at ${(Number(s.lastTryAtNs / 1_000_000n) / 1000).toFixed(3)} s)` : ''));
   const binds = state.binds.map((b) => `port ${b.port}: ${b.flow}`);
+  const wifi = declared.wifiMax ? [`${declared.wifiMax} wifi entries`, ...(state.wifi ? [`wifi ${state.wifi.text()}`] : [])] : [];
   $('settings-state').textContent = [`storage ${state.storage}${state.unreadable ? ` (${state.unreadable})` : ''}`
     + (declared.storageBytes ? ` of ${declared.storageBytes} bytes` : ''), `${declared.slotsMax} slots`,
-  ...slots, ...binds].join(' · ');
+  ...slots, ...binds, ...wifi].join(' · ');
+  $('form-wifi').hidden = !declared.items.includes(config.ITEM.wifi);
   const body = /** @type {HTMLTableSectionElement} */ ($('settings-items').querySelector('tbody'));
   body.replaceChildren();
   for (const it of items) {
@@ -297,6 +308,17 @@ function wireForms() {
   }));
   on('form-uart', (d) => [new config.Uart({ fn: +d.fn, baud: +d.baud,
     format: fixture.FixtureUart.formatByte(+d.dataBits, d.parity, +d.stopBits) })]);
+  // the passphrase is write-only (probe.config §1.4, host guide §15.1): a password field, cleared once read, never
+  // filled from the probe or written to the log; empty keeps the entry's (pass_len 0xFF), "open" sends none
+  const wifiForm = /** @type {HTMLFormElement} */ ($('form-wifi'));
+  wifiForm.onsubmit = (e) => {
+    e.preventDefault();
+    const pass = input('wifi-pass');
+    const d = formData(wifiForm);
+    const passphrase = d.open ? null : pass.value === '' ? config.KEEP : pass.value;
+    pass.value = '';
+    act(async () => setItems([new config.Wifi({ index: +d.index, ssid: String(d.ssid), passphrase })]));
+  };
 }
 
 // ---- tools ---------------------------------------------------------------------------------------------------------

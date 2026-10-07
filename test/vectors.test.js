@@ -484,6 +484,7 @@ async function onClient(c) {
     }
     return sent;
   }
+  if (name.startsWith('probe.config') && c.state.startsWith('items has wifi')) return wifiOnClient(c, a);
   if (name.startsWith('probe.config')) {
     if (name.includes('set')) return null;                          // the client's Idle never sends these forms
     const { hst, sent } = client(c, name.includes('save') ? S : null);
@@ -509,6 +510,52 @@ async function onClient(c) {
   }
   return null;
 }
+
+/** The wifi vectors (probe.config §1.4, §3.3: every case whose state starts "items has wifi") as this client sends and
+ * reads them; null for the form it never builds (a 7-byte passphrase: RangeError before sending, the passphrase not in
+ * the message). 0xFF for a missing entry and an index past wifi_max are the probe's to refuse: sent as asked.
+ * @param {any} c @param {m.Result} a @returns {Promise<Uint8Array[] | null>} */
+async function wifiOnClient(c, a) {
+  const name = /** @type {string} */ (c.name);
+  const { hst, sent } = client(c, c.state.includes('session S') ? S : null);
+  const p = new config.ProbeConfig(hst, 8, config.ProbeConfig.NAME);
+  const refused = (/** @type {number} */ detail) => (/** @type {unknown} */ e) => e instanceof Rejected && e.result.detail === detail;
+  if (name.startsWith('probe.config set: wifi entry 0')) {
+    assert.equal(await p.set([new config.Wifi({ index: 0, ssid: 'lab', passphrase: 'password1' })]), 0x5A5A0001);
+  } else if (name.startsWith('probe.config get')) {
+    const { hash, items } = await p.get();
+    const [w] = items.map(([t, v]) => config.decode(t, v));
+    assert.ok(w instanceof config.Wifi);
+    assert.deepEqual([hash, items.length, w.index, w.ssid, w.passphrase], [0x5A5A0001, 1, 0, 'lab', config.KEEP]);
+    assert.deepEqual(w.shown(), { index: 0, ssid: 'lab', passphrase: 'set' });
+  } else if (name.includes('sent back')) {
+    assert.equal(await p.set([new config.Wifi({ index: 0, ssid: 'lab', passphrase: config.KEEP })]), 0x5A5A0001);
+  } else if (name.includes('no entry')) {
+    assert.equal(a.detail, m.REJECT.malformed);
+    await assert.rejects(p.set([new config.Wifi({ index: 1, ssid: 'field', passphrase: config.KEEP })]), refused(m.REJECT.malformed));
+  } else if (name.includes('7-byte')) {
+    assert.throws(() => new config.Wifi({ index: 1, ssid: 'field', passphrase: 'secret7' }).value(),
+      (e) => e instanceof RangeError && !e.message.includes('secret7'));
+    assert.equal(a.detail, m.REJECT.malformed);                            // what the probe answers the bytes (its side)
+    return null;
+  } else if (name.includes('at wifi_max')) {
+    await assert.rejects(p.set([new config.Wifi({ index: 4, ssid: 'field' })]), refused(m.REJECT.unsupported));
+  } else if (name.startsWith('probe.config state')) {
+    const st = await p.state();
+    assert.deepEqual([st.slots, st.binds], [[], []]);
+    assert.deepEqual(st.wifi, new config.WifiState('connected', 0, 'none', -52, '192.168.1.23'));
+  } else if (name.startsWith('probe.config unset')) {
+    assert.equal(await p.unset([['wifi', 0]]), 0x5A5A0002);
+  } else {
+    assert.fail(`a wifi vector this test does not know: ${name}`);
+  }
+  return sent;
+}
+
+test('ops: the wifi vectors (probe.config §1.4, §3.3) are all known here', () => {
+  const wifi = OPS.filter((/** @type {any} */ c) => c.name.startsWith('probe.config') && c.state.startsWith('items has wifi'));
+  assert.equal(wifi.length, 8);
+});
 
 test('ops: where this client has the op, its request is the case\'s and its reading gives the case\'s values', async () => {
   let checked = 0;

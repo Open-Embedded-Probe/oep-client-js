@@ -12,7 +12,7 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 
 **v1 の凍結の前に、ひととおり移した版です。仕様が固まるにつれて作り直す前提です。**
 
-**実装する仕様: oep-spec の commit `f8bb2de`**（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
+**実装する仕様: oep-spec の commit `30b2b36`**（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
 だけでは形が決まらないので、実装は実装する仕様を名乗る）。2026-10-06 の単純化（10 byte の要求の見出し 1 つ、TLV の len は u16、
 閉じた固定の形、describe の `ops` tag、再開なし）、コンソールの送りの列と reset の後の待ち（f0c68bf）、長い probe.config の項目
 （d34dafa）、既存の connection に加わる attach（59dd028）と、2026-10-06 の構造（2e5dc4c〜9c837a9、0304f37）: 本体は名前を
@@ -23,7 +23,9 @@ probe の時刻を返す（要求を処理する間に読む。e0d9dc6、498ae95
 TLV は無い（知らない非 critical の TLV は跡を残さず無視し、実装する TLV は bit 7 によらず同じに確かめる）、送り直しの表は
 (corr、応答)、list は `first` だけ、probe の内部の時間は文から消えた（attach、scan、riscv-dm の reset は max_op_ms のうちに答える）、
 port_speed は握手だけ（baud、step、verify_ms）、probe.config は slot の錠も boot_reset も無く bind はストリーム 1 本、gpio の drive は
-u8 の段、インターフェースの名前は 1〜48 byte、走り直す host は前の実行が残したセッションを終える（host ガイド §5）。
+u8 の段、インターフェースの名前は 1〜48 byte、走り直す host は前の実行が残したセッションを終える（host ガイド §5）― に、その後
+（c2b8007〜30b2b36）の probe.config の wifi の項目（passphrase は書くだけ）、unset の len は key だけを数えること、TCP の probe の
+見つけ方（mDNS の DNS-SD `_oep._tcp`、transports §3）を加えたもの。
 凍結までは日本語の文（`.ja.md`）が仕様の作業の文。
 
 入っているもの:
@@ -57,7 +59,12 @@ u8 の段、インターフェースの名前は 1〜48 byte、走り直す host
   プロジェクトの USB の VID:PID `1209:4F45` だけで見つける（transports §3: WebUSB / WebHID の選択の既定の filter、Node の
   `findUsbProbes` / `findSerialProbes` / `findProbes`、`openUsb()` ― この VID:PID のプローブがちょうど 1 つならそれを vendor bulk で、
   無ければその CDC の口で開く。2 つ以上なら `SeveralProbesError` が並べるので 1 つを指定する）。WebSerial の選択には既定の
-  filter を付けないので、UART bridge や内蔵の USB serial も選べる
+  filter を付けないので、UART bridge や内蔵の USB serial も選べる。TCP の probe（Node だけ。ブラウザは TCP を開けず mDNS も
+  送れないので、ページに TCP は無い）は `openTcp({ host, port })` で開く。決まった port は無い（transports §3）:
+  `openTcp({ host })` はその DNS-SD `_oep._tcp` の record が広告する port を使い、`openTcp({ unitId })` は TXT の `unit_id` が
+  それの probe を開く（ほかの名指した probe と同じく、開いた後に describe の unit_id を確かめる）。`browse()` / `findUnit()` /
+  `portOf()`（`oep-client-js/node`、src/node/discovery.js）はその裏の、依存の無い mDNS の問い合わせ（IPv4、届くのは同じリンク
+  だけ: NAT の後ろや別のサブネットでは見つからないので host と port を渡す。アドレスはほかの経路での wifi の state の `ipv4` でも分かる）
 - firmware の更新: USB の DFU（ESP32-P4）と、Release の firmware-<version>.json
 - ページ: つなぐ、probe の宣言を読む、設定の編集と保存、GPIO と UART、port_speed、DFU での更新
 - port_speed（oep-if-link §3 は握手だけで、任意のインターフェース `oep.probe.link` の op。probe は ops が立てるときに持つ。手順は
@@ -122,7 +129,15 @@ u8 の段、インターフェースの名前は 1〜48 byte、走り直す host
 - probe.config: slot に錠も boot_reset も無い（target の確かめは host が connections の tid で）。`SlotState` は `{ slot, state:
   connected | absent, connection, lastTryAtNs }`。bind はストリーム 1 本（`Bind({ port, stream: ['slot', n] | ['uart', fn] })`、
   `BindState` は `{ port, flow }`）。idle の項目は 4 byte。hash は probe が作る ― host は項目を比べる（`config.sameItems`）。
-  `ProbeConfig.needsSave()` と `apply(wanted, { save })`（host ガイド §15）
+  `ProbeConfig.needsSave()` と `apply(wanted, { save })`（host ガイド §15）。unset の要素の len は key の byte 数だけを数える
+  （`config.remove(kind, key)`）
+- Wi-Fi（probe.config §1.4、§3.3、host ガイド §15.1）: `config.Wifi({ index, ssid, passphrase })` ― passphrase は null（開いた
+  ネットワーク）、`config.KEEP`（その entry のものを保つ。get の形、pass_len 0xFF）、8〜63 文字の印字できる ASCII か 16 進 64 桁。
+  passphrase は書くだけ: get は返さず（`KEEP` と読む）、private field に持つ（`console.log`、`util.inspect`、`JSON.stringify` に
+  出ない。`toString()` / `shown()` は set / none と言う）。断ったときの error にも載せない。`sameItems` と `apply` は wifi の項目を
+  passphrase 抜きで比べ、変わる entry にだけ送る。`describe()` は `wifiMax`、`state()` は `wifi`（`WifiState`: state、entry、
+  reason、rssi、ipv4。`text()`）。ページの Wi-Fi の欄は passphrase を password の欄で受け、読んだら消し、probe から埋め戻さない
+  （空: 保つ。「開いたネットワーク」: なし）
 - キャプチャ: configure の TLV は core §2.3 だけに従う（扱わない値は受け取ったままの tag で `Unsupported`）。応答に timing と
   rate_accuracy は無い。describe の mode は mode max_samples max_segments
 - 2026-10-02 の規則の変更（oep-spec `docs/v1-rule-change-proposal-2026-10-02.ja.md`）の host の側: attach と scan は予算の分
@@ -136,7 +151,7 @@ wire は oep-spec の 2026-10-01 のゼロベース見直しを 2026-10-06 に�
 TLV の形 1 つ、要素に長さを置かない並び、閉じた固定の形、`ops` tag、再開なし。変更履歴を参照）に、2026-10-06 の構造（名前の
 無い本体、oep.probe のインターフェース、インターフェースごとの通知）を加えたもの。
 oep-client-python の仮想ベンチ（probe とその先の target、治具の配線を実際の治具に合わせて作ったもの:
-`python -m oep_client.virtual_bench_serve`）と台本のデバイスで試しています（316 件。oep-spec の試験ベクタを含み、sessions.json、
+`python -m oep_client.virtual_bench_serve`）と台本のデバイスで試しています（329 件。oep-spec の試験ベクタを含み、sessions.json、
 ops.json、ops_encoding.json も）。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
 
 v1 の凍結までは仕様が壊れることがあり、この package は probe の firmware

@@ -29,6 +29,7 @@ pre.out { background: var(--card); border: 1px solid var(--line); border-radius:
 pre.out.small { max-height: 30vh; min-height: 4rem; }
 .forms { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 12px; }
 .forms form { display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.forms form[hidden] { display: none; }
 .forms form label { justify-content: space-between; }
 .forms h4 { margin: 0 0 4px; }
 table.items { width: 100%; border-collapse: collapse; margin: 8px 0; }

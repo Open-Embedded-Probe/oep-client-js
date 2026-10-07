@@ -1,7 +1,8 @@
 // @ts-check
 // oep.probe.config revision 1 (oep-spec interfaces/oep-if-probe-config.ja.md): the probe's settings - plan, labels, idle
-// pins, slots, binds, fixture UART settings, disabled channels - read and set as items, removed with unset, saved when the host says so,
-// and the live slot / bind / storage state as its own lock-free operation (describe is declarations only, core §7.3).
+// pins, slots, binds, fixture UART settings, disabled channels, Wi-Fi networks (the passphrase write-only) - read and set
+// as items, removed with unset, saved when the host says so, and the live slot / bind / storage / Wi-Fi state as its own
+// lock-free operation (describe is declarations only, core §7.3).
 //
 //   const cfg = await ProbeConfig.open(hst);
 //   await cfg.set([new Slot({ slot: 0, wireFn, pins: [2, 54], name: 'x035', attach: 'at-boot', retryS: 1 }),
@@ -9,6 +10,7 @@
 //   if (await cfg.needsSave()) await cfg.save();
 //   await cfg.items(), await cfg.describe(), await cfg.state()
 //   await cfg.unset([['bind', 1]])          // or cfg.set([remove('bind', 1)])
+//   await cfg.set([new Wifi({ index: 0, ssid: 'lab', passphrase })])   // the passphrase is never read back or shown
 //
 // An item goes as its TLV; a set replaces the keys it carries and keeps the others; the probe checks the whole and
 // changes nothing on a refusal. Every item has one form per tag (probe.config §1). The hash is the probe's own u32
@@ -27,6 +29,18 @@ export const ITEM = CFG.tlv.item;
 /** A label's text: 1 to this many bytes (probe.config §1). */
 export const LABEL_MAX = reg.LIMITS.label_max_bytes;
 export const DESCRIBE = CFG.tlv.describe;
+/** The state answer's TLVs: wifi (probe.config §3.3). */
+export const STATE_TLV = CFG.tlv.state_answer;
+/** Items keyed by their first byte (slot, port, index); the others by a u16 (probe.config §2). */
+const BYTE_KEYED = [ITEM.slot, ITEM.bind, ITEM.wifi];
+/** A wifi item's ssid: 1 to this many bytes (probe.config §1.4). */
+export const SSID_MAX = reg.LIMITS.wifi_ssid_max_bytes;
+/** A wifi passphrase: PASS_MIN to PASS_MAX bytes of 0x20-0x7E, or PSK_HEX hex digits (probe.config §1.4). */
+export const PASS_MIN = reg.LIMITS.wifi_passphrase_min_bytes;
+export const PASS_MAX = reg.LIMITS.wifi_passphrase_max_bytes;
+export const PSK_HEX = reg.LIMITS.wifi_psk_hex_digits;
+/** pass_len in get: a passphrase is set (none follows); in a set: keep the entry's. */
+export const PASS_SET = CFG.enum.wifi_pass_len.hidden;
 
 /** @param {Record<string, number>} e */
 const dashed = (e) => /** @type {Record<string, number>} */ (Object.fromEntries(Object.entries(e).map(([k, v]) => [k.replace(/_/g, '-'), v])));
@@ -44,6 +58,10 @@ export const IDLE_CLOCK = { ...reg.WIRE_RVSWD.enum.idle_clock };    // a slot's 
 export const SLOT_STATE = byValue(CFG.enum.slot_state);
 export const BIND_FLOW = byValue(CFG.enum.bind_flow);
 export const STORAGE_STATE = byValue(CFG.enum.storage_state);
+export const WIFI_STATE = byValue(CFG.enum.wifi_state);             // off, connecting, connected, waiting
+export const WIFI_REASON = byValue(CFG.enum.wifi_reason);           // none, not-found, auth, no-address, other
+/** The wifi state's entry when no entry is tried or used. */
+export const NO_ENTRY = CFG.enum.wifi_entry.none;
 /** Why a saved configuration was not applied (state's unreadable_reason; probe.config §3.3). */
 export const UNREADABLE = /** @type {Record<number, string>} */ ({
   1: 'unreadable form', 2: 'an interface it names is gone or of another revision', 3: 'refused when applied',
@@ -189,9 +207,78 @@ export class Bind {
   }
 }
 
-/** @typedef {Plan | Label | Idle | Slot | Bind | Uart | Disable} Item */
+/** A wifi item's passphrase as get shows it: one is set, and a set carrying KEEP keeps the entry's (pass_len 0xFF). */
+export const KEEP = Symbol('KEEP');
+
+/** A passphrase as the wifi item takes it (probe.config §1.4): 8 to 63 bytes of 0x20-0x7E, or 64 hex digits. The
+ * message never carries the passphrase. @param {Uint8Array} raw */
+export function checkPassphrase(raw) {
+  const isHex = (/** @type {number} */ b) => (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66);
+  if (raw.length === PSK_HEX && raw.every(isHex)) return;
+  if (raw.length < PASS_MIN || raw.length > PASS_MAX || raw.some((b) => b < 0x20 || b > 0x7e)) {
+    throw new RangeError(`wifi passphrase (${raw.length} bytes): ${PASS_MIN} to ${PASS_MAX} printable ASCII characters or ${PSK_HEX} hex digits`);
+  }
+}
+
+/** @typedef {string | Uint8Array | typeof KEEP | null} Passphrase */
+
+/**
+ * A network the probe joins to serve OEP over TCP (probe.config §1.4, item 0x08, key index; tried in index order).
+ * ssid: 1 to 32 bytes. passphrase: null for an open network, `KEEP` for the one the entry has already (get's form: a
+ * set with it changes nothing of the passphrase), else 8-63 printable ASCII characters or 64 hex digits.
+ *
+ * The passphrase is write-only: get never returns it (pass_len 0xFF: one is set, 0: none). Nothing here shows it: it is
+ * a private field (not in console.log, util.inspect or JSON.stringify), and toString / toJSON / `shown()` say "set" or
+ * "none".
+ */
+export class Wifi {
+  static TAG = ITEM.wifi;
+  /** @type {Passphrase} */
+  #passphrase;
+  /** @param {{ index: number, ssid: string | Uint8Array, passphrase?: Passphrase }} o */
+  constructor({ index, ssid, passphrase = null }) { this.index = index; this.ssid = ssid; this.#passphrase = passphrase ?? null; }
+  /** The passphrase as given (null, KEEP or the text): for sending only - never print or log it (host guide §15.1). */
+  get passphrase() { return this.#passphrase; }
+  get ssidBytes() { return typeof this.ssid === 'string' ? utf8(this.ssid) : this.ssid; }
+  /** Whether the entry has a passphrase (KEEP or one given). */
+  get hasPassphrase() { return this.#passphrase === KEEP || (this.#passphrase !== null && this.#passphrase.length > 0); }
+  key() { return [this.index]; }
+  /** What may be shown: index, ssid (safe text), passphrase "set" / "none". */
+  shown() { return { index: this.index, ssid: m.shown(this.ssidBytes), passphrase: this.hasPassphrase ? 'set' : 'none' }; }
+  toJSON() { return this.shown(); }
+  toString() {
+    const s = this.shown();
+    return `Wifi(index=${s.index}, ssid=${JSON.stringify(s.ssid)}, passphrase=${s.passphrase})`;
+  }
+  [Symbol.for('nodejs.util.inspect.custom')]() { return this.toString(); }
+  /** index(u8) ssid_len(u8) ssid pass_len(u8) passphrase (pass_len 0xFF and nothing after: keep it). */
+  value() {
+    const ssid = this.ssidBytes;
+    if (ssid.length < 1 || ssid.length > SSID_MAX) throw new RangeError(`wifi ssid ${JSON.stringify(m.shown(ssid))}: 1 to ${SSID_MAX} bytes`);
+    if (!Number.isInteger(this.index) || this.index < 0 || this.index >= 0xff) {
+      throw new RangeError(`wifi index ${this.index}: 0 to 254 (below the probe's wifi_max)`);
+    }
+    const w = new Writer().u8(this.index).u8(ssid.length).raw(ssid);
+    const pass = this.#passphrase;
+    if (pass === KEEP) return w.u8(PASS_SET).done();
+    if (pass === null || pass.length === 0) return w.u8(0).done();
+    const raw = typeof pass === 'string' ? utf8(pass) : pass;
+    checkPassphrase(raw);
+    return w.u8(raw.length).raw(raw).done();
+  }
+}
+
+/** A wifi item's value as get shows it: the passphrase replaced by pass_len 0xFF when there is one (a value too short
+ * for its counts is returned as it is). @param {Uint8Array} value */
+export function wifiGetForm(value) {
+  if (value.length < 3 || value.length < 3 + value[1]) return value;
+  const head = value.slice(0, 2 + value[1]);
+  return concat(head, Uint8Array.of(value[2 + value[1]] ? PASS_SET : 0));
+}
+
+/** @typedef {Plan | Label | Idle | Slot | Bind | Uart | Disable | Wifi} Item */
 /** @typedef {{ tag: number, value: Uint8Array }} RawItem  an item of a tag this client does not know (or a malformed one) */
-/** @typedef {'plan' | 'label' | 'idle' | 'slot' | 'bind' | 'uart' | 'disable'} ItemKind */
+/** @typedef {'plan' | 'label' | 'idle' | 'slot' | 'bind' | 'uart' | 'disable' | 'wifi'} ItemKind */
 
 /** One item as its TLV.
  * @param {Item} it */
@@ -201,15 +288,17 @@ export function item(it) { return m.tlv(/** @type {any} */ (it.constructor).TAG,
 export class Removal {
   /** @param {ItemKind} kind @param {number} key */
   constructor(kind, key) { this.kind = kind; this.key = key; }
-  /** len(u8) tag(u8) key: the key is fn(u16) for plan / uart, channel(u16) for label / idle / disable, slot(u8), port(u8). */
+  /** len(u8) tag(u8) key, len the key's bytes alone (probe.config §2): the key is fn(u16) for plan / uart, channel(u16)
+   * for label / idle / disable, slot(u8), port(u8), index(u8) for wifi. */
   encoded() {
-    const key = this.kind === 'slot' || this.kind === 'bind' ? Uint8Array.of(this.key) : new Writer().u16(this.key).done();
-    return new Writer().u8(1 + key.length).u8(ITEM[this.kind]).raw(key).done();
+    const tag = ITEM[this.kind];
+    const key = BYTE_KEYED.includes(tag) ? Uint8Array.of(this.key) : new Writer().u16(this.key).done();
+    return new Writer().u8(key.length).u8(tag).raw(key).done();
   }
 }
 
 /** The removal of the item of this key (for `unset`, or in a `set` list): kind plan (key fn: its whole plan), label /
- * idle / disable (channel), slot, bind (port), uart (fn).
+ * idle / disable (channel), slot, bind (port), uart (fn), wifi (index).
  * @param {ItemKind} kind @param {number} key */
 export function remove(kind, key) {
   if (ITEM[kind] === undefined) throw new RangeError(`no item kind ${kind}`);
@@ -236,26 +325,35 @@ export function decode(tag, v) {
   if (tag === ITEM.disable && v.length >= 2) return new Disable({ channel: getU16(v) });
   if (tag === ITEM.uart && v.length >= 7) return new Uart({ fn: getU16(v), baud: getU32(v, 2), format: v[6] });
   if (tag === ITEM.bind && v.length >= 4) return new Bind({ port: v[0], stream: [nameOf(STREAM, v[1]), getU16(v, 2)] });
+  if (tag === ITEM.wifi && v.length >= 3 && v.length >= 3 + v[1]) {
+    const passLen = v[2 + v[1]];
+    // get carries no passphrase (pass_len 0xFF: set); one a probe sent anyway is kept, never shown
+    const sent = v.slice(3 + v[1], 3 + v[1] + passLen);
+    const passphrase = passLen === PASS_SET ? KEEP : passLen ? (sent.length ? sent : KEEP) : null;
+    return new Wifi({ index: v[0], ssid: text(v.slice(2, 2 + v[1])), passphrase });
+  }
   return { tag, value: v };
 }
 
 // ---- comparing items (host guide §15) ---------------------------------------------------------------------------
 
 /** get's order key of one item (probe.config §2): plan (fn, role, channel), label / idle / disable channel, slot,
- * port, uart fn. @param {number} tag @param {Uint8Array} value */
+ * port, uart fn, wifi index. @param {number} tag @param {Uint8Array} value */
 function sortKey(tag, value) {
   if (tag === ITEM.plan && value.length >= 5) return [getU16(value), value[2], getU16(value, 3)];
-  if (tag === ITEM.slot || tag === ITEM.bind) return value.length ? [value[0]] : [-1];
+  if (BYTE_KEYED.includes(tag)) return value.length ? [value[0]] : [-1];
   return value.length >= 2 ? [getU16(value)] : [-1];
 }
 
 /**
  * The items (objects, or item TLV bytes - one or more TLVs each) as [tag, value] in get's order: tag ascending, then
  * key ascending (plan by (fn, role, channel)), critical bit dropped. The same key twice throws, as the probe refuses it
- * in one set; a Removal is not an item (it goes as an unset) and throws too.
- * @param {(Item | Uint8Array | [number, Uint8Array])[]} items @returns {[number, Uint8Array][]}
+ * in one set; a Removal is not an item (it goes as an unset) and throws too. asGet: a wifi item's passphrase as get
+ * shows it (`wifiGetForm`).
+ * @param {(Item | Uint8Array | [number, Uint8Array])[]} items @param {boolean} [asGet]
+ * @returns {[number, Uint8Array][]}
  */
-export function ordered(items) {
+export function ordered(items, asGet = false) {
   /** @type {{ tag: number, key: number[], value: Uint8Array }[]} */
   const rows = [];
   const seen = new Set();
@@ -270,7 +368,7 @@ export function ordered(items) {
       const id = `${tag}:${key.join(',')}`;
       if (seen.has(id)) throw new RangeError(`item 0x${tag.toString(16)} key ${key.join(',')} given twice`);
       seen.add(id);
-      rows.push({ tag, key, value });
+      rows.push({ tag, key, value: asGet && tag === ITEM.wifi ? wifiGetForm(value) : value });
     }
   }
   rows.sort((a, b) => a.tag - b.tag || a.key[0] - b.key[0] || (a.key[1] ?? 0) - (b.key[1] ?? 0) || (a.key[2] ?? 0) - (b.key[2] ?? 0));
@@ -278,10 +376,12 @@ export function ordered(items) {
 }
 
 /** Whether two configurations hold the same items, item by item (host guide §15: a host compares what it wants with
- * get's items; the probe's hash is its own and is never computed here).
+ * get's items; the probe's hash is its own and is never computed here). A wifi item compares as get shows it: its
+ * passphrase is write-only, so only whether one is set counts - a changed passphrase of the same entry is not seen
+ * (set it with `set`; host guide §15.1).
  * @param {(Item | Uint8Array | [number, Uint8Array])[]} a @param {(Item | Uint8Array | [number, Uint8Array])[]} b */
 export function sameItems(a, b) {
-  const x = ordered(a), y = ordered(b);
+  const x = ordered(a, true), y = ordered(b, true);
   return x.length === y.length && x.every(([t, v], i) => t === y[i][0] && v.length === y[i][1].length && v.every((byte, k) => byte === y[i][1][k]));
 }
 
@@ -289,9 +389,9 @@ export function sameItems(a, b) {
 const KIND = /** @type {any} */ (Object.fromEntries(Object.entries(ITEM).map(([k, v]) => [v, k])));
 
 /** The [kind, key] an unset names for an item (probe.config §2): plan and uart fn(u16), label / idle / disable
- * channel(u16), slot and bind their first byte. @param {number} tag @param {Uint8Array} value @returns {[ItemKind, number]} */
+ * channel(u16), slot, bind and wifi their first byte. @param {number} tag @param {Uint8Array} value @returns {[ItemKind, number]} */
 function keyOf(tag, value) {
-  if (tag === ITEM.slot || tag === ITEM.bind) return [KIND[tag], value[0]];
+  if (BYTE_KEYED.includes(tag)) return [KIND[tag], value[0]];
   return [KIND[tag], getU16(value)];
 }
 
@@ -312,12 +412,36 @@ function keyOf(tag, value) {
  */
 /**
  * What the probe's describe declares (fixed for one boot): the storage's size, the item tags it takes, how many
- * slots.
+ * slots, how many wifi entries.
  * @typedef {object} Declared
  * @property {number} storageBytes       the storage's size; 0: no storage
  * @property {number[]} items            the item tags the probe takes
  * @property {number} slotsMax
+ * @property {number} wifiMax            wifi entries (index 0 .. wifiMax - 1); 0: no wifi item
  */
+
+/** The probe's Wi-Fi link (the state answer's wifi TLV, probe.config §3.3). */
+export class WifiState {
+  /** @param {string} state off, connecting, connected, waiting (every entry failed; it waits, then tries again)
+   * @param {number | null} entry the index in use or being tried (null: none)
+   * @param {string} reason why the last try failed: none, not-found, auth, no-address, other
+   * @param {number | null} rssi dBm, while connected @param {string | null} ipv4 the probe's address, while connected */
+  constructor(state, entry, reason, rssi, ipv4) {
+    this.state = state; this.entry = entry; this.reason = reason; this.rssi = rssi; this.ipv4 = ipv4;
+  }
+  /** state(u8) entry(u8) reason(u8) rssi(i8) ipv4(4 bytes). @param {Uint8Array} v */
+  static unpack(v) {
+    const connected = v[0] === CFG.enum.wifi_state.connected;
+    const rssi = v[3] >= 0x80 ? v[3] - 0x100 : v[3];
+    const ip = [...v.slice(4, 8)].join('.');
+    return new WifiState(WIFI_STATE[v[0]] ?? String(v[0]), v[1] === NO_ENTRY ? null : v[1], WIFI_REASON[v[2]] ?? String(v[2]),
+      connected && rssi ? rssi : null, connected && ip !== '0.0.0.0' ? ip : null);
+  }
+  text() {
+    return this.state + (this.entry !== null ? `, entry ${this.entry}` : '') + (this.reason !== 'none' ? `, reason ${this.reason}` : '')
+      + (this.rssi !== null ? `, rssi ${this.rssi} dBm` : '') + (this.ipv4 ? `, ip ${this.ipv4}` : '');
+  }
+}
 /**
  * The live state (op state, lock-free; probe.config §3.3): the saved settings and the slots and binds.
  * @typedef {object} State
@@ -327,6 +451,7 @@ function keyOf(tag, value) {
  * @property {string | null} unreadable  why, when unreadable
  * @property {SlotState[]} slots
  * @property {BindState[]} binds
+ * @property {WifiState | null} wifi      the Wi-Fi link, on a probe with the wifi item (the last page's)
  */
 
 export class ProbeConfig extends Interface {
@@ -360,7 +485,7 @@ export class ProbeConfig extends Interface {
     }
   }
 
-  /** The current settings, decoded (Plan, Label, Idle, Slot, Bind, Uart, Disable; { tag, value } for others). */
+  /** The current settings, decoded (Plan, Label, Idle, Slot, Bind, Uart, Disable, Wifi; { tag, value } for others). */
   async items() { return (await this.get()).items.map(([t, v]) => decode(t, v)); }
 
   /** Items (objects of the classes above, or item TLV bytes) -> the new hash. Removals (`remove()`) in the list go as
@@ -405,9 +530,11 @@ export class ProbeConfig extends Interface {
     return !(st.storage === 'applied' && st.savedHash === (await this.get()).hash);
   }
 
-  /** Make the probe's settings `wanted` (host guide §15): get, compared item by item (`sameItems`); when they differ,
-   * set what is wanted and unset the keys get has and `wanted` does not; with `save`, save when `needsSave`. -> whether
-   * anything was sent. Needs the lock when something changes.
+  /** Make the probe's settings `wanted` (host guide §15): get, compared item by item (`sameItems`; a wifi item by its
+   * ssid and whether it has a passphrase); when they differ, set what is wanted - a wifi entry the probe has as wanted
+   * goes with pass_len 0xFF, so no passphrase is sent again (host guide §15.1) - and unset the keys get has and
+   * `wanted` does not; with `save`, save when `needsSave`. -> whether anything was sent. Needs the lock when something
+   * changes.
    * @param {(Item | Uint8Array)[]} wanted @param {{ save?: boolean }} [opts] */
   async apply(wanted, { save = false } = {}) {
     const have = (await this.get()).items;
@@ -415,7 +542,12 @@ export class ProbeConfig extends Interface {
     if (!sameItems(have, wanted)) {
       const want = ordered(wanted);
       const keys = new Set(want.map(([t, v]) => keyOf(t, v).join(':')));
-      await this.set(want.map(([t, v]) => m.tlv(t, v)));
+      const had = new Map(ordered(have, true).map(([t, v]) => [keyOf(t, v).join(':'), v]));
+      const same = (/** @type {Uint8Array} */ a, /** @type {Uint8Array | undefined} */ b) => !!b && a.length === b.length && a.every((x, i) => x === b[i]);
+      await this.set(want.map(([t, v]) => {
+        const asGet = t === ITEM.wifi ? wifiGetForm(v) : v;
+        return m.tlv(t, t === ITEM.wifi && same(asGet, had.get(keyOf(t, v).join(':'))) ? asGet : v);
+      }));
       const gone = [...new Map(have.map(([t, v]) => keyOf(t & 0x7f, v)).filter((k) => !keys.has(k.join(':')))
         .map((k) => [k.join(':'), k])).values()];
       if (gone.length) await this.unset(gone);
@@ -434,24 +566,26 @@ export class ProbeConfig extends Interface {
   /** The declarations (describe, cached by the host while the probe's boot_id holds). @returns {Promise<Declared>} */
   async describe() {
     /** @type {Declared} */
-    const d = { storageBytes: 0, items: [], slotsMax: 0 };
+    const d = { storageBytes: 0, items: [], slotsMax: 0, wifiMax: 0 };
     for (const [rawTag, v] of await describe(this.host, this.fn)) {
       const tag = rawTag & 0x7f;
       if (tag === DESCRIBE.storage && v.length >= 4) d.storageBytes = getU32(v);
       else if (tag === DESCRIBE.items) d.items = [...v];
       else if (tag === DESCRIBE.slots_max && v.length) d.slotsMax = v[0];
+      else if (tag === DESCRIBE.wifi_max && v.length) d.wifiMax = v[0];
     }
     return d;
   }
 
-  /** The storage's state and the live slot_state / bind_state (op state, lock-free, paged by first_slot / first_bind).
+  /** The storage's state, the live slot_state / bind_state (op state, lock-free, paged by first_slot / first_bind)
+   * and, on a probe with the wifi item, the Wi-Fi link (`WifiState`).
    * Each page carries storage_state, storage_hash and unreadable_reason as they were when it was answered: the last
    * page's are kept (probe-config §3.3, PC-9). The slots and binds may change between pages too; a caller that needs
    * them to stay the same pages while it holds the lock.
    * @returns {Promise<State>} */
   async state() {
     /** @type {State} */
-    const st = { storage: 'none', savedHash: 0, unreadableReason: 0, unreadable: null, slots: [], binds: [] };
+    const st = { storage: 'none', savedHash: 0, unreadableReason: 0, unreadable: null, slots: [], binds: [], wifi: null };
     let firstSlot = 0, firstBind = 0;
     for (;;) {
       const rd = new m.Reader((await this.call(ProbeConfig.STATE, Uint8Array.of(firstSlot, firstBind), { locked: false })).payload);
@@ -471,7 +605,8 @@ export class ProbeConfig extends Interface {
         const port = rd.u8(), flow = rd.u8();
         st.binds.push({ port, flow: BIND_FLOW[flow] ?? String(flow) });
       }
-      rd.tail();
+      const wifi = rd.tail().get(STATE_TLV.wifi);
+      if (wifi && wifi.length >= 8) st.wifi = WifiState.unpack(wifi);
       if (!more || !(nSlots || nBinds)) return st;
       firstSlot += nSlots;
       firstBind += nBinds;

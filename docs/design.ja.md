@@ -22,7 +22,7 @@ src/            ライブラリ（環境に依らない核）         -> npm の
 src/browser/    ブラウザの経路                         -> npm の "./browser"
   index.js        WebSerial、WebUSB（vendor bulk、DFU）、WebHID
 src/node/       Node の経路                            -> npm の "./node"
-  index.js        シリアルの口（serialport）、USB（usb）、TCP（node:net）
+  index.js        シリアルの口（serialport）、USB（usb）、TCP（node:net。mDNS の DNS-SD で見つける: discovery.js、node:dgram）
 web/            Web ページのソース                      -> site/（scripts/build-site.js）-> GitHub Pages
 test/           試験（node:test）。Python の仮想ベンチに TCP でつなぐ
 scripts/        build、サイト、試験、リリースの道具
@@ -44,7 +44,12 @@ docs/           この文書、リリースの手順
 | USB CDC、USB-Serial/JTAG、USB-UART bridge | WebSerial | serialport | COBS + CRC |
 | vendor bulk（class 0xFF） | WebUSB | usb（WebUSB と同じ形） | length(u16) message |
 | vendor HID | WebHID | node-hid（任意） | report に詰めた length message |
-| TCP（ローカルのブローカー、試験の仮想ベンチ） | - | node:net | length(u16) message |
+| TCP（Wi-Fi の probe、ローカルのブローカー、試験の仮想ベンチ） | - | node:net | length(u16) message |
+
+- TCP は Node だけです: ブラウザは TCP の接続を開けず mDNS も送れないので、ページに TCP はありません。TCP の probe は
+  transports §3 のとおりに見つけます ― mDNS の DNS-SD `_oep._tcp`、port は SRV の record のもの（決まった port は無い）、TXT の
+  `unit_id` ― `browse()` / `findUnit()` / `portOf()`（src/node/discovery.js、依存なし）で見つけるか、host と port を渡します
+  （`openTcp({ host, port })`）。`openTcp({ unitId })` は開いた後に describe の unit_id を確かめます。
 
 - WebUSB、WebSerial、WebHID は Chromium 系（Chrome、Edge）だけで、ページは HTTPS（か localhost）で配る必要があります。
 - probe の見分け方は transports §3 のとおりです: 自動で見分けるのはプロジェクトの USB の VID:PID `1209:4F45` だけ（`PROJECT_VID_PIDS`。

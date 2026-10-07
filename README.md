@@ -12,7 +12,7 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 
 **A first full port, ahead of the v1 freeze: expect it to be redone as the spec settles.**
 
-**The spec this implements: oep-spec commit `f8bb2de`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
+**The spec this implements: oep-spec commit `30b2b36`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
 revision 1 alone does not fix the forms, so an implementation names the spec it implements). That is the 2026-10-06
 simplification (one 10-byte request header, TLV len u16, closed fixed forms, the `ops` describe tag, no resume), the
 console's send queue and the reset settle wait (f0c68bf), a longer probe.config item (d34dafa), an attach joining a
@@ -25,7 +25,9 @@ after it (283e5b5 .. f8bb2de): no ignored TLV (an unknown non-critical TLV is ig
 is checked the same with or without bit 7), the resend table is (corr, answer), list takes `first` alone, the probe's
 internal times leave the text (attach, scan and riscv-dm's reset answer within max_op_ms), port_speed is the handshake
 (baud, step, verify_ms), probe.config without slot lock / boot_reset and one stream a bind, gpio drive a u8 level,
-interface names 1 to 48 bytes, and a host that may run again ends the session its previous run left (host guide §5).
+interface names 1 to 48 bytes, and a host that may run again ends the session its previous run left (host guide §5) -
+and after it (c2b8007 .. 30b2b36) probe.config's wifi item with its write-only passphrase, unset's len counting the key
+alone, and TCP discovery (DNS-SD `_oep._tcp` over mDNS, transports §3).
 Until the freeze the Japanese text (`.ja.md`) is the specification's working text.
 
 What is there:
@@ -63,7 +65,13 @@ What is there:
   a USB probe is found by the project's USB VID:PID `1209:4F45` alone (transports §3: the WebUSB / WebHID choosers' default
   filter, Node's `findUsbProbes` / `findSerialProbes` / `findProbes`, `openUsb()` - exactly one probe on it is opened, by
   vendor bulk, else its CDC port; several: `SeveralProbesError` lists them, name one); the
-  WebSerial chooser has no default filter, so a UART bridge or a built-in USB serial stays selectable;
+  WebSerial chooser has no default filter, so a UART bridge or a built-in USB serial stays selectable; a probe on TCP
+  (Node only - a browser can neither open TCP nor send mDNS, so the page has no TCP) is opened by `openTcp({ host, port
+  })`, and no port is fixed (transports §3): `openTcp({ host })` takes the port its DNS-SD `_oep._tcp` record announces,
+  `openTcp({ unitId })` opens the probe whose TXT `unit_id` it is (describe's unit_id checked after opening, as for any
+  named probe), and `browse()` / `findUnit()` / `portOf()` (`oep-client-js/node`, src/node/discovery.js) are the
+  dependency-free mDNS query behind them (IPv4, the local link only: behind a NAT or across subnets nothing is found -
+  give host and port; the address is also the wifi state's `ipv4` over another transport);
 - the firmware update: USB DFU (the ESP32-P4) and the Release's firmware-<version>.json;
 - the page: connect, read what the probe declares, edit and save its settings, GPIO and UART, port_speed, a DFU update;
 - port_speed (oep-if-link §3 is the handshake, an op of the optional interface `oep.probe.link` that the probe offers when its
@@ -137,7 +145,16 @@ What is there:
 - probe.config: a slot has no lock or boot_reset (the host checks the target with connections' tid), `SlotState` is
   `{ slot, state: connected | absent, connection, lastTryAtNs }`, a bind carries one stream (`Bind({ port, stream:
   ['slot', n] | ['uart', fn] })`, `BindState` `{ port, flow }`), the idle item is 4 bytes; the hash is the probe's own -
-  a host compares items (`config.sameItems`), `ProbeConfig.needsSave()` and `apply(wanted, { save })` (host guide §15).
+  a host compares items (`config.sameItems`), `ProbeConfig.needsSave()` and `apply(wanted, { save })` (host guide §15);
+  an unset element's len counts the key's bytes alone (`config.remove(kind, key)`).
+- Wi-Fi (probe.config §1.4, §3.3; host guide §15.1): `config.Wifi({ index, ssid, passphrase })` - passphrase null (an
+  open network), `config.KEEP` (keep the entry's: get's form, pass_len 0xFF) or 8-63 printable ASCII characters / 64
+  hex digits. The passphrase is write-only: get never returns it (decoded as `KEEP`), it is a private field (not in
+  `console.log`, `util.inspect` or `JSON.stringify`; `toString()` / `shown()` say set / none), a refused one's error does
+  not carry it; `sameItems` and `apply` compare a wifi item without it and send it only for an entry that changes.
+  `describe()` gives `wifiMax`, `state()` gives `wifi` (`WifiState`: state, entry, reason, rssi, ipv4; `text()`). The
+  page's Wi-Fi form takes the passphrase in a password field that is cleared once read and never filled back (empty:
+  keep; "open": none).
 - capture: configure's TLVs follow core §2.3 alone (a value the probe does not handle is `Unsupported` with the tag as
   received); the answer has no timing or rate_accuracy; describe's mode is mode max_samples max_segments.
 - the rule changes of 2026-10-02 (oep-spec `docs/v1-rule-change-proposal-2026-10-02.md`), host side: attach and scan
@@ -151,7 +168,7 @@ The wire is oep-spec's 2026-10-06 simplification of the zero-base rewrite of 202
 session_id, one TLV form, sequences without element lengths, closed fixed forms, the `ops` tag, no resume; see the
 changelog), with the 2026-10-06 structure (the nameless core, the oep.probe interfaces, notifications per interface).
 Tested against oep-client-python's virtual bench (a probe, the targets behind it and the fixture wiring, modelled after
-the real jigs: `python -m oep_client.virtual_bench_serve`) and scripted devices (316 tests, oep-spec's test
+the real jigs: `python -m oep_client.virtual_bench_serve`) and scripted devices (329 tests, oep-spec's test
 vectors among them, sessions.json, ops.json and ops_encoding.json included); the browser transports, DFU and the page are not yet checked on
 hardware.
 

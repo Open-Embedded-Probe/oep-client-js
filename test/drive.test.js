@@ -259,7 +259,8 @@ test('an at-boot slot never resets its target: a silent one stays absent (probe.
   const cfg = await ProbeConfig.open(hst);
   const p = (await hst.call(cfg.fn, ProbeConfig.STATE, Uint8Array.of(0, 0), { locked: false })).payload;
   assert.equal(p[7], 1);                                           // one slot_state ...
-  assert.equal(p.length, 8 + 12 + 1);                              // ... of 12 bytes, then no bind
+  assert.equal(p[20], 0);                                          // ... of 12 bytes, then no bind
+  assert.deepEqual([...p.slice(21)], [...m.tlv(config.STATE_TLV.wifi, Uint8Array.of(0, 0xff, 0, 0, 0, 0, 0, 0))]);   // the wifi TLV: off
   const [st] = (await cfg.state()).slots;
   assert.deepEqual([st.state, st.connection], ['absent', 0]);
   assert.ok(st.lastTryAtNs !== null);

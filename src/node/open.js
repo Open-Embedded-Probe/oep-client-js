@@ -2,13 +2,31 @@
 // Hosts on Node's transports, confirmed and ready.
 import { connect } from '../open.js';
 import { tcpTransport } from './tcp.js';
+import { findUnit, portOf, targetOf } from './discovery.js';
 import { serialTransport } from './serial.js';
 import { chooseProbe, describeProbe, findProbes, usbTransport } from './usb.js';
 import { PROJECT_PID, PROJECT_VID, vendorTransport } from '../usbvendor.js';
 
-/** `unitId`: describe must say this unit_id, else closed (UnitIdMismatch, transports §3).
- * @param {import('../open.js').SpeedOptions & { host?: string, port: number, framing?: 'length' | 'cobs', timeoutMs?: number, baudRate?: number, leaseMs?: number, owner?: string, unitId?: string, keepSession?: boolean | import('../keptsession.js').KeptStore }} opts */
-export async function openTcp(opts) { return connect(await tcpTransport(opts), opts); }
+/** A probe over TCP: `{ host, port }` (host default 127.0.0.1). No port is fixed (transports §3): without `port`, a
+ * `host` takes the port its DNS-SD `_oep._tcp` record announces (discovery.js portOf), and with `unitId` alone the probe
+ * whose TXT unit_id it is is found (findUnit); nothing found throws - give host and port then (mDNS stays on the local
+ * link). `unitId`: describe must say this unit_id, else closed (UnitIdMismatch, transports §3) - also for a probe found
+ * by it. `findTimeoutMs`: how long to browse (default 3000).
+ * @param {import('../open.js').SpeedOptions & { host?: string, port?: number, framing?: 'length' | 'cobs', timeoutMs?: number, baudRate?: number, leaseMs?: number, owner?: string, unitId?: string, keepSession?: boolean | import('../keptsession.js').KeptStore, findTimeoutMs?: number }} opts */
+export async function openTcp(opts) {
+  let { host, port } = opts;
+  if (port === undefined) {
+    if (host === undefined) {
+      if (!opts.unitId) throw new TypeError('openTcp: give { host, port }, or a unitId to find on the local network (no port is fixed, transports §3)');
+      ({ host, port } = /** @type {{ host: string, port: number }} */ (targetOf(await findUnit(opts.unitId, { timeoutMs: opts.findTimeoutMs }))));
+    } else {
+      const found = await portOf(host, { timeoutMs: opts.findTimeoutMs });
+      if (found === null) throw new Error(`${host}: no port given and none announced as _oep._tcp (no port is fixed, transports §3): give { host, port }`);
+      port = found;
+    }
+  }
+  return connect(await tcpTransport({ ...opts, host, port }), opts);
+}
 
 /** portSpeed: the candidates to try once connected (port_speed, oep-if-link §3; true = the default 500000; the lock is
  * taken and kept, see connect), `flows` / `verify` for the full form, `record` for the record of passed / failed rates.

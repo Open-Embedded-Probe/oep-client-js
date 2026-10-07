@@ -23,7 +23,7 @@ src/            the library (the core, no environment)   -> npm "oep-client-js" 
 src/browser/    the browser's transports                 -> npm "./browser"
   index.js        WebSerial, WebUSB (vendor bulk, DFU), WebHID
 src/node/       Node's transports                        -> npm "./node"
-  index.js        serial ports (serialport), USB (usb), TCP (node:net)
+  index.js        serial ports (serialport), USB (usb), TCP (node:net; found by DNS-SD over mDNS: discovery.js, node:dgram)
 web/            the web page's sources                    -> site/ (scripts/build-site.js) -> GitHub Pages
 test/           tests (node:test), against the Python virtual bench over TCP
 scripts/        build, site, tests, release tools
@@ -45,7 +45,12 @@ docs/           this document, the release steps
 | USB CDC, USB-Serial/JTAG, USB-UART bridge | WebSerial | serialport | COBS + CRC |
 | vendor bulk (class 0xFF) | WebUSB | usb (WebUSB-shaped) | length(u16) message |
 | vendor HID | WebHID | node-hid (optional) | length messages in reports |
-| TCP (a local broker, the tests' virtual bench) | - | node:net | length(u16) message |
+| TCP (a probe on Wi-Fi, a local broker, the tests' virtual bench) | - | node:net | length(u16) message |
+
+- TCP is Node's alone: a browser can neither open a TCP connection nor send mDNS, so the page offers no TCP. A probe on
+  TCP is found as transports §3 says - DNS-SD `_oep._tcp` over mDNS, the port the SRV record's (none is fixed), TXT
+  `unit_id` - by `browse()` / `findUnit()` / `portOf()` (src/node/discovery.js, no dependency) or given as host and port
+  (`openTcp({ host, port })`); `openTcp({ unitId })` checks describe's unit_id after opening.
 
 - WebUSB, WebSerial and WebHID are Chromium only (Chrome, Edge), and the page must be served over HTTPS (or localhost).
 - Probes are recognised as transports §3 says: automatically only by the project's own USB VID:PID, `1209:4F45`

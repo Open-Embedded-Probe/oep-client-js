@@ -108,6 +108,15 @@
           <label>stop bits <select name="stopBits"><option>1</option><option>2</option></select></label>
           <button type="submit" data-i18n="set" data-needs="lock"></button>
         </form>
+        <form id="form-wifi" class="card" autocomplete="off" hidden>
+          <h4 data-i18n="wifi"></h4>
+          <label>index <input name="index" type="number" min="0" max="254" value="0" required></label>
+          <label>SSID <input name="ssid" maxlength="32" required autocomplete="off"></label>
+          <label data-i18n-label="passphrase">passphrase <input id="wifi-pass" name="passphrase" type="password" minlength="8" maxlength="64" autocomplete="new-password" spellcheck="false"></label>
+          <label class="check"><input name="open" type="checkbox"> <span data-i18n="wifiOpen"></span></label>
+          <p class="muted" data-i18n="wifiHint"></p>
+          <button type="submit" data-i18n="set" data-needs="lock"></button>
+        </form>
       </div>
     </section>
 
