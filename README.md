@@ -72,7 +72,12 @@ What is there:
   `openTcp({ unitId })` opens the probe whose TXT `unit_id` it is (describe's unit_id checked after opening, as for any
   named probe), and `browse()` / `findUnit()` / `portOf()` (`oep-client-js/node`, src/node/discovery.js) are the
   dependency-free mDNS query behind them (sent out of every IPv4 interface, `interfaceAddresses()`, the answers merged; IPv4, the local link only: behind a NAT or across subnets nothing is found -
-  give host and port; the address is also the wifi state's `ipv4` over another transport);
+  give host and port; the address is also the wifi state's `ipv4` over another transport). The service name `oep` is
+  not registered, so another service may advertise `_oep._tcp` (host guide §4.1): `verifyFound(found)` checks every
+  instance at once - a TCP connection, confirm (an `OEP!` answer) and fn 0's describe, whose unit_id must be the TXT
+  unit_id, 1 s per answer, no session opened - and `browse({ verify: true, onDropped })` keeps only those; `findUnit()`
+  (and so `openTcp({ unitId })`) verifies by default and passes over an instance it cannot verify (`verify: false`: the
+  first announced one);
 - the firmware update: USB DFU (the ESP32-P4) and the Release's firmware-<version>.json;
 - the page: connect, read what the probe declares, edit and save its settings, GPIO and UART, port_speed, a DFU update;
 - port_speed (oep-if-link §3 is the handshake, an op of the optional interface `oep.probe.link` that the probe offers when its

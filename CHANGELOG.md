@@ -1,6 +1,29 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) **Discovery verifies what it finds (oep-spec 0991759, host guide §4.1), as oep-client-python.** The DNS-SD
+  service name `oep` is not registered, so another service may advertise `_oep._tcp`. `src/node/discovery.js`:
+  `check(found)` connects to an instance, sends confirm (an `OEP!` answer, the probing rule) and fn 0's describe, whose
+  unit_id must be the TXT unit_id, and closes (no session, nothing kept) -> null or what it said; `verify(found)` checks
+  every instance at once (`VERIFY_TIMEOUT_MS` 1000 per answer; one still unanswered after 4 x that is dropped) ->
+  `{ verified, dropped }`; `browse({ verify: true, verifyTimeoutMs, onDropped })` returns only the verified ones
+  (default: every instance as announced). `findUnit()` verifies by default and takes the first verified instance with
+  that TXT unit_id (`verify: false`: the first announced one), so `openTcp({ unitId })` passes over a non-OEP instance;
+  `connect` still checks confirm and describe's unit_id on the link it opens (checked: unchanged). `oep-client-js/node`
+  exports `verifyFound`, `checkFound`, `VERIFY_TIMEOUT_MS`. Tests: the virtual bench with `--announce` beside a
+  responder announcing a non-OEP TCP service (under its own unit_id and the bench's) and the bench's port under a wrong
+  TXT unit_id. README / docs/design (EN / JA).
+- (JA) **discovery は見つけたものを確かめる（oep-spec 0991759、host ガイド §4.1。oep-client-python と同じ）。** DNS-SD の service
+  の名前 `oep` は登録した名前ではないので、別のサービスが `_oep._tcp` を広告しうる。`src/node/discovery.js`: `check(found)` は
+  instance につなぎ、confirm（`OEP!` の答え、探りの規則）と fn 0 の describe を送り、describe の unit_id が TXT の unit_id と同じかを
+  見て閉じる（session は開かず、何も残さない）-> null か、言ったこと。`verify(found)` はどの instance もすべて同時に確かめる（答え
+  1 つあたり `VERIFY_TIMEOUT_MS` 1000。その 4 倍たっても答えの無いものも外す）-> `{ verified, dropped }`。
+  `browse({ verify: true, verifyTimeoutMs, onDropped })` は確かめたものだけを返す（既定は広告されたものすべて）。`findUnit()` は
+  既定で確かめ、その TXT の unit_id を持つ確かめた最初の instance を取る（`verify: false` なら広告された最初のもの）。つまり
+  `openTcp({ unitId })` は OEP でない instance を飛ばす。`connect` は開いた経路で confirm と describe の unit_id を今までどおり確かめる
+  （確認した: 変わらない）。`oep-client-js/node` は `verifyFound`、`checkFound`、`VERIFY_TIMEOUT_MS` を出す。試験: `--announce` の
+  virtual bench と並べて、OEP でない TCP のサービス（自分の unit_id と bench の unit_id で）と、bench の port を違う TXT の unit_id で
+  広告する応答器。README / docs/design（EN / JA）。
 - (EN) oep-spec 2b17990 .. 9118dc0, as oep-client-python c4b48b7: registry (hash 2a89c89c0d0f9244) and test/vectors
   synced; README (EN / JA) names 9118dc0. probe.config §1.4: a probe with the wifi item answers max_frame 112 or more on
   every transport (`wifi_min_max_frame`, `config.WIFI_MIN_MAX_FRAME`); `ProbeConfig.set` refuses a request longer than

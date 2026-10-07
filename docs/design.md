@@ -50,7 +50,9 @@ docs/           this document, the release steps
 - TCP is Node's alone: a browser can neither open a TCP connection nor send mDNS, so the page offers no TCP. A probe on
   TCP is found as transports §3 says - DNS-SD `_oep._tcp` over mDNS, the port the SRV record's (none is fixed), TXT
   `unit_id` - by `browse()` / `findUnit()` / `portOf()` (src/node/discovery.js, no dependency; the query goes out of every IPv4 interface) or given as host and port
-  (`openTcp({ host, port })`); `openTcp({ unitId })` checks describe's unit_id after opening.
+  (`openTcp({ host, port })`); `openTcp({ unitId })` checks describe's unit_id after opening. `oep` is not a registered
+  service name, so what a browse finds is verified before use (host guide §4.1): `verify` / `browse({ verify: true })`
+  and `findUnit()` (by default) keep only the instances that answer confirm and whose describe unit_id is their TXT one.
 
 - WebUSB, WebSerial and WebHID are Chromium only (Chrome, Edge), and the page must be served over HTTPS (or localhost).
 - Probes are recognised as transports §3 says: automatically only by the project's own USB VID:PID, `1209:4F45`

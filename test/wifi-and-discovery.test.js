@@ -210,7 +210,7 @@ test('discovery: findUnit and portOf on what a browse gives', async () => {
   const b = new discovery.Browser();
   b.feed(announcement('fafe00000003', 'oep-fafe00000003.local.', 7451, [127, 0, 0, 1]));
   const look = async () => b.found();
-  assert.equal((await discovery.findUnit('FAFE00000003', { browse: look })).port, 7451);
+  assert.equal((await discovery.findUnit('FAFE00000003', { browse: look, verify: false })).port, 7451);
   await assert.rejects(discovery.findUnit('other', { browse: look }), /no probe with unit_id other/);
   for (const host of ['oep-fafe00000003.local', 'oep-fafe00000003', '127.0.0.1']) assert.equal(await discovery.portOf(host, { browse: look }), 7451);
   assert.equal(await discovery.portOf('10.0.0.9', { browse: look }), null);
@@ -276,5 +276,89 @@ test('discovery: browse asks and reads a responder on this host (mDNS loopback)'
     for (const at of discovery.interfaceAddresses()) assert.ok(from_.has(at), `no query from ${at}: ${[...from_]}`);
   } finally {
     try { responder.close(); } catch { /* closed */ }
+  }
+});
+
+// ---- verifying what is found (host guide §4.1: `oep` is not a registered service name) --------------------------------
+
+/** A TCP service that is no OEP probe: it answers whatever comes with an HTTP error line and closes.
+ * @returns {Promise<{ port: number, close: () => void }>} */
+async function notOep() {
+  const { createServer } = await import('node:net');
+  const srv = createServer((c) => {
+    c.on('error', () => { /* gone */ });
+    c.once('data', () => c.end('HTTP/1.0 400 Bad Request\r\n\r\n'));
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', () => r(undefined)));
+  return { port: /** @type {import('node:net').AddressInfo} */ (srv.address()).port, close: () => srv.close() };
+}
+
+/** A port nothing listens on. */
+async function closedPort() {
+  const { port, close } = await notOep();
+  close();
+  return port;
+}
+
+test('discovery: browse({ verify }) and findUnit drop what is not that OEP probe (virtual bench --announce)', { skip }, async (t) => {
+  const { createSocket } = await import('node:dgram');
+  const { randomBytes } = await import('node:crypto');
+  const unit = randomBytes(6).toString('hex');
+  const alien = randomBytes(6).toString('hex');
+  const liar = randomBytes(6).toString('hex');
+  let bench;
+  try {
+    bench = await startVirtualBench(['--announce', '--announce-engine', 'minimal', '--profile', 'esp32-v003', '--unit-id', unit]);
+  } catch (e) {
+    t.skip(`the virtual bench cannot announce here: ${e instanceof Error ? e.message : e}`);
+    return;
+  }
+  const other = await notOep();
+  // three more instances: a non-OEP service under a unit_id of its own and under the bench's, and the bench's port
+  // under a TXT unit_id that describe does not say
+  const fakes = [announcement(alien, `notoep-${alien}.local.`, other.port, [127, 0, 0, 1]),
+    announcement(unit, `notoep-${unit}.local.`, other.port, [127, 0, 0, 1]),
+    announcement(liar, `liar-${liar}.local.`, bench.port, [127, 0, 0, 1])];
+  const responder = createSocket({ type: 'udp4', reuseAddr: true });
+  responder.on('message', (msg, from) => {
+    if (msg[2] & 0x80) return;                                               // an answer, not a query
+    for (const a of fakes) responder.send(a, from.port, from.address);
+  });
+  const ready = await new Promise((resolve) => {
+    responder.once('error', () => resolve(false));
+    responder.bind(discovery.MDNS_PORT, () => {
+      try { responder.addMembership(discovery.MDNS_GROUP); } catch { resolve(false); return; }
+      for (const at of discovery.interfaceAddresses()) { try { responder.addMembership(discovery.MDNS_GROUP, at); } catch { /* joined */ } }
+      resolve(true);
+    });
+  });
+  try {
+    if (!ready) { t.skip('5353 or the mDNS group is not open to this test here'); return; }
+    const key = (/** @type {discovery.Found} */ f) => `${f.unitId}@${f.port}`;
+    const raw = (await discovery.browse({ timeoutMs: 1500 })).map(key);
+    for (const k of [`${unit}@${bench.port}`, `${alien}@${other.port}`, `${unit}@${other.port}`, `${liar}@${bench.port}`]) {
+      assert.ok(raw.includes(k), `${k} not in ${raw}`);
+    }
+    /** @type {string[]} */
+    const said = [];
+    const kept = (await discovery.browse({ timeoutMs: 1500, verify: true, onDropped: (f, why) => said.push(`${key(f)}: ${why}`) })).map(key);
+    assert.ok(kept.includes(`${unit}@${bench.port}`), String(kept));
+    for (const k of [`${alien}@${other.port}`, `${unit}@${other.port}`, `${liar}@${bench.port}`]) assert.ok(!kept.includes(k), String(kept));
+    assert.ok(said.some((x) => x.startsWith(`${alien}@${other.port}: `) && /no valid confirm answer/.test(x)), said.join('\n'));
+    assert.ok(said.some((x) => x.startsWith(`${liar}@${bench.port}: `) && x.includes(JSON.stringify(unit))), said.join('\n'));
+    // findUnit (so openTcp({ unitId })) passes over the non-OEP instance with the bench's TXT unit_id
+    for (let i = 0; i < 3; i++) assert.equal((await discovery.findUnit(unit, { timeoutMs: 1500 })).port, bench.port);
+    const hst = await openTcp({ unitId: unit, findTimeoutMs: 1500, keepSession: false });
+    await hst.link.close();
+    await assert.rejects(discovery.findUnit(alien, { timeoutMs: 1500 }), /no announced instance with unit_id .* is verified/);
+    // check on its own: why each one is not
+    const at = (/** @type {string | null} */ u, /** @type {number} */ port) => ({ instance: 'x', unitId: u, host: 'h', port, addresses: ['127.0.0.1'], txt: {} });
+    assert.equal(await discovery.check(at(unit, bench.port)), null);
+    assert.match(String(await discovery.check(at(unit, await closedPort()))), /no TCP connection/);
+    assert.match(String(await discovery.check(at(null, bench.port))), /no unit_id/);
+  } finally {
+    try { responder.close(); } catch { /* closed */ }
+    other.close();
+    bench.stop();
   }
 });

@@ -49,7 +49,9 @@ docs/           この文書、リリースの手順
 - TCP は Node だけです: ブラウザは TCP の接続を開けず mDNS も送れないので、ページに TCP はありません。TCP の probe は
   transports §3 のとおりに見つけます ― mDNS の DNS-SD `_oep._tcp`、port は SRV の record のもの（決まった port は無い）、TXT の
   `unit_id` ― `browse()` / `findUnit()` / `portOf()`（src/node/discovery.js、依存なし。問い合わせは IPv4 の口すべてから送る）で見つけるか、host と port を渡します
-  （`openTcp({ host, port })`）。`openTcp({ unitId })` は開いた後に describe の unit_id を確かめます。
+  （`openTcp({ host, port })`）。`openTcp({ unitId })` は開いた後に describe の unit_id を確かめます。`oep` は登録した service の
+  名前ではないので、browse で見つけたものは使う前に確かめます（host ガイド §4.1）: `verify` / `browse({ verify: true })` と
+  `findUnit()`（既定）は、confirm に答え、describe の unit_id が TXT のものと同じ instance だけを残します。
 
 - WebUSB、WebSerial、WebHID は Chromium 系（Chrome、Edge）だけで、ページは HTTPS（か localhost）で配る必要があります。
 - probe の見分け方は transports §3 のとおりです: 自動で見分けるのはプロジェクトの USB の VID:PID `1209:4F45` だけ（`PROJECT_VID_PIDS`。

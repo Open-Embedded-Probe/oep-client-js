@@ -65,7 +65,12 @@ u8 の段、インターフェースの名前は 1〜48 byte、走り直す host
   `openTcp({ host })` はその DNS-SD `_oep._tcp` の record が広告する port を使い、`openTcp({ unitId })` は TXT の `unit_id` が
   それの probe を開く（ほかの名指した probe と同じく、開いた後に describe の unit_id を確かめる）。`browse()` / `findUnit()` /
   `portOf()`（`oep-client-js/node`、src/node/discovery.js）はその裏の、依存の無い mDNS の問い合わせ（IPv4 の口すべてから送り（`interfaceAddresses()`）、答えをまとめる。IPv4、届くのは同じリンク
-  だけ: NAT の後ろや別のサブネットでは見つからないので host と port を渡す。アドレスはほかの経路での wifi の state の `ipv4` でも分かる）
+  だけ: NAT の後ろや別のサブネットでは見つからないので host と port を渡す。アドレスはほかの経路での wifi の state の `ipv4` でも分かる）。
+  service の名前 `oep` は登録した名前ではないので、別のサービスが `_oep._tcp` を広告しうる（host ガイド §4.1）: `verifyFound(found)`
+  はどの instance もすべて同時に確かめる ― TCP でつなぎ、confirm（`OEP!` の答え）と fn 0 の describe を送り、describe の unit_id が
+  TXT の unit_id と同じかを見る（答え 1 つあたり 1 秒、session は開かない）。`browse({ verify: true, onDropped })` はそれで残った
+  ものだけを返す。`findUnit()`（つまり `openTcp({ unitId })`）は既定で確かめ、確かめられない instance は飛ばす（`verify: false` なら
+  広告された最初のもの）
 - firmware の更新: USB の DFU（ESP32-P4）と、Release の firmware-<version>.json
 - ページ: つなぐ、probe の宣言を読む、設定の編集と保存、GPIO と UART、port_speed、DFU での更新
 - port_speed（oep-if-link §3 は握手だけで、任意のインターフェース `oep.probe.link` の op。probe は ops が立てるときに持つ。手順は

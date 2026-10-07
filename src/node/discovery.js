@@ -10,7 +10,10 @@
 // A probe listening on TCP advertises an instance of `_oep._tcp` while it listens: the port is the SRV record's (none
 // is fixed), the TXT record carries `unit_id=<unit_id>` (fn 0's describe's; other keys are kept and not looked at), the
 // instance and host names are the probe's. A host uses a named probe only when describe's unit_id after opening is the
-// one it named (openTcp's `unitId` checks it).
+// one it named (openTcp's `unitId` checks it). The service name `oep` is not registered, so another service may
+// advertise `_oep._tcp` (host guide §4.1): `verify` connects to each instance found, sends confirm and describe, keeps
+// those whose describe unit_id is their TXT unit_id and drops the rest; `browse({ verify: true })` and `findUnit` (by
+// default) do so.
 //
 // The query is a minimal one-shot browse, as oep-client-python's own (its discovery module without python-zeroconf):
 // PTR `_oep._tcp.local` (then SRV / TXT / A for what the answers left out), sent to 224.0.0.251:5353 out of every IPv4
@@ -25,6 +28,8 @@
 import { createSocket } from 'node:dgram';
 import { randomInt } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
+import { connect } from '../open.js';
+import { tcpTransport } from './tcp.js';
 
 export const SERVICE = '_oep._tcp.local.';
 export const MDNS_GROUP = '224.0.0.251';
@@ -254,10 +259,23 @@ function socketFor({ group = false, iface, joins = [] }) {
  * goes out of every IPv4 interface (`interfaces`, default `interfaceAddresses()`: one socket each, bound to that
  * address with its multicast interface set), and once more with the system's choice; it is sent at once and again at
  * 250, 500, 1000 ms gaps (each time with the questions still open). An interface that cannot send multicast is left
- * out; none at all: none found.
- * @param {{ timeoutMs?: number, service?: string, interfaces?: string[] }} [opts] @returns {Promise<Found[]>}
+ * out; none at all: none found. `verify` (default false: every instance as announced): only the instances `verify`
+ * keeps (confirm and describe's unit_id, host guide §4.1; `verifyTimeoutMs` per answer), `onDropped(found, reason)`
+ * called for each one dropped.
+ * @param {{ timeoutMs?: number, service?: string, interfaces?: string[], verify?: boolean, verifyTimeoutMs?: number,
+ *   onDropped?: (found: Found, reason: string) => void }} [opts] @returns {Promise<Found[]>}
  */
-export async function browse({ timeoutMs = 2000, service = SERVICE, interfaces = interfaceAddresses() } = {}) {
+export async function browse({ timeoutMs = 2000, service = SERVICE, interfaces = interfaceAddresses(), verify: checked = false,
+  verifyTimeoutMs = VERIFY_TIMEOUT_MS, onDropped } = {}) {
+  const found = await browseRaw(timeoutMs, service, interfaces);
+  if (!checked) return found;
+  const { verified, dropped } = await verify(found, { timeoutMs: verifyTimeoutMs });
+  for (const d of dropped) onDropped?.(d.found, d.reason);
+  return verified;
+}
+
+/** @param {number} timeoutMs @param {string} service @param {string[]} interfaces @returns {Promise<Found[]>} */
+async function browseRaw(timeoutMs, service, interfaces) {
   const b = new Browser(service);
   const senders = /** @type {import('node:dgram').Socket[]} */ ((await Promise.all([socketFor({}),
     ...interfaces.map((iface) => socketFor({ iface }))])).filter(Boolean));
@@ -283,15 +301,73 @@ export async function browse({ timeoutMs = 2000, service = SERVICE, interfaces =
   return b.found();
 }
 
-/** The probe whose TXT unit_id is `unitId` (ASCII case ignored) and that has an SRV port. Throws when none answers
- * within `timeoutMs` (default 3000). @param {string} unitId @param {{ timeoutMs?: number, browse?: typeof browse }} [opts] */
-export async function findUnit(unitId, { timeoutMs = 3000, browse: look = browse } = {}) {
-  const hit = (await look({ timeoutMs })).find((f) => (f.unitId ?? '').toLowerCase() === unitId.toLowerCase() && targetOf(f));
-  if (!hit) {
+/** Each answer's wait when an instance is verified (connect, confirm, describe). */
+export const VERIFY_TIMEOUT_MS = 1000;
+
+/** Whether an instance is an OEP probe (host guide §4.1: the service name `oep` is not registered, so another service
+ * may advertise `_oep._tcp`): a TCP connection to it, confirm (the probing rule, transports §3: an `OEP!` answer) and fn
+ * 0's describe, whose unit_id must be the TXT unit_id; then closed (no session is opened, nothing kept).
+ * @param {Found} f @param {{ timeoutMs?: number }} [opts] @returns {Promise<string | null>} null when it is, else what it said */
+export async function check(f, { timeoutMs = VERIFY_TIMEOUT_MS } = {}) {
+  if (!f.unitId) return 'no unit_id in its TXT record';
+  const at = targetOf(f);
+  if (!at) return 'no SRV port or address';
+  /** @type {import('../link.js').Transport} */
+  let transport;
+  try {
+    transport = await tcpTransport({ ...at, connectTimeoutMs: timeoutMs });
+  } catch (e) {
+    return `no TCP connection (${e instanceof Error ? e.message : e})`;
+  }
+  try {
+    // confirm only, then describe's unit_id: NotOepProbe / UnitIdMismatch close the link themselves
+    const hst = await connect(transport, { timeoutMs, unitId: f.unitId, keepSession: false });
+    await hst.link.close();
+    return null;
+  } catch (e) {
+    try { await transport.close(); } catch { /* closed */ }
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
+/** `check` on every instance at once -> the verified ones in `found`'s order and the dropped ones with why. An instance
+ * still unanswered after 4 x `timeoutMs` is dropped too.
+ * @param {Found[]} found @param {{ timeoutMs?: number }} [opts]
+ * @returns {Promise<{ verified: Found[], dropped: { found: Found, reason: string }[] }>} */
+export async function verify(found, { timeoutMs = VERIFY_TIMEOUT_MS } = {}) {
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer;
+  const late = new Promise((resolve) => { timer = setTimeout(() => resolve(`no answer within ${4 * timeoutMs} ms`), 4 * timeoutMs); });
+  try {
+    const reasons = await Promise.all(found.map((f) => Promise.race([check(f, { timeoutMs }), late])));
+    return {
+      verified: found.filter((_, i) => reasons[i] === null),
+      dropped: found.flatMap((f, i) => (reasons[i] === null ? [] : [{ found: f, reason: /** @type {string} */ (reasons[i]) }])),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The probe whose TXT unit_id is `unitId` (ASCII case ignored) and that has an SRV port, verified (`verify`: confirm
+ * and describe's unit_id, host guide §4.1 - another service on `_oep._tcp` with that TXT is passed over; `verify:
+ * false` takes the first announced one). Throws when none answers within `timeoutMs` (default 3000) or none is verified.
+ * @param {string} unitId @param {{ timeoutMs?: number, browse?: typeof browse, verify?: boolean, verifyTimeoutMs?: number }} [opts] */
+export async function findUnit(unitId, { timeoutMs = 3000, browse: look = browse, verify: checked = true,
+  verifyTimeoutMs = VERIFY_TIMEOUT_MS } = {}) {
+  const hits = (await look({ timeoutMs })).filter((f) => (f.unitId ?? '').toLowerCase() === unitId.toLowerCase() && targetOf(f));
+  if (!hits.length) {
     throw new Error(`no probe with unit_id ${unitId} announces ${SERVICE.replace(/\.$/, '')} on this network (DNS-SD over `
       + 'mDNS stays on the local link: behind a NAT give its address and port)');
   }
-  return hit;
+  if (!checked) return hits[0];
+  const { verified, dropped } = await verify(hits, { timeoutMs: verifyTimeoutMs });
+  if (!verified.length) {
+    const where = (/** @type {Found} */ f) => { const t = /** @type {{ host: string, port: number }} */ (targetOf(f)); return `${t.host}:${t.port}`; };
+    throw new Error(`no announced instance with unit_id ${unitId} is verified as that OEP probe (host guide §4.1): `
+      + dropped.map((d) => `${where(d.found)} (${d.found.instance}): ${d.reason}`).join('; '));
+  }
+  return verified[0];
 }
 
 /** The SRV port of the probe announced on `host` (its host name, with or without .local, or one of its addresses);
