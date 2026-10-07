@@ -9,7 +9,7 @@ runs from a maintainer workstation.
 
 1. Confirm that `main` is current and contains no unintended changes.
 2. Review the [README](../README.md), the [design](design.md) and the changelog.
-3. Confirm `npm test` passes against oep-client-python's fake (`python -m oep_client.fake_serve`), as CI does.
+3. Confirm `npm test` passes against oep-client-python's virtual bench (`python -m oep_client.virtual_bench_serve`), as CI does.
 4. Run `npm run serve`, open the page in a Chromium browser (Chrome or Edge) and connect to a real probe. Check what you
    can:
    - one connection per transport (WebSerial, WebUSB, WebHID), and describe shown
@@ -77,7 +77,7 @@ git push --follow-tags
 
 ## GitHub Actions
 
-- `ci.yml`: on pushes to `main` and pull requests, installs the Python fake and runs the checks, build, declarations,
+- `ci.yml`: on pushes to `main` and pull requests, installs the Python virtual bench and runs the checks, build, declarations,
   dist smoke test, site build and package dry run.
 - `pages.yml`: deploys the web page to GitHub Pages on pushes to `main` or by hand.
 - `release.yml`: optional manual publication once npm Trusted Publishing is set up.

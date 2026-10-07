@@ -17,8 +17,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      # the fake probe the tests talk to over TCP (oep-client-python's fake_serve). The tests follow oep-client-python's
-      # main (this client and the fake move together), so take it from git, not from the last PyPI release
+      # the virtual bench the tests talk to over TCP (oep-client-python's virtual_bench_serve). The tests follow oep-client-python's
+      # main (this client and the virtual bench move together), so take it from git, not from the last PyPI release
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

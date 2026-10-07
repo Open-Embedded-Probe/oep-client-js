@@ -8,7 +8,7 @@
 
 1. `main` が最新で、意図しない変更がないことを確かめます。
 2. [README](../README.ja.md)、[設計](design.ja.md)、変更履歴を読み直します。
-3. oep-client-python の fake（`python -m oep_client.fake_serve`）に対して `npm test` が通ることを確かめます（CI と同じ）。
+3. oep-client-python の仮想ベンチ（`python -m oep_client.virtual_bench_serve`）に対して `npm test` が通ることを確かめます（CI と同じ）。
 4. `npm run serve` でページを開き、Chromium 系のブラウザ（Chrome か Edge）で実機の probe につなぎます。できる範囲で確かめます:
    - 経路ごとに 1 つ（WebSerial、WebUSB、WebHID）でつながり、describe が出ること
    - 設定の表示、変更、保存、消去（書き換えた後に元に戻す）
@@ -74,7 +74,7 @@ git push --follow-tags
 
 ## GitHub Actions
 
-- `ci.yml`: `main` への push と pull request で、Python の fake を入れて、確認、ビルド、型定義、配布物の smoke test、サイトの
+- `ci.yml`: `main` への push と pull request で、Python の仮想ベンチを入れて、確認、ビルド、型定義、配布物の smoke test、サイトの
   ビルド、配布物の中身を確かめます。
 - `pages.yml`: `main` への push か手動の実行で、Web ページを GitHub Pages に出します。
 - `release.yml`: npm の Trusted Publishing を設定したあとの、任意の手動の公開です。

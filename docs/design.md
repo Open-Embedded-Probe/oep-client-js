@@ -25,7 +25,7 @@ src/browser/    the browser's transports                 -> npm "./browser"
 src/node/       Node's transports                        -> npm "./node"
   index.js        serial ports (serialport), USB (usb), TCP (node:net)
 web/            the web page's sources                    -> site/ (scripts/build-site.js) -> GitHub Pages
-test/           tests (node:test), against the Python fake over TCP
+test/           tests (node:test), against the Python virtual bench over TCP
 scripts/        build, site, tests, release tools
 docs/           this document, the release steps
 ```
@@ -45,7 +45,7 @@ docs/           this document, the release steps
 | USB CDC, USB-Serial/JTAG, USB-UART bridge | WebSerial | serialport | COBS + CRC |
 | vendor bulk (class 0xFF) | WebUSB | usb (WebUSB-shaped) | length(u16) message |
 | vendor HID | WebHID | node-hid (optional) | length messages in reports |
-| TCP (a local broker, the tests' fake) | - | node:net | length(u16) message |
+| TCP (a local broker, the tests' virtual bench) | - | node:net | length(u16) message |
 
 - WebUSB, WebSerial and WebHID are Chromium only (Chrome, Edge), and the page must be served over HTTPS (or localhost).
 - Probes are recognised as transports §3 says: automatically only by the project's own USB VID:PID, `1209:4F45`
@@ -69,7 +69,7 @@ docs/           this document, the release steps
    - Every image is checked against `firmware-<version>.json`'s sha256.
 2. **Connect and look**: pick a transport, connect, show everything describe declares (as `oep dump` does).
 3. **Settings** (`oep.probe.config`): show and edit slots, binds, plans, labels and idle states, save and erase. The
-   screens are built from describe (how many slots, which bind modes, which items).
+   screens are built from describe (how many slots, which items); a bind carries one stream.
 4. **Simple operations**: GPIO read / write, a UART terminal, attach / halt / resume / reset a target, its console.
 
 Not done here: showing captures ([WireSkein](https://github.com/Open-Embedded-Probe/wireskein)'s), writing a target's
@@ -80,8 +80,9 @@ flash (ch32rv and the like).
 - **Release files and CORS**: a browser cannot fetch GitHub Release files (no CORS headers). Firmware is put on Pages
   too, or the user picks the file.
 - **The lock**: the page takes the lock before it changes anything, like any host (core §6), shows who holds it and ends
-  the session when it closes.
-- **A failed transport** (core §5.2, C-38): a request whose resend also goes unanswered throws `TransportFailed`; its
+  the session when it closes. A page reloaded or closed without end leaves its session to the lease (transports §3):
+  `connect` keeps the session id in localStorage by unit_id and the next page's first open ends it first (host guide §5).
+- **A failed transport** (core §5.2, host guide §8): a request whose resend also goes unanswered throws `TransportFailed`; its
   outcome (and that of every request outstanding with it) is unknown. The link recovers with a confirm before the next
   request goes out, and a changed boot_id then shows as a reboot (`host.epoch`). A page reads the state again before it
   repeats anything that changes it.
@@ -93,8 +94,9 @@ flash (ch32rv and the like).
 ## 6. Tests
 
 - `node:test`, run by `npm test`.
-- The probe is oep-client-python's fake (`python -m oep_client.fake_serve` over TCP): the same fake the Python tests use,
-  so the same behaviour is checked. CI installs oep-client-python from its main branch (git).
+- The probe is oep-client-python's virtual bench (`python -m oep_client.virtual_bench_serve` over TCP: a probe, the
+  targets behind it and the fixture wiring, modelled after the real jigs): the same virtual bench the Python tests use,
+  so the same behaviour is checked. The tests keep session ids (keptsession.js) in a temporary `$OEP_SESSION_DIR`. CI installs oep-client-python from its main branch (git).
 - The browser transports are checked on hardware (steps in [Releasing](release.md)).
 
 ## 7. Numbers (the registry)

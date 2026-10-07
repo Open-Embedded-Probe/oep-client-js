@@ -24,7 +24,7 @@ src/browser/    ブラウザの経路                         -> npm の "./brow
 src/node/       Node の経路                            -> npm の "./node"
   index.js        シリアルの口（serialport）、USB（usb）、TCP（node:net）
 web/            Web ページのソース                      -> site/（scripts/build-site.js）-> GitHub Pages
-test/           試験（node:test）。Python の fake に TCP でつなぐ
+test/           試験（node:test）。Python の仮想ベンチに TCP でつなぐ
 scripts/        build、サイト、試験、リリースの道具
 docs/           この文書、リリースの手順
 ```
@@ -44,7 +44,7 @@ docs/           この文書、リリースの手順
 | USB CDC、USB-Serial/JTAG、USB-UART bridge | WebSerial | serialport | COBS + CRC |
 | vendor bulk（class 0xFF） | WebUSB | usb（WebUSB と同じ形） | length(u16) message |
 | vendor HID | WebHID | node-hid（任意） | report に詰めた length message |
-| TCP（ローカルのブローカー、試験の fake） | - | node:net | length(u16) message |
+| TCP（ローカルのブローカー、試験の仮想ベンチ） | - | node:net | length(u16) message |
 
 - WebUSB、WebSerial、WebHID は Chromium 系（Chrome、Edge）だけで、ページは HTTPS（か localhost）で配る必要があります。
 - probe の見分け方は transports §3 のとおりです: 自動で見分けるのはプロジェクトの USB の VID:PID `1209:4F45` だけ（`PROJECT_VID_PIDS`。
@@ -64,7 +64,7 @@ docs/           この文書、リリースの手順
    - どの firmware も `firmware-<version>.json` の sha256 で照合します。
 2. **つなぐ、見る**: 経路を選んでつなぎ、describe を全部見せる（`oep dump` と同じ）。
 3. **設定**（`oep.probe.config`）: スロット、bind、plan、ラベル、空きのときの状態の表示と編集、保存と消去。画面は describe から
-   組み立てます（スロットの数、bind の方式、扱う項目）。
+   組み立てます（スロットの数、扱う項目）。bind はストリーム 1 本。
 4. **簡単な操作**: GPIO の読み書き、UART の端末、target の attach / halt / resume / reset、target のコンソール。
 
 作らないもの: キャプチャの表示（[WireSkein](https://github.com/Open-Embedded-Probe/wireskein) の担当）、target への書き込み
@@ -74,8 +74,10 @@ docs/           この文書、リリースの手順
 
 - **Release のファイルと CORS**: GitHub の Release のファイルはブラウザから直接取れません（CORS のヘッダが無い）。firmware は
   Pages にも置くか、利用者にファイルを選んでもらいます。
-- **ロック**: ページもほかの host と同じくロックを取ってから操作し（core §6）、誰が持っているかを見せ、閉じるときに end します。
-- **経路の失敗**（core §5.2、C-38）: 送り直しにも応答が無い要求は `TransportFailed` を投げます。その要求と、一緒に出ていた要求の
+- **ロック**: ページもほかの host と同じくロックを取ってから操作し（core §6）、誰が持っているかを見せ、閉じるときに end します。end せずに再読み込みや閉じたページの
+  セッションは lease まで残る（transports §3）ので、`connect` はセッションの id を unit_id ごとに localStorage に残し、次のページの
+  最初の open が先にそれを終えます（host ガイド §5）。
+- **経路の失敗**（core §5.2、host ガイド §8）: 送り直しにも応答が無い要求は `TransportFailed` を投げます。その要求と、一緒に出ていた要求の
   結果は分かりません。link は次の要求を出す前に confirm で立て直し、boot_id が変わっていれば再起動として見えます（`host.epoch`）。
   ページは、状態を変える操作を繰り返す前に、状態を読み直します。
 - **使わない probe**: core §7.1 の範囲の外の confirm、1..600000 の外の max_op_ms は `NotUsable` を投げ、host はその probe に
@@ -86,8 +88,8 @@ docs/           この文書、リリースの手順
 ## 6. 試験
 
 - `node:test` で書き、`npm test` で走らせます。
-- probe の代わりに、oep-client-python の fake を使います（`python -m oep_client.fake_serve` の TCP）。Python の試験と同じ fake が
-  相手なので、同じ振る舞いを確かめられます。CI は oep-client-python を main の branch（git）から入れます。
+- probe の代わりに、oep-client-python の仮想ベンチを使います（`python -m oep_client.virtual_bench_serve` の TCP。probe とその先の
+  target、治具の配線を実際の治具に合わせて作ったもの）。Python の試験と同じ仮想ベンチが相手なので、同じ振る舞いを確かめられます。CI は oep-client-python を main の branch（git）から入れます。
 - ブラウザの経路は、実機で確かめます（手順は [リリースの手順](release.ja.md)）。
 
 ## 7. 番号（registry）

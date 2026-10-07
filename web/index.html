@@ -67,14 +67,12 @@
           <label>max speed Hz <input name="maxSpeed" type="number" min="0" value="0"></label>
           <label>idle clock <select name="idleClock"><option>high</option><option>low</option></select></label>
           <label>mechanism <select name="mechanism"><option>dmseq</option><option>dmdata</option><option>sdi</option><option>none</option></select></label>
-          <label>boot reset <input name="bootReset" type="checkbox" title="at-boot only: retry once with the nrst line"></label>
           <button type="submit" data-i18n="set" data-needs="lock"></button>
         </form>
         <form id="form-bind" class="card">
           <h4 data-i18n="bind"></h4>
           <label data-i18n-label="port">port <input name="port" type="number" min="0" required></label>
-          <label>mode <select name="mode"><option>last-reset</option><option>manual</option><option>mixed</option></select></label>
-          <label data-i18n-label="streams">streams <input name="streams" placeholder="slot:0,uart:5" required></label>
+          <label data-i18n-label="stream">stream <input name="stream" placeholder="slot:0 or uart:5" pattern="\s*(slot|uart)\s*:\s*\d+\s*" required></label>
           <button type="submit" data-i18n="set" data-needs="lock"></button>
         </form>
         <form id="form-label" class="card">
@@ -87,7 +85,7 @@
           <h4 data-i18n="idle"></h4>
           <label>channel <input name="channel" type="number" min="0" required></label>
           <label>mode <select name="mode"><option>pull-up</option><option>pull-down</option><option>hi-z</option><option>output-low</option><option>output-high</option></select></label>
-          <label>drive ≤ mA <input name="driveMa" type="number" min="0" max="65535" placeholder="output modes only"></label>
+          <label>drive ≤ mA <input name="driveMa" type="number" min="0" max="65535" placeholder="output modes only" title="the strongest of the probe's drive_levels at about this many mA or less"></label>
           <button type="submit" data-i18n="set" data-needs="lock"></button>
         </form>
         <form id="form-disable" class="card">
