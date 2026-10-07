@@ -673,7 +673,8 @@ export class LogicCapture extends Interface {
 
   // ---- the §3.0 layout ------------------------------------------------------------------------------------
 
-  /** Channel k's values, one per sample (§3.0 rules 1-3).
+  /** Channel k's values, one per sample (§1.1 rules 1-3: bit i·w + pos[k] of the stream, bit j being bit j mod 8 of
+   * byte j / 8 - any w 1-128; a sample may cross a byte boundary).
    * @param {Uint8Array} data @param {number} k @param {number} [samples] */
   channel(data, k, samples) {
     const c = this.cfg;

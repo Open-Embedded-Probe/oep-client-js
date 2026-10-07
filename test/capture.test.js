@@ -594,3 +594,16 @@ test('the group start answer\'s fixed part, the group\'s generation in status (c
   assert.deepEqual([grp.generation, [...grp.generations]], [2, [[an.fn, 2], [lc.fn, 2]]]);
   assert.equal((await grp.status()).generation, 2);
 }));
+
+test('logic_layout.json: any w (1-128), a sample may cross a byte boundary (capture §1.1)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const cases = JSON.parse(readFileSync(new URL('./vectors/logic_layout.json', import.meta.url), 'utf8')).cases;
+  assert.ok(cases.length);
+  for (const v of cases) {
+    const lc = new c.LogicCapture(/** @type {any} */ ({}), 7, c.LogicCapture.NAME);
+    lc.config = Object.assign(new c.Config(), { width: v.w, positions: v.pos, samples: v.samples });
+    const data = Uint8Array.from(Buffer.from(v.stream_hex, 'hex'));
+    assert.deepEqual(v.pos.map((/** @type {number} */ _, /** @type {number} */ k) => lc.channel(data, k, v.samples).join('')), v.channels, v.name);
+    assert.equal(lc.cfg.bytes, data.length, v.name);
+  }
+});
