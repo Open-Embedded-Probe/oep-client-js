@@ -63,7 +63,7 @@ u8 の段、インターフェースの名前は 1〜48 byte、走り直す host
   送れないので、ページに TCP は無い）は `openTcp({ host, port })` で開く。決まった port は無い（transports §3）:
   `openTcp({ host })` はその DNS-SD `_oep._tcp` の record が広告する port を使い、`openTcp({ unitId })` は TXT の `unit_id` が
   それの probe を開く（ほかの名指した probe と同じく、開いた後に describe の unit_id を確かめる）。`browse()` / `findUnit()` /
-  `portOf()`（`oep-client-js/node`、src/node/discovery.js）はその裏の、依存の無い mDNS の問い合わせ（IPv4、届くのは同じリンク
+  `portOf()`（`oep-client-js/node`、src/node/discovery.js）はその裏の、依存の無い mDNS の問い合わせ（IPv4 の口すべてから送り（`interfaceAddresses()`）、答えをまとめる。IPv4、届くのは同じリンク
   だけ: NAT の後ろや別のサブネットでは見つからないので host と port を渡す。アドレスはほかの経路での wifi の state の `ipv4` でも分かる）
 - firmware の更新: USB の DFU（ESP32-P4）と、Release の firmware-<version>.json
 - ページ: つなぐ、probe の宣言を読む、設定の編集と保存、GPIO と UART、port_speed、DFU での更新
@@ -151,7 +151,7 @@ wire は oep-spec の 2026-10-01 のゼロベース見直しを 2026-10-06 に�
 TLV の形 1 つ、要素に長さを置かない並び、閉じた固定の形、`ops` tag、再開なし。変更履歴を参照）に、2026-10-06 の構造（名前の
 無い本体、oep.probe のインターフェース、インターフェースごとの通知）を加えたもの。
 oep-client-python の仮想ベンチ（probe とその先の target、治具の配線を実際の治具に合わせて作ったもの:
-`python -m oep_client.virtual_bench_serve`）と台本のデバイスで試しています（329 件。oep-spec の試験ベクタを含み、sessions.json、
+`python -m oep_client.virtual_bench_serve`）と台本のデバイスで試しています（331 件。oep-spec の試験ベクタを含み、sessions.json、
 ops.json、ops_encoding.json も）。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
 
 v1 の凍結までは仕様が壊れることがあり、この package は probe の firmware

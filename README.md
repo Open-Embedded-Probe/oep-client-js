@@ -70,7 +70,7 @@ What is there:
   })`, and no port is fixed (transports §3): `openTcp({ host })` takes the port its DNS-SD `_oep._tcp` record announces,
   `openTcp({ unitId })` opens the probe whose TXT `unit_id` it is (describe's unit_id checked after opening, as for any
   named probe), and `browse()` / `findUnit()` / `portOf()` (`oep-client-js/node`, src/node/discovery.js) are the
-  dependency-free mDNS query behind them (IPv4, the local link only: behind a NAT or across subnets nothing is found -
+  dependency-free mDNS query behind them (sent out of every IPv4 interface, `interfaceAddresses()`, the answers merged; IPv4, the local link only: behind a NAT or across subnets nothing is found -
   give host and port; the address is also the wifi state's `ipv4` over another transport);
 - the firmware update: USB DFU (the ESP32-P4) and the Release's firmware-<version>.json;
 - the page: connect, read what the probe declares, edit and save its settings, GPIO and UART, port_speed, a DFU update;
@@ -168,7 +168,7 @@ The wire is oep-spec's 2026-10-06 simplification of the zero-base rewrite of 202
 session_id, one TLV form, sequences without element lengths, closed fixed forms, the `ops` tag, no resume; see the
 changelog), with the 2026-10-06 structure (the nameless core, the oep.probe interfaces, notifications per interface).
 Tested against oep-client-python's virtual bench (a probe, the targets behind it and the fixture wiring, modelled after
-the real jigs: `python -m oep_client.virtual_bench_serve`) and scripted devices (329 tests, oep-spec's test
+the real jigs: `python -m oep_client.virtual_bench_serve`) and scripted devices (331 tests, oep-spec's test
 vectors among them, sessions.json, ops.json and ops_encoding.json included); the browser transports, DFU and the page are not yet checked on
 hardware.
 

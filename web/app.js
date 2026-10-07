@@ -400,7 +400,12 @@ async function writeFirmware() {
   bar.hidden = false;
   bar.max = image.length;
   const t0 = performance.now();
-  await dfuUpdate(device, image, { onProgress: (/** @type {number} */ n) => { bar.value = n; $('fw-status').textContent = `${n} / ${image.length} bytes`; } });
+  await dfuUpdate(device, image, { onProgress: (p) => {          // a DfuProgress: phase, written, total, block
+    bar.max = p.total;
+    bar.value = p.written;
+    $('fw-status').textContent = p.phase === 'manifest' ? `${p.total} bytes written: the probe checks the image`
+      : `${p.written} / ${p.total} bytes`;
+  } });
   $('fw-status').textContent = `${image.length} bytes in ${((performance.now() - t0) / 1000).toFixed(1)} s: the probe restarts into it`;
 }
 

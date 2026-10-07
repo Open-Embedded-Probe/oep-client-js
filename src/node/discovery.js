@@ -13,15 +13,18 @@
 // one it named (openTcp's `unitId` checks it).
 //
 // The query is a minimal one-shot browse, as oep-client-python's own (its discovery module without python-zeroconf):
-// PTR `_oep._tcp.local` (then SRV / TXT / A for what the answers left out), sent to 224.0.0.251:5353 from an ephemeral
-// port with the unicast-response bit, so responders answer that socket directly (RFC 6762 §5.4, §6.7); a second socket
-// on 5353 also listens for multicast answers when the port can be shared. IPv4 only.
+// PTR `_oep._tcp.local` (then SRV / TXT / A for what the answers left out), sent to 224.0.0.251:5353 out of every IPv4
+// interface (one send from 0.0.0.0 leaves by one adapter only - on Windows often WSL's vEthernet, not the Wi-Fi) from
+// an ephemeral port with the unicast-response bit, so responders answer that socket directly (RFC 6762 §5.4, §6.7); a
+// socket on 5353, in the group on every interface, also listens for multicast answers when the port can be shared; the
+// answers are merged. IPv4 only.
 //
 // mDNS stays on the local link: behind a NAT (WSL 2's default network, a VM) or across subnets nothing is found - give
 // the probe's address and port then (openTcp({ host, port }); the address is also in probe.config's state over another
 // transport: the wifi state's ipv4).
 import { createSocket } from 'node:dgram';
 import { randomInt } from 'node:crypto';
+import { networkInterfaces } from 'node:os';
 
 export const SERVICE = '_oep._tcp.local.';
 export const MDNS_GROUP = '224.0.0.251';
@@ -199,16 +202,41 @@ export class Browser {
   }
 }
 
-/** A UDP socket, bound (null when it cannot be). @param {boolean} group  on 5353, in the mDNS group
- * @returns {Promise<import('node:dgram').Socket | null>} */
-function socketFor(group) {
+/** The IPv4 addresses of this host's interfaces that are up and not internal (os.networkInterfaces()): the query goes
+ * out of each, since one send leaves by one adapter only (on Windows often a virtual one, WSL's vEthernet, missing the
+ * probes on Wi-Fi). @param {NodeJS.Dict<import('node:os').NetworkInterfaceInfo[]>} [nets] @returns {string[]} */
+export function interfaceAddresses(nets = networkInterfaces()) {
+  /** @type {string[]} */
+  const out = [];
+  for (const list of Object.values(nets)) {
+    for (const a of list ?? []) {
+      const v4 = a.family === 'IPv4' || /** @type {unknown} */ (a.family) === 4;
+      if (v4 && !a.internal && !out.includes(a.address)) out.push(a.address);
+    }
+  }
+  return out;
+}
+
+/** A UDP socket, bound (null when it cannot be). `iface` (an address of this host): the query socket sends out of that
+ * interface and is bound to it, so the unicast answers to its queries come back to it; none: the system's choice.
+ * `group`: on 5353, in the mDNS group on each of `joins` (none: the system's choice of interface).
+ * @param {{ group?: boolean, iface?: string, joins?: string[] }} o @returns {Promise<import('node:dgram').Socket | null>} */
+function socketFor({ group = false, iface, joins = [] }) {
   return new Promise((resolve) => {
     const s = createSocket({ type: 'udp4', reuseAddr: group });
     s.once('error', () => { try { s.close(); } catch { /* not open */ } resolve(null); });
-    s.bind(group ? MDNS_PORT : 0, () => {
+    s.bind(group ? { port: MDNS_PORT } : { port: 0, address: iface }, () => {
       try {
-        if (group) s.addMembership(MDNS_GROUP);
-        else s.setMulticastTTL(255);
+        if (group) {
+          let joined = 0;
+          for (const at of joins.length ? joins : [undefined]) {
+            try { s.addMembership(MDNS_GROUP, at); joined++; } catch { /* that interface takes no multicast */ }
+          }
+          if (!joined) throw new Error('no interface joined the mDNS group');
+        } else {
+          s.setMulticastTTL(255);
+          if (iface) s.setMulticastInterface(iface);
+        }
       } catch {
         try { s.close(); } catch { /* not open */ }
         resolve(null);
@@ -222,18 +250,25 @@ function socketFor(group) {
 }
 
 /**
- * Every probe announcing `_oep._tcp` within `timeoutMs` (default 2000): the query is sent at once and again at 250,
- * 500, 1000 ms gaps (each time with the questions still open). No multicast route: none found.
- * @param {{ timeoutMs?: number, service?: string }} [opts] @returns {Promise<Found[]>}
+ * Every probe announcing `_oep._tcp` within `timeoutMs` (default 2000), the answers of every interface merged. The query
+ * goes out of every IPv4 interface (`interfaces`, default `interfaceAddresses()`: one socket each, bound to that
+ * address with its multicast interface set), and once more with the system's choice; it is sent at once and again at
+ * 250, 500, 1000 ms gaps (each time with the questions still open). An interface that cannot send multicast is left
+ * out; none at all: none found.
+ * @param {{ timeoutMs?: number, service?: string, interfaces?: string[] }} [opts] @returns {Promise<Found[]>}
  */
-export async function browse({ timeoutMs = 2000, service = SERVICE } = {}) {
+export async function browse({ timeoutMs = 2000, service = SERVICE, interfaces = interfaceAddresses() } = {}) {
   const b = new Browser(service);
-  const q = await socketFor(false);
-  if (!q) return [];
-  const g = await socketFor(true);                            // 5353 taken without sharing: unicast answers only
-  const socks = g ? [q, g] : [q];
+  const senders = /** @type {import('node:dgram').Socket[]} */ ((await Promise.all([socketFor({}),
+    ...interfaces.map((iface) => socketFor({ iface }))])).filter(Boolean));
+  if (!senders.length) return [];
+  const g = await socketFor({ group: true, joins: interfaces });   // 5353 taken without sharing: unicast answers only
+  const socks = g ? [...senders, g] : senders;
   for (const s of socks) s.on('message', (msg) => b.feed(new Uint8Array(msg.buffer, msg.byteOffset, msg.length)));
-  const send = () => q.send(query(b.questions(), randomInt(0x10000)), MDNS_PORT, MDNS_GROUP, () => { /* no route: nothing found */ });
+  const send = () => {
+    const packet = query(b.questions(), randomInt(0x10000));
+    for (const s of senders) s.send(packet, MDNS_PORT, MDNS_GROUP, () => { /* no route there: nothing from it */ });
+  };
   try {
     const deadline = Date.now() + timeoutMs;
     let gap = 250;

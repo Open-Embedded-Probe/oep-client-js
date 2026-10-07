@@ -216,6 +216,22 @@ test('discovery: findUnit and portOf on what a browse gives', async () => {
   assert.equal(await discovery.portOf('10.0.0.9', { browse: look }), null);
 });
 
+test('discovery: the interfaces asked are every IPv4 address that is up and not internal', () => {
+  const nets = /** @type {any} */ ({
+    lo: [{ family: 'IPv4', address: '127.0.0.1', internal: true }, { family: 'IPv6', address: '::1', internal: true }],
+    'vEthernet (WSL)': [{ family: 'IPv4', address: '172.19.48.1', internal: false }],
+    'Wi-Fi': [{ family: 'IPv6', address: 'fe80::1', internal: false }, { family: 4, address: '192.168.1.10', internal: false }],
+    eth1: [{ family: 'IPv4', address: '192.168.1.10', internal: false }],
+  });
+  assert.deepEqual(discovery.interfaceAddresses(nets), ['172.19.48.1', '192.168.1.10']);
+  assert.deepEqual(discovery.interfaceAddresses({}), []);
+});
+
+test('discovery: an interface that cannot send is left out, the others still ask', async () => {
+  const found = await discovery.browse({ timeoutMs: 200, interfaces: ['203.0.113.7', ...discovery.interfaceAddresses()] });
+  assert.ok(Array.isArray(found));
+});
+
 test('discovery: a real browse ends by its time and finds no probe that is not there', async () => {
   const t0 = Date.now();
   const found = await discovery.browse({ timeoutMs: 300 });
@@ -233,15 +249,20 @@ test('discovery: browse asks and reads a responder on this host (mDNS loopback)'
   const { createSocket } = await import('node:dgram');
   const responder = createSocket({ type: 'udp4', reuseAddr: true });
   let asked = 0;
+  /** @type {Set<string>} */
+  const from_ = new Set();
   responder.on('message', (msg, from) => {
     if (msg[2] & 0x80) return;                                               // an answer, not a query
     asked++;
+    from_.add(from.address);
     responder.send(announcement('fafe0000ab01', 'oep-fafe0000ab01.local.', 7454, [127, 0, 0, 1]), from.port, from.address);
   });
   const ready = await new Promise((resolve) => {
     responder.once('error', () => resolve(false));
     responder.bind(discovery.MDNS_PORT, () => {
-      try { responder.addMembership(discovery.MDNS_GROUP); resolve(true); } catch { resolve(false); }
+      try { responder.addMembership(discovery.MDNS_GROUP); } catch { resolve(false); return; }
+      for (const at of discovery.interfaceAddresses()) { try { responder.addMembership(discovery.MDNS_GROUP, at); } catch { /* joined */ } }
+      resolve(true);
     });
   });
   try {
@@ -251,6 +272,8 @@ test('discovery: browse asks and reads a responder on this host (mDNS loopback)'
     const f = found.find((x) => x.unitId === 'fafe0000ab01');
     assert.ok(f, JSON.stringify(found));
     assert.deepEqual(discovery.targetOf(f), { host: '127.0.0.1', port: 7454 });
+    // the query left by every IPv4 interface (each socket bound to its address), not by one adapter only
+    for (const at of discovery.interfaceAddresses()) assert.ok(from_.has(at), `no query from ${at}: ${[...from_]}`);
   } finally {
     try { responder.close(); } catch { /* closed */ }
   }
