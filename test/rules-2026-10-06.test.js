@@ -20,7 +20,7 @@ import * as core from '../src/core.js';
 import { RiscvDm, Wire } from '../src/riscv.js';
 import { I2cTarget, SpiTarget } from '../src/fixture.js';
 import { openTcp } from '../src/node/index.js';
-import { haveFake, startFake } from './fake.js';
+import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 
 /** @param {{ maxFrame?: number, window?: number, inflight?: number, bootId?: number }} [o] */
 function confirmPayload({ maxFrame = 1024, window = 65536, inflight = 4, bootId = 0x11 } = {}) {
@@ -92,12 +92,12 @@ function answering(answer) {
 }
 
 /** @param {string[]} args @param {(hst: Host) => Promise<void>} body @param {'length' | 'cobs'} [framing] */
-async function withFake(args, body, framing = 'length') {
-  const fake = await startFake(args, framing);
-  const hst = await openTcp({ port: fake.port, framing });
+async function withBench(args, body, framing = 'length') {
+  const bench = await startVirtualBench(args, framing);
+  const hst = await openTcp({ port: bench.port, framing });
   try { await body(hst); } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 }
 
@@ -297,7 +297,7 @@ test('C-38: on a length link the resend\'s silence fails it too, after the resyn
 
 test('PC-9: state keeps the last page\'s storage', async () => {
   const cfg = new config.ProbeConfig(/** @type {any} */ (null), 9, config.ProbeConfig.NAME);
-  const slot = new Writer().u8(0).u8(1).u16(0xffff).u64(0xffffffffffffffffn).u64(0xffffffffffffffffn).u8(0).u8(0).done();
+  const slot = new Writer().u8(0).u8(1).u16(0xffff).u64(0xffffffffffffffffn).done();   // slot state connection last_try_at_ns (12 bytes, §3.3)
   const pages = [
     new Writer().u8(1).u8(0).u32(0).u8(0).u8(1).raw(slot).u8(0).done(),          // more: storage none
     new Writer().u8(0).u8(1).u32(0x1234).u8(0).u8(1).raw(slot).u8(0).done(),     // saved in between
@@ -310,7 +310,7 @@ test('PC-9: state keeps the last page\'s storage', async () => {
 
 // ---- C-21: the optional ops are used when declared -------------------------------------------------------------------
 
-test('C-21: riscv-dm says which optional ops the probe offers (its ops tag)', { skip: !haveFake }, () => withFake(['--profile', 'esp32-v003'], async (hst) => {
+test('C-21: riscv-dm says which optional ops the probe offers (its ops tag)', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
   await hst.open(10000);
   const wire = await Wire.open(hst, { name: 'oep.wire.swio' });
   const { conn } = await wire.attach({ halt: true });
@@ -325,23 +325,23 @@ test('C-21: riscv-dm says which optional ops the probe offers (its ops tag)', { 
 
 // ---- fixture: cs_setup_ns shown; i2c-target's reserved addresses ------------------------------------------------------
 
-test('cs_setup_ns is read and shown', { skip: !haveFake }, async () => {
-  await withFake(['--profile', 'esp32-v003'], async (hst) => {
+test('cs_setup_ns is read and shown', { skip: !haveVirtualBench }, async () => {
+  await withBench(['--profile', 'esp32-v003'], async (hst) => {
     const spi = await SpiTarget.open(hst);
     assert.equal(await spi.csSetupNs(), 4000);
     assert.equal((await spi.declarations()).csSetupNs, 4000);
     assert.ok(dump.toText(await dump.collect(hst)).includes('CS setup ns: 4000'));
   });
-  await withFake(['--profile', 'p4-x035'], async (hst) => {
+  await withBench(['--profile', 'p4-x035'], async (hst) => {
     assert.equal(await (await SpiTarget.open(hst)).csSetupNs(), 0);
   });
 });
 
-test('i2c-target refuses a reserved address before sending', { skip: !haveFake }, () => withFake(['--profile', 'p4-x035'], async (hst) => {
+test('i2c-target refuses a reserved address before sending', { skip: !haveVirtualBench }, () => withBench(['--profile', 'p4-x035'], async (hst) => {
   const i2c = await I2cTarget.open(hst);
   let sent = 0;
   const send = hst.link.send.bind(hst.link);
   hst.link.send = (b, o) => { sent++; return send(b, o); };
-  for (const address of [0x00, 0x07, 0x78, 0x7f]) await assert.rejects(i2c.configure(address, 1), RangeError);
+  for (const address of [0x00, 0x07, 0x78, 0x7f]) await assert.rejects(i2c.configure(address), RangeError);
   assert.equal(sent, 0);
 }));

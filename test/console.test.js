@@ -1,5 +1,5 @@
 // @ts-check
-// oep.target.console and ConsoleIO: request shapes against a scripted link, and the flows against the fake probe.
+// oep.target.console and ConsoleIO: request shapes against a scripted link, and the flows against the virtual bench.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Writer, concat, text, utf8 } from '../src/bytes.js';
@@ -10,7 +10,7 @@ import { Host } from '../src/host.js';
 import * as m from '../src/message.js';
 import * as reg from '../src/registry.js';
 import { openTcp } from '../src/node/index.js';
-import { haveFake, startFake } from './fake.js';
+import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 
 const CONSOLE = 6;
 
@@ -97,28 +97,27 @@ test('console write: completed partial is no error, accepted 0 is failed, write(
       return [m.COMPLETED, took === count ? m.SUCCESS : took ? m.PARTIAL : m.FAILED, new Writer().u16(took).done()];
     },
   }, 64);
-  hst.describes.set(CONSOLE, [[reg.TARGET_CONSOLE.tlv.describe.send_queue, Uint8Array.of(64, 0)]]);   // send_queue 64
   const con = await Console.open(hst);
-  assert.equal(await con.sendQueue(), 64);
   const io = new ConsoleIO(con, 0n);
   await io.write('PING\n');
   assert.deepEqual(log.map(([, , p]) => text(p.slice(4))), ['PING\n', 'G\n', 'G\n']);
-  assert.equal(await io.sendQueue(), 64);
 });
 
-test('ConsoleIO writes a send_queue at a time, at most a frame (console §1, §2)', async () => {
+test('ConsoleIO writes at most a frame at a time; the send queue is the probe\'s own size (console §1, §2)', async () => {
   const { hst, log } = scripted({
     [`${CONSOLE}:${Console.WRITE}`]: (p) => [m.COMPLETED, m.SUCCESS, new Writer().u16(new m.Reader(p.slice(2)).u16()).done()],
-  }, 1024);
-  hst.describes.set(CONSOLE, [[reg.TARGET_CONSOLE.tlv.describe.send_queue, Uint8Array.of(0, 1)]]);   // 256
+  }, 256);
   const io = new ConsoleIO(await Console.open(hst), 0n);
   await io.write(new Uint8Array(600));
-  assert.deepEqual(log.map(([, , p]) => p.length - 4), [256, 256, 88]);
+  const most = 256 - 12 - 2;                                           // the header 10, count 2, the stream number 2
+  assert.deepEqual(log.map(([, , p]) => p.length - 4), [most, most, 600 - 2 * most]);
+  assert.equal(/** @type {any} */ (io).sendQueue, undefined);         // no send_queue declaration any more
+  assert.equal(/** @type {any} */ (reg.TARGET_CONSOLE.tlv.describe).send_queue, undefined);
 });
 
-test('console streams against the fake probe', { skip: !haveFake }, async () => {
-  const fake = await startFake(['--console', 'hello %d\\n', '--every', '20']);
-  const hst = await openTcp({ port: fake.port });
+test('console streams against the virtual bench', { skip: !haveVirtualBench }, async () => {
+  const bench = await startVirtualBench(['--console', 'hello %d\\n', '--every', '20']);
+  const hst = await openTcp({ port: bench.port });
   try {
     await hst.open(5000, { owner: 'js console test' });
     const wire = await Wire.open(hst);
@@ -157,7 +156,6 @@ test('console streams against the fake probe', { skip: !haveFake }, async () => 
     const fromMark = await con.read(Console.FROM_MARK, reg.COMMON.enum.mark_kind.host, 16);
     assert.equal(fromMark.start, marks[6].position);
 
-    assert.equal(await con.sendQueue(), 256);                            // describe 0x41 (console §1)
     assert.equal(await con.write(utf8('PING\n')), 5);                  // into the send queue (console §2)
 
     await io.readAll();
@@ -179,6 +177,6 @@ test('console streams against the fake probe', { skip: !haveFake }, async () => 
     await hst.end();
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });

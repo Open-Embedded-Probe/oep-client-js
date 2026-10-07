@@ -1,34 +1,32 @@
 // @ts-check
 // Capability discovery by name (oep-core §7.2-§7.4).
 //
-//   list request : flags(u8: bit0 exact) first(u16) prefix_len(u8) prefix
+//   list request : first(u16)                                            every interface from the first-th; the host
+//                                                                         filters by name
 //   list result  : total(u16) count(u8) count x entry [TLV]               fn 0 (the core) has no name and is never listed
 //   list entry   : fn(u16) instance(u16) revision(u8) flags(u8) name_len(u8) name
 //   describe     : request fn(u16) first(u16); result more(u8) then TLVs (tag u8, len u16, value; tag bit 7 =
 //                  critical). A describe is declarations only (core §7.3): the host caches it while the probe's
 //                  boot_id stays the same.
 //   ops          : the common describe tag 0x09 every fn carries, base(u8) bitmap: bit i set = op base + i is offered
-//                  (core §1.2, §7.4) - the one declaration of an fn's ops, the optional ones included. One encoding per
-//                  set: 2-33 bytes, base + 8 x bitmap bytes <= 256, bit 0 set, the last byte non-zero (`checkOps`); a
-//                  host does not use an fn whose ops breaks this, nor the probe when it is fn 0's
+//                  (core §1.2, §7.4) - the one declaration of an fn's ops, the optional ones included. A value is
+//                  base and a bitmap of 1 byte or more, base + 8 x bitmap bytes <= 256 (`checkOps`); one set may have
+//                  several values. A host does not use an fn whose ops breaks this, nor the probe when it is fn 0's
 //   channel_group: group(u8) n(u8) then n x (role(u8), channel(u16)): a fixed pin set (core §7.4)
 
 import * as reg from './registry.js';
 import { Writer, getU16, getU32, utf8 } from './bytes.js';
 import { Reader, splitTlvs } from './message.js';
 
-export const LIST_EXACT = 0x01;
 export const COMMON = reg.DESCRIBE_COMMON;
 export const CRITICAL = 0x80;
 export const INTERFACE_TAG_FIRST = 0x40;
-export const IMPLEMENTATIONS = /** @type {Record<number, string>} */ ({ 0: 'unspecified', 1: 'software (bit-bang)', 2: 'peripheral', 3: 'peripheral + DMA/PIO' });
 
 /** @typedef {{ fn: number, instance: number, revision: number, flags: number, name: string }} ListEntry */
 
-/** @param {string} prefix @param {boolean} exact @param {number} first */
-export function packListRequest(prefix = '', exact = false, first = 0) {
-  const raw = utf8(prefix);
-  return new Writer().u8(exact ? LIST_EXACT : 0).u16(first).u8(raw.length).raw(raw).done();
+/** list's request: first(u16) - the entries from the first-th on (core §7.2). @param {number} first */
+export function packListRequest(first = 0) {
+  return new Writer().u16(first).done();
 }
 
 /** @param {Uint8Array} payload @returns {{ total: number, entries: ListEntry[] }} */
@@ -48,8 +46,8 @@ export function unpackListResult(payload) {
 /** @param {number} fn @param {number} first */
 export function packDescribeRequest(fn, first) { return new Writer().u16(fn).u16(first).done(); }
 
-/** The ops tag's value (core §7.4): base = the lowest op, then the bitmap, as short as it can be - the one encoding of
- * the set. An empty set has none (RangeError).
+/** The ops tag's value (core §7.4): base = the lowest op, then the bitmap, as short as it can be (any value that names
+ * the set is valid; this is the shortest). An empty set has none (RangeError).
  * @param {Iterable<number>} ops */
 export function packOps(ops) {
   const list = [...new Set(ops)].sort((a, b) => a - b);
@@ -62,17 +60,12 @@ export function packOps(ops) {
   return out;
 }
 
-/** ops values are 2 to this many bytes: base(u8) and a 1-32 byte bitmap (core §7.4). */
-export const OPS_MAX_BYTES = 33;
-
-/** Whether an ops value is the one encoding core §7.4 allows: 2-33 bytes, base + 8 x bitmap bytes <= 256 (no bit past op
- * 0xFF), bit 0 set (base is the lowest op), the last byte non-zero. -> '' or why not.
+/** Whether an ops value keeps core §7.4's form: base(u8) and a bitmap of 1 byte or more, base + 8 x bitmap bytes
+ * <= 256 (no bit past op 0xFF). -> '' or why not.
  * @param {Uint8Array} v */
 export function checkOps(v) {
-  if (v.length < 2 || v.length > OPS_MAX_BYTES) return `ops is ${v.length} bytes (2 to ${OPS_MAX_BYTES})`;
+  if (v.length < 2) return `ops is ${v.length} bytes (base and a bitmap of 1 byte or more)`;
   if (v[0] + 8 * (v.length - 1) > 0x100) return `ops base 0x${v[0].toString(16)} with ${v.length - 1} bitmap bytes goes past op 0xff`;
-  if (!(v[1] & 0x01)) return 'ops bit 0 is clear (base is not the lowest op)';
-  if (v[v.length - 1] === 0) return 'ops ends with a zero byte';
   return '';
 }
 
@@ -127,9 +120,8 @@ export function channelsToBitmap(channels) {
  * @property {number | null} minClockHz
  * @property {number | null} maxLength
  * @property {number | null} features
- * @property {number | null} implementation
  * @property {Set<number> | null} ops
- * @property {string} opsInvalid                    why an ops value breaks core §7.4's encoding ('' when none does): the
+ * @property {string} opsInvalid                    why an ops value breaks core §7.4's form ('' when none does): the
  *                                                  host does not use that fn (fn 0: the probe)
  * @property {[number, Uint8Array][]} specific      tags 0x40 and up
  * @property {number[]} unknownCritical
@@ -139,7 +131,7 @@ export function channelsToBitmap(channels) {
 export function decodeDescription(tlvs) {
   /** @type {Description} */
   const d = { roles: new Map(), groups: new Map(), maxClockHz: null, minClockHz: null, maxLength: null, features: null,
-    implementation: null, ops: null, opsInvalid: '', specific: [], unknownCritical: [] };
+    ops: null, opsInvalid: '', specific: [], unknownCritical: [] };
   for (const [tag, v] of tlvs) {
     const t = tag & ~CRITICAL;
     if (t === COMMON.role_channels) {
@@ -152,7 +144,6 @@ export function decodeDescription(tlvs) {
     else if (t === COMMON.min_clock_hz) d.minClockHz = getU32(v);
     else if (t === COMMON.max_length) d.maxLength = getU16(v);
     else if (t === COMMON.features) d.features = getU32(v);
-    else if (t === COMMON.implementation) d.implementation = v[0];
     else if (t === COMMON.ops) {
       d.ops = new Set([...(d.ops ?? []), ...unpackOps(v)]);
       d.opsInvalid ||= checkOps(v);

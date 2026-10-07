@@ -1,6 +1,6 @@
 // @ts-check
 // Names, the known-interface table and dump (src/names.js, src/interfaces.js, src/dump.js); mirrors
-// oep-client-python's tests/test_capabilities.py as far as the TCP fake allows (its custom FakeProbe cases are built
+// oep-client-python's tests/test_capabilities.py as far as the TCP virtual bench allows (its custom VirtualProbe cases are built
 // from TLVs here).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -10,17 +10,17 @@ import * as dump from '../src/dump.js';
 import { ranges } from '../src/interfaces.js';
 import * as names from '../src/names.js';
 import { openTcp } from '../src/node/index.js';
-import { haveFake, startFake } from './fake.js';
+import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 
 /** @param {string} profile @param {(hst: import('../src/host.js').Host) => Promise<void>} body @param {'length' | 'cobs'} framing */
-async function withFake(profile, body, framing = 'length') {
-  const fake = await startFake(['--profile', profile], framing);
-  const hst = await openTcp({ port: fake.port, framing });
+async function withBench(profile, body, framing = 'length') {
+  const bench = await startVirtualBench(['--profile', profile], framing);
+  const hst = await openTcp({ port: bench.port, framing });
   try {
     await body(hst);
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 }
 
@@ -28,13 +28,13 @@ async function withFake(profile, body, framing = 'length') {
 
 test('valid names', () => {
   for (const n of ['oep.probe.plan', 'oep.fixture.i2c-target', 'io.github.ch32-riscv-ug.p4.i2c-target', 'local.bench.thing',
-    'uuid.0123456789abcdef0123456789abcdef.tool', 'jp.example.probe', `oep.${'a'.repeat(60)}`]) assert.equal(names.validate(n), n);
+    'uuid.0123456789abcdef0123456789abcdef.tool', 'jp.example.probe', `oep.${'a'.repeat(44)}`]) assert.equal(names.validate(n), n);
 });
 
 test('invalid names say why', () => {
   for (const [n, why] of [['oep', 'namespace'], ['OEP.core', 'label'], ['oep.fixture_uart', 'label'],
     ['1com.example.x', 'top-level'], ['io.github', 'reverse DNS'], ['uuid.1234.tool', '32 lowercase hex'],
-    [`oep.${'a'.repeat(61)}`, 'bytes'], ['oep.café', 'ASCII'],                // 65 bytes: over the 64 of core §7.2
+    [`oep.${'a'.repeat(45)}`, 'bytes'], ['oep.café', 'ASCII'],                // 49 bytes: over the 48 of core §7.2
     ['oep.-fixture', 'label'], ['oep.fixture-', 'label'], ['oep..core', 'label']]) {   // no '-' at a label's end (C-23)
     assert.throws(() => names.validate(n), (e) => e instanceof names.InvalidName && e.message.includes(why), n);
   }
@@ -86,7 +86,7 @@ test('unknown interfaces are shown raw', () => {
   assert.match(/** @type {string} */ (row.unusable), /0xbd/);
 });
 
-test('the core (fn 0) is described first and never listed; its describe is the probe itself', { skip: !haveFake }, () => withFake('esp32-v003-64', async (hst) => {
+test('the core (fn 0) is described first and never listed; its describe is the probe itself', { skip: !haveVirtualBench }, () => withBench('esp32-v003-64', async (hst) => {
   const caps = await dump.collect(hst);
   assert.ok(caps.offers.every((o) => o.entry.fn !== 0 && o.entry.name !== 'oep.core'));   // core §0, §7.2
   assert.deepEqual([caps.core.entry.fn, caps.core.entry.name], [0, '']);
@@ -100,7 +100,7 @@ test('the core (fn 0) is described first and never listed; its describe is the p
   assert.equal(d.transport, '0 = UART bridge');
   assert.ok(d.label.includes('16 = SWIO') && d.label.includes('23 = NRST'));   // repeated tags all kept
   const cfg = dump.describeOffer(/** @type {dump.Offer} */ (caps.offers.find((o) => o.entry.name === 'oep.probe.config'))).declares;
-  assert.deepEqual(cfg && [cfg.slots, cfg['bind modes']], ['1', 'last-reset, manual']);
+  assert.deepEqual(cfg && [cfg.slots, cfg['bind modes']], ['1', undefined]);   // no bind modes (probe.config §1.2)
   const text = dump.toText(caps);
   // the core block reads like every other: its heading, the summary, then what it declares
   assert.match(text, /\ncore {9}fn 0 {3}\(no name; the probe itself\)\n {14}confirm, list, describe, clock, open \/ end \/ keepalive, lock state; describe = the probe itself\n {16}ops: confirm, list, describe, clock, open, end, keepalive, lock_state\n/);
@@ -108,7 +108,7 @@ test('the core (fn 0) is described first and never listed; its describe is the p
   assert.deepEqual(dump.toData(caps).core.declares?.['unit id'], 'fafe00000003');
 }, 'cobs'));
 
-test('filters', { skip: !haveFake }, () => withFake('esp32-v003', async (hst) => {
+test('filters', { skip: !haveVirtualBench }, () => withBench('esp32-v003', async (hst) => {
   const fixture = await dump.collect(hst, 'oep.fixture');
   assert.deepEqual(new Set(fixture.offers.map((o) => o.entry.name)), new Set(['oep.fixture.gpio', 'oep.fixture.uart',
     'oep.fixture.logic', 'oep.fixture.i2c-target', 'oep.fixture.spi-target']));
@@ -118,7 +118,7 @@ test('filters', { skip: !haveFake }, () => withFake('esp32-v003', async (hst) =>
   assert.deepEqual(dump.describeOffer(one.offers[0]).pinGroups?.['1'], { SCK: 18, MOSI: 19, MISO: 5, CS: 4 });
 }));
 
-test('p4 follows the agreed names; text and JSON', { skip: !haveFake }, () => withFake('p4-x035', async (hst) => {
+test('p4 follows the agreed names; text and JSON', { skip: !haveVirtualBench }, () => withBench('p4-x035', async (hst) => {
   const caps = await dump.collect(hst);
   const byName = new Map(caps.offers.map((o) => [o.entry.name, o]));
   assert.equal(caps.offers.length, 15);                             // fn 0 not among them; oep.probe.plan / restart / link listed
@@ -136,14 +136,14 @@ test('p4 follows the agreed names; text and JSON', { skip: !haveFake }, () => wi
   const text = dump.toText(caps);
   assert.match(text, /^OEP revision 1, max frame 1024 bytes; 15 interfaces in 1 list and 16 describe requests\n/);
   assert.ok(text.includes('instance 0') && text.includes('oep.fixture.i2c-target'));
-  assert.ok(text.includes('features: preloaded tx') && !text.includes('clock stretching'));   // stretch: an op (ops)
-  assert.ok(text.includes('ops: configure, arm_rx, read_rx, preload_tx, status, reset, stretch'));
+  assert.ok(!text.includes('preloaded tx') && !text.includes('clock stretching'));   // one form; stretch: an op (ops)
+  assert.ok(text.includes('ops: configure, read_rx, preload_tx, status, stretch'));
   assert.ok(text.includes('max 5 MHz'));
   assert.ok(text.includes('unit id: fafe00000035') && text.includes('chip: esp32p4 v1.0'));
   assert.ok(text.includes('oep.fixture.analog  rev 1\n'));          // known now: the capture mode is shown (P2-★6)
-  assert.ok(text.includes('mode: one-shot, answers while capturing, max 65536 samples x 1 segments'));
+  assert.ok(text.includes('mode: one-shot, max 65536 samples x 1 segments'));   // no background (capture §3.5)
   assert.ok(text.includes('restart max ms: 2000') && text.includes('ops: plan_apply, plan_release'));
-  assert.ok(!text.includes('MISSING'));                             // the fake gives what core §1.2 requires
+  assert.ok(!text.includes('MISSING'));                             // the virtual bench gives what core §1.2 requires
   assert.deepEqual(caps.missing, []);
   const data = JSON.parse(dump.toJson(caps));
   assert.equal(data.maxFrame, 1024);
@@ -154,7 +154,7 @@ test('p4 follows the agreed names; text and JSON', { skip: !haveFake }, () => wi
   assert.equal(data.core.fn, 0);
 }));
 
-test('a board whose wire takes any pins', { skip: !haveFake }, () => withFake('rp2350-pins', async (hst) => {
+test('a board whose wire takes any pins', { skip: !haveVirtualBench }, () => withBench('rp2350-pins', async (hst) => {
   const caps = await dump.collect(hst);
   const wire = dump.describeOffer(/** @type {dump.Offer} */ (caps.offers.find((o) => o.entry.name === 'oep.wire.rvswd')));
   assert.equal(wire.name, 'oep.wire.rvswd');

@@ -21,7 +21,7 @@ export { connect } from '../open.js';
  * @param {import('./webserial.js').SerialPortLike} [port]
  * portSpeed: the candidates to try once connected (port_speed, oep-if-link §3; true = the default 500000; the lock is
  * taken and kept, see connect), `flows` / `verify` for the full form, `record` (localStorage, by unit_id).
- * @param {import('../open.js').SpeedOptions & { baudRate?: number, filters?: import('./webserial.js').SerialPortFilter[], timeoutMs?: number, leaseMs?: number, owner?: string }} [opts]
+ * @param {import('../open.js').SpeedOptions & { baudRate?: number, filters?: import('./webserial.js').SerialPortFilter[], timeoutMs?: number, leaseMs?: number, owner?: string, keepSession?: boolean | import('../keptsession.js').KeptStore }} [opts]
  */
 export async function openWebSerial(port, opts = {}) {
   const p = port ?? await requestSerialPort({ filters: opts.filters });
@@ -32,20 +32,20 @@ export async function openWebSerial(port, opts = {}) {
  * A Host on a probe's vendor bulk interface (the chooser when `device` is not given), probed with a confirm first
  * (connect). `unitId`: the unit the device was named as (getUsbProbes({ unitId })): describe must say it, else closed.
  * @param {import('../usbtypes.js').UsbDevice} [device]
- * @param {{ timeoutMs?: number, unitId?: string }} [opts]
+ * @param {{ timeoutMs?: number, unitId?: string, keepSession?: boolean | import('../keptsession.js').KeptStore }} [opts]
  */
 export async function openWebUsb(device, opts = {}) {
   const d = device ?? await requestUsbProbe();
-  return connect(await webUsbTransport(d), { timeoutMs: opts.timeoutMs, unitId: opts.unitId });
+  return connect(await webUsbTransport(d), { timeoutMs: opts.timeoutMs, unitId: opts.unitId, keepSession: opts.keepSession });
 }
 
 /**
  * A Host on a probe's vendor HID interface (the chooser when `device` is not given), probed with a confirm first
  * (connect). `unitId`: as openWebUsb.
  * @param {import('./webhid.js').HidDeviceLike} [device]
- * @param {{ timeoutMs?: number, unitId?: string }} [opts]
+ * @param {{ timeoutMs?: number, unitId?: string, keepSession?: boolean | import('../keptsession.js').KeptStore }} [opts]
  */
 export async function openWebHid(device, opts = {}) {
   const d = device ?? await requestHidProbe();
-  return connect(await webHidTransport(d), { timeoutMs: opts.timeoutMs, unitId: opts.unitId });
+  return connect(await webHidTransport(d), { timeoutMs: opts.timeoutMs, unitId: opts.unitId, keepSession: opts.keepSession });
 }

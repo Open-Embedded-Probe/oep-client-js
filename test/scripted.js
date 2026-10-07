@@ -1,5 +1,5 @@
 // @ts-check
-// A Host whose requests go to handlers - (fn, op) -> [resolution, detail, payload] - for the host-side parts the fake
+// A Host whose requests go to handlers - (fn, op) -> [resolution, detail, payload] - for the host-side parts the virtual bench
 // probe does not model (as oep-client-python's tests/test_target_parts.py ScriptedHost). Every request is logged.
 import { Host } from '../src/host.js';
 import * as m from '../src/message.js';
@@ -24,7 +24,7 @@ export class ScriptedHost extends Host {
     for (const [name, fn] of Object.entries(FNS)) { this.fns.set(name, fn); this.revisions.set(fn, 1); }
     this.revision = 1;
     this.limits = { revision: 1, flags: 0, maxFrame, window: 4096, maxInflight: 8, bootId: 1, transport: 0, tail: new m.Tail() };
-    for (const fn of [0, ...Object.values(FNS)]) this.describes.set(fn, []);   // declares nothing: attach's default max_speed, the reference max_op_ms
+    for (const fn of [0, ...Object.values(FNS)]) this.describes.set(fn, []);   // declares nothing: attach's default max_speed, FALLBACK_MAX_OP_MS
     if (maxLength !== null) {
       for (const fn of [FNS['oep.target.riscv-dm'], FNS['oep.target.arm-adi']]) {
         this.describes.set(fn, [[COMMON.max_length, Uint8Array.of(maxLength & 0xff, maxLength >> 8)]]);

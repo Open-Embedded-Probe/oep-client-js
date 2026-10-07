@@ -1,18 +1,18 @@
 // @ts-check
 // oep.fixture.logic / analog / capture-group (src/capture.js): the configure answer and the §3.0 layout offline, then
-// the fake probe over TCP (oep-client-python's test_capture.py and test_fake_capture.py, with the fake's real clock).
+// the virtual bench over TCP (oep-client-python's test_capture.py and test_virtual_bench_capture.py, with the virtual bench's real clock).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import * as c from '../src/capture.js';
-import { Writer } from '../src/bytes.js';
-import { find, planApply, planRelease, take } from '../src/core.js';
+import { Writer, concat } from '../src/bytes.js';
+import { describe, find, planApply, planRelease, take } from '../src/core.js';
 import { Rejected, Unavailable, Unsupported } from '../src/errors.js';
 import * as m from '../src/message.js';
 import { openTcp } from '../src/node/index.js';
-import { PYTHON, haveFake, join, startFake } from './fake.js';
+import { PYTHON, haveVirtualBench, join, startVirtualBench } from './virtual-bench.js';
 
 /** @param {...[number, Uint8Array | number[]]} items */
 const answer = (...items) => Uint8Array.from(items.flatMap(([t, v]) => [t, v.length & 0xff, v.length >> 8, ...v]));   // tag len(u16) value
@@ -46,23 +46,23 @@ function counterOk(lc, data, samples, first = 0) {
 
 test('the configure answer is read into actual values', () => {
   const cfg = c.parseConfig(answer([c.ACTUAL_RATE, [...u32(7000000), ...u32(1)]], [c.LAYOUT, [4, 3, 0, 1, 2]],
-    [c.ACTUAL_SAMPLES, u32(1000)], [0x6e, [1, 2]], [c.IGNORED, [c.TRIGGER]]), false);
+    [c.ACTUAL_SAMPLES, u32(1000)], [0x6e, [1, 2]]), false);
   assert.equal(cfg.rate, 7000000);
-  assert.deepEqual([cfg.width, cfg.positions, cfg.samples, cfg.bytes, cfg.ignored], [4, [0, 1, 2], 1000, 500, [c.TRIGGER]]);
+  assert.deepEqual([cfg.width, cfg.positions, cfg.samples, cfg.bytes], [4, [0, 1, 2], 1000, 500]);
+  assert.ok(!('ignored' in cfg) && !('jitterNs' in cfg) && !('ratePpm' in cfg));   // no ignored, timing or rate_accuracy
 });
 
 test('analog answers: signed zero and scale, skew, frontend, reference', () => {
   const scale = new Writer().u8(1).i32(-5).i32(-800).done();
   const cfg = c.parseConfig(answer([c.LAYOUT, [16, 0, 12, 2, 0, 1]], [c.SCALE, scale], [c.SKEW, [1, ...u32(54000)]],
-    [c.FRONTEND_USED, [1, 2]], [c.REFERENCE, [1, ...u32(1100), 1]], [c.RATE_ACCURACY, [1, ...u32(1500)]],
-    [c.TIMING, [2, ...u32(300)]], [c.BLOCKING, u32(7)]), true);
+    [c.FRONTEND_USED, [1, 2]], [c.REFERENCE, [1, ...u32(1100), 1]], [c.BLOCKING, u32(7)]), true);
   assert.deepEqual([cfg.slot, cfg.offset, cfg.bits, cfg.order], [16, 0, 12, [0, 1]]);
   assert.equal(cfg.zero.get(1), -5);
   assert.equal(cfg.scaleNv.get(1), -800);
   assert.equal(cfg.skewNs.get(1), 54000);
   assert.equal(cfg.frontend.get(1), 2);
   assert.deepEqual(cfg.reference, { source: 'internal', mv: 1100, measured: true });
-  assert.deepEqual([cfg.rateMeasured, cfg.ratePpm, cfg.jitterKind, cfg.jitterNs, cfg.blockingMs], [true, 1500, 2, 300, 7]);
+  assert.equal(cfg.blockingMs, 7);
 });
 
 test('three channels in four-bit samples with undefined bits', () => {
@@ -177,7 +177,7 @@ test('read spans frames without the header leaking into the data; the generation
   assert.deepEqual(await offline(hst, 21).read(100n, 2500, 9), stream.slice(100, 2600));
 });
 
-test('a sigrok file takes sixteen channels in two bytes', { skip: !haveFake }, () => {
+test('a sigrok file takes sixteen channels in two bytes', { skip: !haveVirtualBench }, () => {
   const lc = logic(16, Array.from({ length: 16 }, (_, k) => k));
   lc.cfg.rateNum = 20_000_000;
   const sr = lc.toSr(Uint8Array.of(0x01, 0x80, 0x02, 0x01), 2);
@@ -192,25 +192,25 @@ test('a sigrok file takes sixteen channels in two bytes', { skip: !haveFake }, (
   assert.ok(out.stdout.trim().endsWith('01800201'));
 });
 
-// ---- the fake probe (test_fake_capture.py) ---------------------------------------------------------------------
+// ---- the virtual bench (test_virtual_bench_capture.py) ---------------------------------------------------------------------
 
 /** @param {(ctx: { hst: import('../src/host.js').Host, lc: c.LogicCapture }) => Promise<void>} body @param {string[]} args */
-async function withFake(body, args = []) {
-  const fake = await startFake(args);
-  const hst = await openTcp({ port: fake.port });
+async function withBench(body, args = []) {
+  const bench = await startVirtualBench(args);
+  const hst = await openTcp({ port: bench.port });
   try {
     await hst.open(3000);
     const lc = await c.LogicCapture.open(hst);
     await body({ hst, lc });
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 }
 
-const opts = { skip: !haveFake };
+const opts = { skip: !haveVirtualBench };
 
-test('one-shot: three channels in four-bit samples, and the recorder hook', opts, () => withFake(async ({ hst, lc }) => {
+test('one-shot: three channels in four-bit samples, and the recorder hook', opts, () => withBench(async ({ hst, lc }) => {
   assert.equal(lc.fn, 7);
   await planApply(hst, [[lc.fn, 0, 20], [lc.fn, 1, 21], [lc.fn, 2, 22]]);
   const cfg = await lc.configure({ rate: 1_000_000, samples: 1000 });
@@ -245,7 +245,7 @@ test('one-shot: three channels in four-bit samples, and the recorder hook', opts
   assert.equal(fresh.generation, 2);
 }));
 
-test('the classic ESP32 sampler takes a byte a sample', opts, () => withFake(async ({ hst, lc }) => {
+test('the classic ESP32 sampler takes a byte a sample', opts, () => withBench(async ({ hst, lc }) => {
   await planApply(hst, [[lc.fn, 0, 4], [lc.fn, 1, 5]]);
   const cfg = await lc.configure({ rate: 1_000_000, samples: 300 });
   assert.deepEqual([cfg.width, cfg.positions], [8, [0, 1]]);
@@ -254,7 +254,7 @@ test('the classic ESP32 sampler takes a byte a sample', opts, () => withFake(asy
   counterOk(lc, await lc.readSegment(seg), 300);
 }, ['--profile', 'esp32-v003']));
 
-test('a rate is the source divided by a whole number; query changes nothing', opts, () => withFake(async ({ hst, lc }) => {
+test('a rate is the source divided by a whole number; query changes nothing', opts, () => withBench(async ({ hst, lc }) => {
   await planApply(hst, [[lc.fn, 0, 20]]);
   const q = await lc.query({ rate: 3_000_000 });
   assert.equal(q.rateNum * 7, q.rateDen * 20_000_000);   // at or under the one asked
@@ -262,7 +262,7 @@ test('a rate is the source divided by a whole number; query changes nothing', op
 }));
 
 for (const [kind, role, value, index] of [[c.EDGE, 1, 0, 10], [c.EDGE, 2, 1, 16], [c.LEVEL, 3, 1, 10]]) {
-  test(`a trigger is where the channel does it (type ${kind}, role ${role}, value ${value})`, opts, () => withFake(async ({ hst, lc }) => {
+  test(`a trigger is where the channel does it (type ${kind}, role ${role}, value ${value})`, opts, () => withBench(async ({ hst, lc }) => {
     await planApply(hst, [0, 1, 2, 3].map((r) => /** @type {[number, number, number]} */ ([lc.fn, r, 20 + r])));
     await lc.configure({ rate: 1_000_000, samples: 64, trigger: [kind, role, value], pretrigger: 10 });
     await lc.start();
@@ -271,7 +271,7 @@ for (const [kind, role, value, index] of [[c.EDGE, 1, 0, 10], [c.EDGE, 2, 1, 16]
   }));
 }
 
-test('force is accepted and wait keeps the lock', opts, () => withFake(async ({ hst, lc }) => {
+test('force is accepted and wait keeps the lock', opts, () => withBench(async ({ hst, lc }) => {
   await planApply(hst, [[lc.fn, 0, 20], [lc.fn, 1, 21]]);
   await lc.configure({ rate: 1_000_000, samples: 64, trigger: [c.EDGE, 1, 1] });
   await lc.start();
@@ -285,7 +285,7 @@ test('force is accepted and wait keeps the lock', opts, () => withFake(async ({ 
   assert.notEqual(seg.triggerIndex, null);
 }));
 
-test('slipped segments say so', opts, () => withFake(async ({ hst, lc }) => {
+test('slipped segments say so', opts, () => withBench(async ({ hst, lc }) => {
   await planApply(hst, [[lc.fn, 0, 20]]);
   await lc.configure({ rate: 1_000_000, samples: 64 });
   await lc.start();
@@ -293,7 +293,7 @@ test('slipped segments say so', opts, () => withFake(async ({ hst, lc }) => {
   assert.ok(seg.slipped);
 }, ['--capture-slipped']));
 
-test('repeat fills its ring with the clock and goes on after release', opts, () => withFake(async ({ hst, lc }) => {
+test('repeat fills its ring with the clock and goes on after release', opts, () => withBench(async ({ hst, lc }) => {
   await planApply(hst, [[lc.fn, 0, 20], [lc.fn, 1, 21]]);
   const cfg = await lc.configure({ rate: 1_000_000, mode: c.REPEAT, samples: 1000, segments: 3 });
   assert.equal(cfg.segments, 3);
@@ -317,7 +317,7 @@ test('repeat fills its ring with the clock and goes on after release', opts, () 
   assert.ok(r.payload[8] & 0x02);                                      // released bytes are gone (read: gap)
 }));
 
-test('streaming pushes the bytes while subscribed', opts, () => withFake(async ({ hst, lc }) => {
+test('streaming pushes the bytes while subscribed', opts, () => withBench(async ({ hst, lc }) => {
   await planApply(hst, [[lc.fn, 0, 20], [lc.fn, 1, 21], [lc.fn, 2, 22]]);
   await lc.configure({ rate: 1_000_000, mode: c.STREAMING });
   await lc.subscribe();
@@ -338,7 +338,7 @@ test('streaming pushes the bytes while subscribed', opts, () => withFake(async (
   assert.ok(raw === null || c.unpackPush(raw).generation !== null);
 }));
 
-test('events go out only while subscribed', opts, () => withFake(async ({ hst, lc }) => {
+test('events go out only while subscribed', opts, () => withBench(async ({ hst, lc }) => {
   await planApply(hst, [[lc.fn, 0, 20]]);
   await lc.configure({ rate: 1_000_000, samples: 64 });
   await lc.start();
@@ -353,7 +353,7 @@ test('events go out only while subscribed', opts, () => withFake(async ({ hst, l
   assert.deepEqual([stopped?.kind, stopped?.reason], [c.EVENT_STOPPED, c.STOPPED_REASON.complete]);
 }));
 
-test('a capture listens on pins other interfaces hold', opts, () => withFake(async ({ hst, lc }) => {
+test('a capture listens on pins other interfaces hold', opts, () => withBench(async ({ hst, lc }) => {
   const uart = await find(hst, 'oep.fixture.uart');
   await planApply(hst, [[uart, 1, 12], [uart, 2, 6]]);
   await planApply(hst, [[lc.fn, 0, 12]]);                              // the UART's RX, captured too
@@ -361,14 +361,14 @@ test('a capture listens on pins other interfaces hold', opts, () => withFake(asy
   await assert.rejects(planApply(hst, [[gpio, 1, 12]]), Rejected);     // the UART still holds it against drivers
 }));
 
-test('an analog pin is shared with nothing', opts, () => withFake(async ({ hst, lc }) => {
+test('an analog pin is shared with nothing', opts, () => withBench(async ({ hst, lc }) => {
   const an = await c.AnalogCapture.open(hst);
   const gpio = await find(hst, 'oep.fixture.gpio');
   await planApply(hst, [[an.fn, 0, 16]]);
   for (const other of /** @type {[number, number, number][][]} */ ([[[lc.fn, 0, 16]], [[gpio, 1, 16]]])) {
     await assert.rejects(planApply(hst, other), (e) => {
       assert.ok(e instanceof Unavailable);
-      assert.deepEqual([e.cause, e.channels, e.holderFn, e.holderKind], ['pin_in_use', [16], an.fn, 'plan']);
+      assert.deepEqual([e.cause, e.channels, e.fn], ['pin_in_use', [16], null]);   // cause, channel (no holder: core §4.3)
       return true;
     });
   }
@@ -380,8 +380,8 @@ test('an analog pin is shared with nothing', opts, () => withFake(async ({ hst, 
 }));
 
 test('the whole path: take, one-shot slipped, then streaming at 100 kHz and finish', opts, async () => {
-  const fake = await startFake(['--capture-slipped']);
-  const hst = await openTcp({ port: fake.port, timeoutMs: 2000 });
+  const bench = await startVirtualBench(['--capture-slipped']);
+  const hst = await openTcp({ port: bench.port, timeoutMs: 2000 });
   try {
     await take(hst, 5000, { owner: 'test' });
     const lc = await c.LogicCapture.open(hst);
@@ -403,22 +403,22 @@ test('the whole path: take, one-shot slipped, then streaming at 100 kHz and fini
     await hst.end();
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });
 
 // ---- analog and groups ------------------------------------------------------------------------------------------
 
-test('segments carry ns times with an uncertainty', opts, () => withFake(async ({ hst, lc }) => {
+test('segments carry ns times with an uncertainty', opts, () => withBench(async ({ hst, lc }) => {
   await planApply(hst, [[lc.fn, 0, 20]]);
   await lc.configure({ rate: 1_000_000, samples: 64 });
   await lc.start();
   const [seg] = await lc.wait();
   assert.equal(seg.startUncertaintyNs, 50);
-  assert.equal(seg.startNs % 1_000_000n, 0n);                         // the fake's clock counts ms
+  assert.equal(seg.startNs % 1_000_000n, 0n);                         // the virtual bench's clock counts ms
 }));
 
-/** The fake's analog waveform (fake_capture.analog_value). @param {number} k @param {number} i */
+/** The virtual bench's analog waveform (virtual_bench_capture.analog_value). @param {number} k @param {number} i */
 function analogValue(k, i) {
   const period = 64 * (Math.floor(k / 2) + 1);
   if (k % 2 === 0) return i % period < period / 2 ? 4095 : 0;
@@ -426,7 +426,7 @@ function analogValue(k, i) {
   return Math.floor(v + 0.5) - (v % 1 === 0.5 && Math.floor(v + 0.5) % 2 ? 1 : 0);   // Python's round: half to even
 }
 
-test('analog values, scale and calibration', opts, () => withFake(async ({ hst }) => {
+test('analog values, scale and calibration', opts, () => withBench(async ({ hst }) => {
   const an = await c.AnalogCapture.open(hst);
   assert.equal(an.fn, 11);
   await planApply(hst, [[an.fn, 0, 16], [an.fn, 1, 17]]);
@@ -438,7 +438,6 @@ test('analog values, scale and calibration', opts, () => withFake(async ({ hst }
   assert.deepEqual(cfg.skewNs, new Map([[0, 0], [1, skew]]));          // one ADC, in turn
   assert.equal(cfg.scaleNv.get(0), Math.floor((3100 * 1_000_000) / 4095));
   assert.deepEqual(cfg.reference, { source: 'internal', mv: 1100, measured: false });
-  assert.deepEqual([cfg.rateMeasured, cfg.ratePpm], [true, 1500]);
   await an.start();
   const [seg] = await an.wait();
   const data = await an.readSegment(seg);
@@ -461,11 +460,11 @@ test('analog values, scale and calibration', opts, () => withFake(async ({ hst }
   assert.ok(Math.abs(ilo + 3100) <= 1 && ihi === 0);
   const cal = await an.calibration();
   assert.deepEqual(cal.factory.map((f) => f.frontend), [0, 1, 2, 3]);
-  assert.equal(cal.factory[0].scheme, 'org.example.fake.two-point');
+  assert.equal(cal.factory[0].scheme, 'org.example.virtual_bench.two-point');
   assert.deepEqual(cal.vrefint, { raw: 1365, ns: seg.startNs, nominalMv: 1100 });
 }));
 
-test('a group starts logic and analog together and marks the trigger on both', opts, () => withFake(async ({ hst, lc }) => {
+test('a group starts logic and analog together and marks the trigger on both', opts, () => withBench(async ({ hst, lc }) => {
   const an = await c.AnalogCapture.open(hst);
   const grp = await c.CaptureGroup.open(hst);
   assert.equal(grp.fn, 12);
@@ -500,7 +499,7 @@ test('a group starts logic and analog together and marks the trigger on both', o
   await an.start();                                                    // unbound: its own again
 }));
 
-test('a group refuses what it cannot bind', opts, () => withFake(async ({ hst, lc }) => {
+test('a group refuses what it cannot bind', opts, () => withBench(async ({ hst, lc }) => {
   const an = await c.AnalogCapture.open(hst);
   const grp = await c.CaptureGroup.open(hst);
   await planApply(hst, [[lc.fn, 0, 20], [an.fn, 0, 16], [an.fn, 1, 17]]);
@@ -518,7 +517,7 @@ test('a group refuses what it cannot bind', opts, () => withFake(async ({ hst, l
   await assert.rejects(grp.bind([lc, an], an), Rejected);              // only the trigger track may have a trigger
 }));
 
-test('what the probe cannot do is refused unsupported, naming the tag', opts, () => withFake(async ({ hst, lc }) => {
+test('what the probe cannot do is refused unsupported, naming the tag', opts, () => withBench(async ({ hst, lc }) => {
   await planApply(hst, [[lc.fn, 0, 20]]);
   for (const o of [{ frontends: { 0: 1 }, critical: [c.FRONTEND] }, { trigger: /** @type {[number, number, number]} */ ([c.CROSS_UP, 0, 100]) }]) {
     await assert.rejects(lc.configure({ rate: 1_000_000, samples: 64, ...o }), (e) => {
@@ -528,4 +527,31 @@ test('what the probe cannot do is refused unsupported, naming the tag', opts, ()
     });
   }
   assert.equal(lc.config, null);
+}));
+
+test('configure: a value the probe does not handle is unsupported with the tag as received, bit 7 set or not (core §2.3, capture §3.3)', opts, () => withBench(async ({ hst, lc }) => {
+  await planApply(hst, [[lc.fn, 0, 20]]);
+  for (const critical of [false, true]) {
+    const body = concat(m.tlv(c.MODE, [c.ONE_SHOT], true), m.tlv(c.RATE, u32(1), critical));   // a rate under rate_range
+    for (const op of [c.LogicCapture.CONFIGURE, c.LogicCapture.QUERY_OP]) {
+      await assert.rejects(hst.request(lc.fn, op, body, { locked: op === c.LogicCapture.CONFIGURE }),
+        (e) => e instanceof Unsupported && e.result.payload[0] === (c.RATE | (critical ? c.CRITICAL : 0)));
+    }
+  }
+  const r = await hst.request(lc.fn, c.LogicCapture.CONFIGURE, concat(m.tlv(c.MODE, [c.ONE_SHOT]), m.tlv(c.RATE, u32(1_000_000)),
+    m.tlv(0x7e, [1])));                                                // an unknown non-critical TLV: skipped silently
+  const tags = new Set(m.splitTlvs(r.payload).map(([t]) => t));
+  assert.ok(tags.has(c.ACTUAL_RATE) && ![0x54, 0x5a, 0x7f].some((t) => tags.has(t)));   // no timing, rate_accuracy, ignored
+}));
+
+test('describe: mode is mode max_samples max_segments; no background, budgets or ring (capture §2, §4)', opts, () => withBench(async ({ hst, lc }) => {
+  const an = await c.AnalogCapture.open(hst);
+  const grp = await c.CaptureGroup.open(hst);
+  for (const fn of [lc.fn, an.fn]) {
+    const d = await describe(hst, fn);
+    const modes = d.filter(([t]) => (t & 0x7f) === 0x40).map(([, v]) => v);
+    assert.ok(modes.length && modes.every((v) => v.length === 9));
+    assert.ok(!d.some(([t]) => [0x42, 0x43, 0x47, 0x48, 0x49].includes(t & 0x7f)));
+  }
+  assert.deepEqual((await describe(hst, grp.fn)).map(([t]) => t & 0x7f).filter((t) => t >= 0x40), [0x40]);   // tracks only
 }));

@@ -1,6 +1,6 @@
 // @ts-check
 // oep.probe.restart's restart (oep-spec interfaces/oep-if-restart, op 0x01; the interface is optional) against
-// oep-client-python's fake: the op answers completed success with no payload and the probe restarts after it
+// oep-client-python's virtual bench: the op answers completed success with no payload and the probe restarts after it
 // (no_session for the old session, a new boot_id in confirm); session_id 0 is refused session_required; a probe that
 // lists no oep.probe.restart gets nothing sent; Host.restartProbe waits and confirms the new boot_id, on the link it has
 // or on one opened again; restart_max_ms is the interface's describe 0x40.
@@ -13,9 +13,9 @@ import { NoSession, OepError, Rejected } from '../src/errors.js';
 import { RESTART_AFTER_ANSWER_MS, RESTART_WAIT_MS } from '../src/host.js';
 import { Link } from '../src/link.js';
 import { openTcp, tcpTransport } from '../src/node/index.js';
-import { haveFake, startFake } from './fake.js';
+import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 
-const skip = haveFake ? false : 'needs oep-client-python (the fake probe)';
+const skip = haveVirtualBench ? false : 'needs oep-client-python (the virtual bench)';
 const RESTART = reg.PROBE_RESTART.op.restart;
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -33,8 +33,8 @@ test('the registry: restart is oep.probe.restart op 0x01, needs the lock, restar
 });
 
 test('restart: the answer, then no_session for the old session and a new boot_id', { skip }, async () => {
-  const fake = await startFake(['--profile', 'p4-x035']);
-  const hst = await openTcp({ port: fake.port });
+  const bench = await startVirtualBench(['--profile', 'p4-x035']);
+  const hst = await openTcp({ port: bench.port });
   try {
     const fn = await core.restartFn(hst);
     assert.notEqual(fn, m.CORE_FN);
@@ -52,25 +52,25 @@ test('restart: the answer, then no_session for the old session and a new boot_id
     assert.equal((await hst.open(3000)).bootId, after);
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });
 
 test('restart without a session: session_required', { skip }, async () => {
-  const fake = await startFake(['--profile', 'p4-x035']);
-  const hst = await openTcp({ port: fake.port });
+  const bench = await startVirtualBench(['--profile', 'p4-x035']);
+  const hst = await openTcp({ port: bench.port });
   try {
     await assert.rejects(hst.requestRestart(), (e) => reason(e) === m.REJECT.session_required);
     await assert.rejects(hst.restartProbe({ waitMs: 1000 }), (e) => reason(e) === m.REJECT.session_required);
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });
 
 test('a probe without oep.probe.restart: nothing is sent', { skip }, async () => {
-  const fake = await startFake(['--profile', 'p4-x035', '--no-restart']);
-  const hst = await openTcp({ port: fake.port });
+  const bench = await startVirtualBench(['--profile', 'p4-x035', '--no-restart']);
+  const hst = await openTcp({ port: bench.port });
   try {
     assert.equal(await core.findOptional(hst, core.RESTART_NAME), null);
     await hst.open(3000);
@@ -82,13 +82,13 @@ test('a probe without oep.probe.restart: nothing is sent', { skip }, async () =>
     await hst.keepalive();                                             // the session goes on
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });
 
 test('restartProbe on the link it has: the new boot_id, the session gone, one loss', { skip }, async () => {
-  const fake = await startFake(['--profile', 'esp32-v003']);
-  const hst = await openTcp({ port: fake.port });
+  const bench = await startVirtualBench(['--profile', 'esp32-v003']);
+  const hst = await openTcp({ port: bench.port });
   try {
     const before = /** @type {number} */ (hst.bootId);
     await hst.open(3000);
@@ -101,19 +101,19 @@ test('restartProbe on the link it has: the new boot_id, the session gone, one lo
     await hst.keepalive();
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });
 
 test('restartProbe with reopen: the link closed, a new one opened and confirmed', { skip }, async () => {
-  const fake = await startFake(['--profile', 'p4-x035']);
-  const hst = await openTcp({ port: fake.port });
+  const bench = await startVirtualBench(['--profile', 'p4-x035']);
+  const hst = await openTcp({ port: bench.port });
   try {
     const before = /** @type {number} */ (hst.bootId);
     const first = hst.link;
     await hst.open(3000);
     const reopen = async () => {
-      const link = new Link(await tcpTransport({ port: fake.port }), { timeoutMs: 3000 });
+      const link = new Link(await tcpTransport({ port: bench.port }), { timeoutMs: 3000 });
       await link.start();
       return link;
     };
@@ -125,36 +125,36 @@ test('restartProbe with reopen: the link closed, a new one opened and confirmed'
     await hst.keepalive();
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });
 
-test('restart_max_ms: oep.probe.restart\'s describe declares it (2000 on the fake); none without the interface', { skip }, async () => {
-  let fake = await startFake(['--profile', 'p4-x035']);
-  let hst = await openTcp({ port: fake.port });
+test('restart_max_ms: oep.probe.restart\'s describe declares it (2000 on the virtual bench); none without the interface', { skip }, async () => {
+  let bench = await startVirtualBench(['--profile', 'p4-x035']);
+  let hst = await openTcp({ port: bench.port });
   try {
     assert.equal(await core.restartMaxMs(hst), 2000);
     const tlvs = await core.describe(hst, await core.restartFn(hst));
     assert.ok(tlvs.some(([tag]) => (tag & 0x7f) === reg.PROBE_RESTART.tlv.describe.restart_max_ms));
     assert.ok(!(await core.describe(hst, 0)).some(([tag]) => (tag & 0x7f) === 0x4f));   // not fn 0's any more
-    assert.ok(2000 >= reg.LIMITS.restart_after_answer_ms);
+    assert.ok(2000 >= RESTART_AFTER_ANSWER_MS);                           // the host's short wait (host guide §5.2)
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
-  fake = await startFake(['--profile', 'p4-x035', '--no-restart']);
-  hst = await openTcp({ port: fake.port });
+  bench = await startVirtualBench(['--profile', 'p4-x035', '--no-restart']);
+  hst = await openTcp({ port: bench.port });
   try {
     assert.equal(await core.restartMaxMs(hst), null);
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });
 
 test('restartProbe waits restart_max_ms by default, then the probe is gone', { skip }, async () => {
-  const fake = await startFake(['--profile', 'p4-x035']);
-  const hst = await openTcp({ port: fake.port });
+  const bench = await startVirtualBench(['--profile', 'p4-x035']);
+  const hst = await openTcp({ port: bench.port });
   try {
     await hst.open(3000);
     const reopen = async () => { throw new Error('no device'); };   // the probe never comes back
@@ -164,13 +164,29 @@ test('restartProbe waits restart_max_ms by default, then the probe is gone', { s
     assert.ok(took >= 2000 && took < 5000, `gave up after ${took} ms, not restart_max_ms 2000`);
   } finally {
     try { await hst.link.close(); } catch { /* closed by restartProbe */ }
-    fake.stop();
+    bench.stop();
+  }
+});
+
+test('restartProbe cuts a longer waitMs to restart_max_ms (host guide §5.2)', { skip }, async () => {
+  const bench = await startVirtualBench(['--profile', 'p4-x035']);
+  const hst = await openTcp({ port: bench.port });
+  try {
+    await hst.open(3000);
+    const reopen = async () => { throw new Error('no device'); };
+    const start = performance.now();
+    await assert.rejects(hst.restartProbe({ reopen, waitMs: 8000 }), /no device/);
+    const took = performance.now() - start;
+    assert.ok(took >= 2000 && took < 5000, `gave up after ${took} ms, not restart_max_ms 2000`);
+  } finally {
+    try { await hst.link.close(); } catch { /* closed by restartProbe */ }
+    bench.stop();
   }
 });
 
 test('restartProbe without a declared restart_max_ms falls back to RESTART_WAIT_MS', { skip }, async () => {
-  const fake = await startFake(['--profile', 'esp32-v003']);
-  const hst = await openTcp({ port: fake.port });
+  const bench = await startVirtualBench(['--profile', 'esp32-v003']);
+  const hst = await openTcp({ port: bench.port });
   try {
     assert.equal(RESTART_WAIT_MS, 10000);
     const fn = await core.restartFn(hst);
@@ -182,6 +198,6 @@ test('restartProbe without a declared restart_max_ms falls back to RESTART_WAIT_
     assert.notEqual(await hst.restartProbe(), before);                 // back well within the fallback
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });

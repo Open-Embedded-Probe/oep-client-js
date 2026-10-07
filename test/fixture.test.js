@@ -1,6 +1,6 @@
 // @ts-check
 // oep.fixture.gpio / uart / i2c-target / spi-target and the I2C decoder: request shapes against a scripted link, and
-// the gpio / uart flows against the fake probe.
+// the gpio / uart flows against the virtual bench.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Writer, concat, fromHex, text, utf8 } from '../src/bytes.js';
@@ -12,7 +12,7 @@ import { PositionStream } from '../src/console.js';
 import { Host } from '../src/host.js';
 import * as m from '../src/message.js';
 import { openTcp } from '../src/node/index.js';
-import { haveFake, startFake } from './fake.js';
+import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 
 const UART = 7, I2C = 11, SPI = 12;
 
@@ -63,26 +63,27 @@ function tap(hst) {
 test('i2c-target request and answer shapes', async () => {
   const { hst, log } = scripted({
     [`${I2C}:${I2cTarget.CONFIGURE}`]: () => ok(),
-    [`${I2C}:${I2cTarget.PRELOAD_TX}`]: () => ok(Uint8Array.of(2)),
+    [`${I2C}:${I2cTarget.PRELOAD_TX}`]: () => ok(),
     [`${I2C}:${I2cTarget.READ_RX}`]: () => ok(concat(Uint8Array.of(1), new Writer().u16(3).done(), utf8('abc'), Uint8Array.of(1, 8, 0), new Writer().u64(1234).done())),   // TLV ns
-    [`${I2C}:${I2cTarget.STATUS}`]: () => ok(new Writer().u8(1).u8(3).u8(0).u8(1).u32(5).u8(2).u32(0).done()),
+    [`${I2C}:${I2cTarget.STATUS}`]: () => ok(new Writer().u8(1).u8(1).u32(5).u8(2).u32(0).done()),   // state queued rx tx errors
     [`${I2C}:${I2cTarget.STRETCH}`]: () => ok(),
   });
   const t = await I2cTarget.open(hst);
-  await t.configure(0x42, I2cTarget.MODE_PRELOADED_TX);
-  assert.deepEqual(log.at(-1)?.[2], Uint8Array.of(0x42, 3));
-  assert.equal(await t.preloadTx(Uint8Array.of(0x11, 0x22)), 2);
+  await t.configure(0x42);                                     // one form: the address alone (fixture §3)
+  assert.deepEqual(log.at(-1)?.[2], Uint8Array.of(0x42));
+  assert.equal(await t.preloadTx(Uint8Array.of(0x11, 0x22)), undefined);   // the answer is empty
   assert.deepEqual(log.at(-1)?.[2], Uint8Array.of(2, 0, 0x11, 0x22));
   const rx = await t.readRx();
   assert.equal(rx.pending, 1);
   assert.equal(text(rx.data), 'abc');
   assert.equal(rx.ns, 1234n);
   assert.equal(t.lastNs, 1234n);
-  assert.deepEqual(await t.status(), { state: 1, mode: 3, armed: false, queued: 1, rxFrames: 5, txSlots: 2, errors: 0 });
+  assert.deepEqual(await t.status(), { state: 1, queued: 1, rxFrames: 5, txSlots: 2, errors: 0 });
   await t.stretch(50);
   assert.deepEqual(log.at(-1)?.[2], new Writer().u32(50).done());
   assert.deepEqual(t.assignments(50, 52), [[I2C, 1, 50], [I2C, 2, 52]]);
-  await assert.rejects(t.armRx(4), Rejected);                  // not scripted: unknown operation
+  for (const gone of ['armRx', 'reset', 'pullupOhms']) assert.equal(/** @type {any} */ (t)[gone], undefined, gone);
+  assert.equal(/** @type {any} */ (SpiTarget.prototype).reset, undefined);   // spi-target has no reset either (fixture §4)
 });
 
 test('i2c-target and spi-target declarations from describe', async () => {
@@ -90,14 +91,15 @@ test('i2c-target and spi-target declarations from describe', async () => {
   /** @type {(tag: number, v: Uint8Array) => [number, Uint8Array]} */
   const tlv = (tag, v) => [tag, v];
   hst.describes.set(I2C, [tlv(0x03, new Writer().u16(128).done()), tlv(0x02, new Writer().u32(1_000_000).done()),
-    tlv(0x06, new Writer().u32(0b11).done()), tlv(0x40, Uint8Array.of(8)), tlv(0x41, new Writer().u32(100_000).done())]);
+    tlv(0x06, new Writer().u32(0b100).done()), tlv(0x40, Uint8Array.of(8)), tlv(0x41, new Writer().u32(100_000).done())]);
   hst.describes.set(SPI, [tlv(0x03, new Writer().u16(64).done()), tlv(0x40, Uint8Array.of(4))]);
   const t = await I2cTarget.open(hst);
-  assert.deepEqual(await t.declarations(), { maxLength: 128, maxClockHz: 1_000_000, features: 0b11, queueDepth: 8, maxStretchUs: 100_000, pullupOhms: null });
+  assert.deepEqual(await t.declarations(), { maxLength: 128, maxClockHz: 1_000_000, features: 0b100, queueDepth: 8, maxStretchUs: 100_000, internalPullups: true });
+  assert.equal(await t.internalPullups(), true);                 // features bit2 (fixture §3)
   const s = await SpiTarget.open(hst);
   assert.deepEqual(await s.declarations(), { maxLength: 64, maxClockHz: null, features: 0, queueDepth: 4, csSetupNs: 0 });   // cs_setup_ns not declared: 0
   hst.describes.set(I2C, [tlv(0x06, new Writer().u32(0b01).done())]);
-  assert.equal((await t.declarations()).maxStretchUs, null);   // no features bit1: none declared
+  assert.deepEqual([(await t.declarations()).maxStretchUs, await t.internalPullups()], [null, false]);
 });
 
 test('spi-target request and answer shapes', async () => {
@@ -150,9 +152,9 @@ test('FixtureUart.formatByte', () => {
   assert.throws(() => FixtureUart.formatByte(/** @type {any} */ (9)), RangeError);
 });
 
-test('gpio set is a list in order, only planned channels', { skip: !haveFake }, async () => {
-  const fake = await startFake();
-  const hst = await openTcp({ port: fake.port });
+test('gpio set is a list in order, only planned channels', { skip: !haveVirtualBench }, async () => {
+  const bench = await startVirtualBench();
+  const hst = await openTcp({ port: bench.port });
   try {
     await hst.open(5000);
     const log = tap(hst);
@@ -162,7 +164,7 @@ test('gpio set is a list in order, only planned channels', { skip: !haveFake }, 
     assert.deepEqual(log.at(-1)?.[2], Uint8Array.of(3, 23, 0, 5, 5, 0, 4, 23, 0, 6));
     assert.deepEqual(await g.read([23, 5]), [1, 1]);
     const raw = await hst.request(g.fn, Gpio.READ, Uint8Array.of(2, 23, 0, 5, 0), { locked: false });
-    assert.deepEqual([...raw.payload], [2, 1, 1, 0x01, 2, 0, 0xff, 2]);      // n(u8) n x level, TLV drive (fixture §1 / §1.1)
+    assert.deepEqual([...raw.payload], [2, 1, 1]);                           // n(u8) n x level, no drive TLV (fixture §1)
     await assert.rejects(g.set([[5, 8]]), (e) => e instanceof Unsupported && e.tag === null && e.channel === 5 && e.index === 0);   // a mode a later revision may define (core §2.5)
     const e = await g.set([[5, Gpio.OUTPUT_LOW], [40, Gpio.OUTPUT_LOW]]).then(() => null, (x) => x);
     assert.ok(e instanceof GpioUnavailable && e instanceof Unavailable);
@@ -178,13 +180,13 @@ test('gpio set is a list in order, only planned channels', { skip: !haveFake }, 
     await hst.end();
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });
 
-test('uart configure with a format, reads that do not consume, write, marks', { skip: !haveFake }, async () => {
-  const fake = await startFake();
-  const hst = await openTcp({ port: fake.port });
+test('uart configure with a format, reads that do not consume, write, marks', { skip: !haveVirtualBench }, async () => {
+  const bench = await startVirtualBench();
+  const hst = await openTcp({ port: bench.port });
   try {
     await hst.open(5000);
     const log = tap(hst);
@@ -196,7 +198,7 @@ test('uart configure with a format, reads that do not consume, write, marks', { 
     await assert.rejects(io.uart.configure(9600, 0x01), (e) => e instanceof Unsupported && e.tag === 0x81);   // 7N1: defined, not declared
     await assert.rejects(io.uart.configure(9600, 0x80), (e) => e instanceof Unsupported && e.tag === 0x81);   // a reserved format bit (core §2.5, C-02): the tag
     await assert.rejects(io.uart.configure(50_000_000), (e) => e instanceof Unsupported && e.tag === null);   // more than 5 % off
-    assert.deepEqual(await io.uart.status(), { configured: 'session', baud: io.baud, format: 0b010100, isDefault: false });
+    assert.deepEqual(await io.uart.status(), { baud: io.baud, format: 0b010100 });   // baud and format (fixture §2)
     assert.ok((await io.uart.write(utf8('abc'))) > 0);
     await io.uart.mark(7);
     assert.equal((await io.uart.marks()).at(-1)?.detail, 7);
@@ -204,13 +206,13 @@ test('uart configure with a format, reads that do not consume, write, marks', { 
     await hst.end();
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });
 
-test('uart from a saved plan: RX from the configure on, TX, 64-byte frames', { skip: !haveFake }, async () => {
-  const fake = await startFake(['--profile', 'esp32-v003', '--uart-plan', '--uart-rx', 'rx %d\\n', '--every', '10']);
-  const hst = await openTcp({ port: fake.port });
+test('uart from a saved plan: RX from the configure on, TX, 64-byte frames', { skip: !haveVirtualBench }, async () => {
+  const bench = await startVirtualBench(['--profile', 'esp32-v003', '--uart-plan', '--uart-rx', 'rx %d\\n', '--every', '10']);
+  const hst = await openTcp({ port: bench.port });
   try {
     await hst.open(3000);
     const log = tap(hst);
@@ -230,21 +232,21 @@ test('uart from a saved plan: RX from the configure on, TX, 64-byte frames', { s
     await hst.end();
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });
 
-test('the uart stream is the plan\'s and its position never goes back (fixture §2, common §1.1)', { skip: !haveFake }, async () => {
-  const fake = await startFake();
-  const hst = await openTcp({ port: fake.port });
+test('the uart stream is the plan\'s and its position never goes back (fixture §2, common §1.1)', { skip: !haveVirtualBench }, async () => {
+  const bench = await startVirtualBench();
+  const hst = await openTcp({ port: bench.port });
   try {
     await hst.open(5000);
     const uart = await FixtureUart.open(hst);
     await assert.rejects(uart.configure(115200), (e) => e instanceof Unavailable && e.cause === 'wrong_state');   // no plan: no stream
     await assert.rejects(uart.read(), Unavailable);
-    assert.equal((await uart.status()).configured, 'default');
+    assert.deepEqual(await uart.status(), { baud: 115200, format: 0 });
     await planApply(hst, [[uart.fn, 1, 20]]);                              // RX only: the stream is there, 115200 8N1 by default
-    assert.deepEqual(await uart.status(), { configured: 'default', baud: 115200, format: 0, isDefault: true });
+    assert.deepEqual(await uart.status(), { baud: 115200, format: 0 });
     await uart.mark(1);
     const before = (await uart.read(PositionStream.FROM_NOW, 0, 0)).start;
     await planRelease(hst, [uart.fn]);
@@ -258,6 +260,6 @@ test('the uart stream is the plan\'s and its position never goes back (fixture �
     await hst.end();
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });

@@ -1,11 +1,11 @@
 // @ts-check
-// TCP (transports §1: length(u16) message) - a local broker, or the tests' fake probe. `framing: 'cobs'` for a TCP
-// that carries a serial port's bytes (oep-client-python's fake_serve --framing cobs).
+// TCP (transports §1: length(u16) message) - a local broker, or the tests' virtual bench. `framing: 'cobs'` for a TCP
+// that carries a serial port's bytes (oep-client-python's virtual_bench_serve --framing cobs).
 import { connect } from 'node:net';
 
 /**
- * `baudRate` (tests only): a TCP that stands for a serial port this host opened (the fake probe's --framing cobs) gets
- * a `setBaudRate` that only records the rate, so port_speed can be exercised against the fake (whose line model,
+ * `baudRate` (tests only): a TCP that stands for a serial port this host opened (the virtual bench's --framing cobs) gets
+ * a `setBaudRate` that only records the rate, so port_speed can be exercised against the virtual bench (whose line model,
  * --broken-rate, follows the probe's rate alone).
  * @param {{ host?: string, port: number, framing?: 'length' | 'cobs', connectTimeoutMs?: number, baudRate?: number }} opts
  * @returns {Promise<import('../link.js').Transport>}

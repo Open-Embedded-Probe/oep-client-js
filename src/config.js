@@ -5,25 +5,26 @@
 //
 //   const cfg = await ProbeConfig.open(hst);
 //   await cfg.set([new Slot({ slot: 0, wireFn, pins: [2, 54], name: 'x035', attach: 'at-boot', retryS: 1 }),
-//                  new Bind({ port: 1, mode: 'last-reset', streams: [['slot', 0]] })]);
-//   await cfg.save();
+//                  new Bind({ port: 1, stream: ['slot', 0] })]);
+//   if (await cfg.needsSave()) await cfg.save();
 //   await cfg.items(), await cfg.describe(), await cfg.state()
 //   await cfg.unset([['bind', 1]])          // or cfg.set([remove('bind', 1)])
 //
 // An item goes as its TLV; a set replaces the keys it carries and keeps the others; the probe checks the whole and
-// changes nothing on a refusal. The probe keeps each item's bytes as sent and hashes the canonical form (tag order,
-// key order, the one TLV encoding): `canonicalHash` computes the same value here, so a host can leave a probe that
-// has what it wants alone.
+// changes nothing on a refusal. Every item has one form per tag (probe.config §1). The hash is the probe's own u32
+// that changes with the settings (probe.config §2): a host never computes it - it compares the items themselves
+// (`sameItems`, host guide §15) and uses the hash to see whether the settings moved (get's pages, storage_hash against
+// get's hash). `apply(wanted, { save })` leaves a probe that has what it wants alone.
 
 import * as reg from './registry.js';
 import { Writer, concat, getU16, getU32, text, utf8 } from './bytes.js';
 import * as m from './message.js';
-import { Interface, describe, firmwareLabels } from './core.js';
+import { Interface, describe, firmwareLabels, maxOpMs } from './core.js';
 import { Drive } from './fixture.js';
 
 const CFG = reg.PROBE_CONFIG;
 export const ITEM = CFG.tlv.item;
-/** A label's text at most this many bytes (probe.config §1, PC-5). */
+/** A label's text: 1 to this many bytes (probe.config §1). */
 export const LABEL_MAX = reg.LIMITS.label_max_bytes;
 export const DESCRIBE = CFG.tlv.describe;
 
@@ -33,7 +34,6 @@ const dashed = (e) => /** @type {Record<string, number>} */ (Object.fromEntries(
 const byValue = (e) => /** @type {Record<number, string>} */ (Object.fromEntries(Object.entries(e).map(([k, v]) => [v, k.replace(/_/g, '-')])));
 
 export const ATTACH = dashed(CFG.enum.slot_attach);                 // host, at-boot
-export const MODE = dashed(CFG.enum.bind_mode);                     // last-reset, manual, mixed
 /** @type {Record<string, number>} */
 export const STREAM = { slot: CFG.enum.bind_stream.slot_console, uart: CFG.enum.bind_stream.fixture_uart };
 /** @type {Record<string, number>} */
@@ -48,12 +48,11 @@ export const STORAGE_STATE = byValue(CFG.enum.storage_state);
 export const UNREADABLE = /** @type {Record<number, string>} */ ({
   1: 'unreadable form', 2: 'an interface it names is gone or of another revision', 3: 'refused when applied',
 });
-/** last_try_at_ns: never tried; reset_at_ns: never done */
+/** last_try_at_ns: never tried */
 export const NEVER_NS = 0xffffffffffffffffn;
-/** A slot's boot_reset (probe.config §1.1): off, retry_with_reset */
-export const BOOT_RESET = /** @type {{ off: number, retry_with_reset: number }} */ (CFG.enum.slot_boot_reset);
-/** slot wire_fn swdio swclk attach boot_reset retry_ms max_speed_hz idle_clock mechanism name_len: the slot's head (§1.1) */
-export const SLOT_HEAD = 20;
+/** slot wire_fn swdio swclk attach retry_ms max_speed_hz idle_clock mechanism name_len: the slot's head, then the name
+ * (§1.1) */
+export const SLOT_HEAD = 19;
 
 /** @param {Record<string, number>} table @param {number} value */
 function nameOf(table, value) { return Object.keys(table).find((k) => table[k] === value) ?? String(value); }
@@ -82,7 +81,7 @@ export class Label {
   value() {
     const raw = utf8(this.text);
     if (raw.length < 1 || raw.length > LABEL_MAX || !m.validText(raw)) {
-      // probe.config §1 (PC-5): 1 to 32 bytes of UTF-8 without control characters - the probe refuses others
+      // probe.config §1: 1 to 32 bytes (the probe refuses other lengths); this host sends no control characters
       throw new RangeError(`label ${JSON.stringify(this.text)}: 1 to ${LABEL_MAX} bytes of text without control characters`);
     }
     return new Writer().u16(this.channel).raw(raw).done();
@@ -94,8 +93,9 @@ export class Label {
  * keeps driving that level while the channel is free (a target's power switch kept on), and a gpio plan that takes the
  * channel keeps it until its first set (fixture §1); a probe that cannot drive the channel refuses it unsupported.
  * drive (output modes only): the strength it drives at (`fixture.Drive`, or a level number; fixture §1.1) - also what a
- * gpio set without its own drive uses on that channel. null: the default level (sent as drive_kind 2, value 0: the
- * item is always 6 bytes, probe.config §1). A probe without drive_levels keeps it and drives at its default.
+ * gpio set without its own drive uses on that channel. null: the default level (sent as 0xFF: the item is always 4
+ * bytes, probe.config §1; an input mode's drive is not looked at). A level past the probe's drive_levels, or any level
+ * on a probe without them, is refused unsupported.
  */
 export class Idle {
   static TAG = ITEM.idle;
@@ -107,14 +107,14 @@ export class Idle {
     this.drive = drive === null || drive === undefined ? null : Drive.of(drive);
   }
   key() { return [this.channel]; }
-  /** channel(u16) mode(u8) drive_kind(u8) drive_value(u16): 6 bytes (probe.config §1). */
+  /** channel(u16) mode(u8) drive(u8): 4 bytes (probe.config §1). */
   value() {
     const w = new Writer().u16(this.channel).u8(valueOf(IDLE, this.mode, 'idle mode'));
     const drive = this.drive ?? Drive.default();
     if (!drive.isDefault && this.mode !== 'output-low' && this.mode !== 'output-high') {
       throw new RangeError(`idle mode ${this.mode}: a drive goes with output-low / output-high only`);
     }
-    return w.raw(drive.pack()).done();                               // drive_kind(u8) drive_value(u16)
+    return w.raw(drive.pack()).done();                               // drive(u8): a level, 0xFF the default
   }
 }
 
@@ -142,29 +142,23 @@ export class Disable {
   value() { return new Writer().u16(this.channel).done(); }
 }
 
-/** @typedef {{ scheme: number, mask: Uint8Array, value: Uint8Array }} Lock  the target_id a connection must show */
-
 /**
- * A place a target is wired to (probe.config §1.1). pins: [swdio, swclk], swclk 0xFFFF on one wire (swio).
- * lock: e.g. { scheme: 1, mask: u32 LE, value: u32 LE }; mask and value are as long as the scheme's value (4 bytes for
- * scheme 1). retryS goes on the wire as retry_ms (u32), maxSpeed as max_speed_hz (u32). bootReset (at-boot only): an
- * automatic attach that got no answer is tried once more with the `nrst` line (probe.config §3.1), before any session
- * took the lock this boot; it goes right after attach, and the item ends with the lock.
+ * A place a target is wired to (probe.config §1.1; the probe checks no target - a host does, with connections' tid).
+ * pins: [swdio, swclk], swclk 0xFFFF on one wire (swio). retryS goes on the wire as retry_ms (u32; at-boot slots only,
+ * 0 on a host slot), maxSpeed as max_speed_hz (u32). The item ends with the name.
  */
 export class Slot {
   static TAG = ITEM.slot;
   /**
    * @param {{ slot: number, wireFn: number, pins: [number, number], name: string, attach?: string, retryS?: number,
-   *   mechanism?: string, lock?: Lock | null, maxSpeed?: number, idleClock?: string, bootReset?: boolean }} o
+   *   mechanism?: string, maxSpeed?: number, idleClock?: string }} o
    *   attach: host (default), at-boot; retryS: at-boot: try again every retryS seconds while the target is not there
    *   (0: never); mechanism: sdi, dmdata, dmseq (default), none (no console on this slot); maxSpeed: the line's ceiling
    *   in Hz for the probe's own attach (0: none); idleClock: rvswd: SWCLK while the line rests, high (default) / low
    */
-  constructor({ slot, wireFn, pins, name, attach = 'host', retryS = 0, mechanism = 'dmseq', lock = null, maxSpeed = 0,
-    idleClock = 'high', bootReset = false }) {
+  constructor({ slot, wireFn, pins, name, attach = 'host', retryS = 0, mechanism = 'dmseq', maxSpeed = 0, idleClock = 'high' }) {
     this.slot = slot; this.wireFn = wireFn; this.pins = pins; this.name = name; this.attach = attach;
-    this.retryS = retryS; this.mechanism = mechanism; this.lock = lock; this.maxSpeed = maxSpeed; this.idleClock = idleClock;
-    this.bootReset = bootReset;
+    this.retryS = retryS; this.mechanism = mechanism; this.maxSpeed = maxSpeed; this.idleClock = idleClock;
   }
 
   key() { return [this.slot]; }
@@ -172,37 +166,26 @@ export class Slot {
   value() {
     const name = utf8(this.name);
     const retryMs = this.attach === 'at-boot' ? Math.round(this.retryS * 1000) : 0;
-    if (this.bootReset && this.attach !== 'at-boot') throw new RangeError('bootReset goes with attach at-boot only');
-    const w = new Writer().u8(this.slot).u16(this.wireFn).u16(this.pins[0]).u16(this.pins[1])
-      .u8(valueOf(ATTACH, this.attach, 'attach')).u8(this.bootReset ? BOOT_RESET.retry_with_reset : BOOT_RESET.off)
-      .u32(retryMs).u32(this.maxSpeed)
+    return new Writer().u8(this.slot).u16(this.wireFn).u16(this.pins[0]).u16(this.pins[1])
+      .u8(valueOf(ATTACH, this.attach, 'attach')).u32(retryMs).u32(this.maxSpeed)
       .u8(valueOf(IDLE_CLOCK, this.idleClock, 'idle clock')).u8(valueOf(MECHANISM, this.mechanism, 'mechanism'))
-      .u8(name.length).raw(name);
-    if (this.lock === null) return w.u8(0).done();                   // lock_len 0: no lock
-    const { scheme, mask, value } = this.lock;
-    if (mask.length !== value.length || !mask.length || !scheme) {
-      throw new RangeError('a lock has a scheme and a mask and value of the same length, at least 1 byte');
-    }
-    return w.u8(1 + 2 * mask.length).u8(scheme).raw(mask).raw(value).done();
+      .u8(name.length).raw(name).done();
   }
 }
 
 /**
- * What serial port `port` (the describe transport index) carries (probe.config §1.2). streams: ['slot', n] or
- * ['uart', fn]; selected: manual's choice (an index into streams).
+ * The one stream serial port `port` (the describe transport index) carries (probe.config §1.2): ['slot', n] - a slot's
+ * console - or ['uart', fn] - a fixture UART's RX. Another stream: set the bind again.
  */
 export class Bind {
   static TAG = ITEM.bind;
-  /** @param {{ port: number, mode?: string, streams?: [string, number][], selected?: number }} o  mode: last-reset (default), manual, mixed */
-  constructor({ port, mode = 'last-reset', streams = [], selected = 0 }) {
-    this.port = port; this.mode = mode; this.streams = streams; this.selected = selected;
-  }
+  /** @param {{ port: number, stream: [string, number] }} o */
+  constructor({ port, stream }) { this.port = port; this.stream = stream; }
   key() { return [this.port]; }
+  /** port(u8) kind(u8) id(u16). */
   value() {
-    const w = new Writer().u8(this.port).u8(valueOf(MODE, this.mode, 'bind mode')).u8(this.mode === 'manual' ? this.selected : 0)
-      .u8(this.streams.length);
-    for (const [kind, id] of this.streams) w.u8(valueOf(STREAM, kind, 'stream kind')).u16(id);   // kind, id: 3 bytes each
-    return w.done();
+    const [kind, id] = this.stream;
+    return new Writer().u8(this.port).u8(valueOf(STREAM, kind, 'stream kind')).u16(id).done();
   }
 }
 
@@ -239,62 +222,27 @@ export function remove(kind, key) {
 export function decode(tag, v) {
   if (tag === ITEM.plan && v.length >= 5) return new Plan({ fn: getU16(v), role: v[2], channel: getU16(v, 3) });
   if (tag === ITEM.label && v.length >= 2) return new Label({ channel: getU16(v), text: text(v.slice(2)) });
-  if (tag === ITEM.idle && v.length >= 6) {
-    const drive = Drive.unpack(v.slice(3, 6));
+  if (tag === ITEM.idle && v.length >= 4) {
+    const drive = Drive.unpack(v.slice(3, 4));
     return new Idle({ channel: getU16(v), mode: nameOf(IDLE, v[2]), drive: drive.isDefault ? null : drive });
   }
-  if (tag === ITEM.slot && v.length >= SLOT_HEAD + 1) {
+  if (tag === ITEM.slot && v.length >= SLOT_HEAD) {
     const nameLen = v[SLOT_HEAD - 1];
     const name = text(v.slice(SLOT_HEAD, SLOT_HEAD + nameLen));
-    const at = SLOT_HEAD + nameLen;
-    const lockLen = at < v.length ? v[at] : 0;
-    const part = v.slice(at + 1, at + 1 + lockLen);
-    const bootReset = v[8];                                         // right after attach (probe.config §1.1)
-    let lock = null;
-    if (lockLen >= 3 && part.length === lockLen) {
-      const half = (lockLen - 1) >> 1;
-      lock = { scheme: part[0], mask: part.slice(1, 1 + half), value: part.slice(1 + half, 1 + 2 * half) };
-    }
     return new Slot({ slot: v[0], wireFn: getU16(v, 1), pins: [getU16(v, 3), getU16(v, 5)], name,
-      attach: nameOf(ATTACH, v[7]), retryS: getU32(v, 9) / 1000, maxSpeed: getU32(v, 13), idleClock: nameOf(IDLE_CLOCK, v[17]),
-      mechanism: nameOf(MECHANISM, v[18]), lock, bootReset: bootReset === BOOT_RESET.retry_with_reset });
+      attach: nameOf(ATTACH, v[7]), retryS: getU32(v, 8) / 1000, maxSpeed: getU32(v, 12), idleClock: nameOf(IDLE_CLOCK, v[16]),
+      mechanism: nameOf(MECHANISM, v[17]) });
   }
   if (tag === ITEM.disable && v.length >= 2) return new Disable({ channel: getU16(v) });
   if (tag === ITEM.uart && v.length >= 7) return new Uart({ fn: getU16(v), baud: getU32(v, 2), format: v[6] });
-  if (tag === ITEM.bind && v.length >= 4) {
-    /** @type {[string, number][]} */
-    const streams = [];
-    for (let k = 0, at = 4; k < v[3]; k++, at += 3) {   // n × (kind(u8), id(u16)), 3 bytes each
-      if (at + 3 > v.length) return { tag, value: v };
-      streams.push([nameOf(STREAM, v[at]), getU16(v, at + 1)]);
-    }
-    return new Bind({ port: v[0], mode: nameOf(MODE, v[1]), streams, selected: v[2] });
-  }
+  if (tag === ITEM.bind && v.length >= 4) return new Bind({ port: v[0], stream: [nameOf(STREAM, v[1]), getU16(v, 2)] });
   return { tag, value: v };
 }
 
-// ---- the canonical form and its hash (probe.config §2) -------------------------------------------------------
+// ---- comparing items (host guide §15) ---------------------------------------------------------------------------
 
-const CRC32_TABLE = (() => {
-  const t = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c >>> 0;
-  }
-  return t;
-})();
-
-/** CRC-32 (IEEE, as zlib.crc32; core §5.2).
- * @param {Uint8Array} data */
-export function crc32(data) {
-  let c = 0xffffffff;
-  for (const b of data) c = CRC32_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-/** The canonical order's key of one item (probe.config §2): plan (fn, role, channel), label / idle / disable channel,
- * slot, port, uart fn. @param {number} tag @param {Uint8Array} value */
+/** get's order key of one item (probe.config §2): plan (fn, role, channel), label / idle / disable channel, slot,
+ * port, uart fn. @param {number} tag @param {Uint8Array} value */
 function sortKey(tag, value) {
   if (tag === ITEM.plan && value.length >= 5) return [getU16(value), value[2], getU16(value, 3)];
   if (tag === ITEM.slot || tag === ITEM.bind) return value.length ? [value[0]] : [-1];
@@ -302,19 +250,20 @@ function sortKey(tag, value) {
 }
 
 /**
- * The items (objects, or item TLV bytes - one or more TLVs each) in the canonical order: tag ascending, then key
- * ascending (plan by (fn, role, channel)), critical bit dropped. The same key twice throws, as the probe refuses it in
- * one set; a Removal is not an item (it goes as an unset) and throws too.
- * @param {(Item | Uint8Array)[]} items @returns {[number, Uint8Array][]}
+ * The items (objects, or item TLV bytes - one or more TLVs each) as [tag, value] in get's order: tag ascending, then
+ * key ascending (plan by (fn, role, channel)), critical bit dropped. The same key twice throws, as the probe refuses it
+ * in one set; a Removal is not an item (it goes as an unset) and throws too.
+ * @param {(Item | Uint8Array | [number, Uint8Array])[]} items @returns {[number, Uint8Array][]}
  */
-export function canonical(items) {
+export function ordered(items) {
   /** @type {{ tag: number, key: number[], value: Uint8Array }[]} */
   const rows = [];
   const seen = new Set();
   for (const it of items) {
     if (it instanceof Removal) throw new RangeError('a removal is not an item of the configuration (unset sends it)');
     /** @type {[number, Uint8Array][]} */
-    const tlvs = it instanceof Uint8Array ? m.splitTlvs(it) : [[/** @type {any} */ (it.constructor).TAG, it.value()]];
+    const tlvs = it instanceof Uint8Array ? m.splitTlvs(it) : Array.isArray(it) ? [it]
+      : [[/** @type {any} */ (it.constructor).TAG, it.value()]];
     for (const [rawTag, value] of tlvs) {
       const tag = rawTag & 0x7f;
       const key = sortKey(tag, value);
@@ -328,10 +277,22 @@ export function canonical(items) {
   return rows.map((r) => [r.tag, r.value]);
 }
 
-/** get's hash for a configuration of exactly these items: CRC-32 over the canonical TLVs, in the one encoding of core
- * §2.2 (probe.config §2). @param {(Item | Uint8Array)[]} items */
-export function canonicalHash(items) {
-  return crc32(concat(...canonical(items).map(([tag, v]) => m.tlv(tag, v))));
+/** Whether two configurations hold the same items, item by item (host guide §15: a host compares what it wants with
+ * get's items; the probe's hash is its own and is never computed here).
+ * @param {(Item | Uint8Array | [number, Uint8Array])[]} a @param {(Item | Uint8Array | [number, Uint8Array])[]} b */
+export function sameItems(a, b) {
+  const x = ordered(a), y = ordered(b);
+  return x.length === y.length && x.every(([t, v], i) => t === y[i][0] && v.length === y[i][1].length && v.every((byte, k) => byte === y[i][1][k]));
+}
+
+/** The kind of an item tag (probe.config §1). @type {Record<number, ItemKind>} */
+const KIND = /** @type {any} */ (Object.fromEntries(Object.entries(ITEM).map(([k, v]) => [v, k])));
+
+/** The [kind, key] an unset names for an item (probe.config §2): plan and uart fn(u16), label / idle / disable
+ * channel(u16), slot and bind their first byte. @param {number} tag @param {Uint8Array} value @returns {[ItemKind, number]} */
+function keyOf(tag, value) {
+  if (tag === ITEM.slot || tag === ITEM.bind) return [KIND[tag], value[0]];
+  return [KIND[tag], getU16(value)];
 }
 
 // ---- declarations and state --------------------------------------------------------------------------------------
@@ -339,43 +300,34 @@ export function canonicalHash(items) {
 /**
  * @typedef {object} SlotState
  * @property {number} slot
- * @property {string} state              connected, absent, lock-mismatch, no-target-id
+ * @property {string} state              connected (a connection on its place - which target, the host checks with
+ *                                       connections' tid), absent
  * @property {number} connection         0: none
  * @property {bigint | null} lastTryAtNs the probe's clock when it last tried an automatic attach (null: never tried)
- * @property {number} targetIdScheme     0: none
- * @property {Uint8Array | null} targetId
- * @property {bigint | null} resetAtNs   when the retry with reset (bootReset, probe.config §3.1) started pulling the line
- *                                       (the probe's clock; null: not done this boot)
  */
 /**
  * @typedef {object} BindState
  * @property {number} port
- * @property {string} mode
- * @property {number | null} selected    null in mixed
  * @property {string} flow               idle, streaming, held
  */
 /**
- * What the probe's describe declares (fixed for one boot): the storage's size, the item tags it takes, how many slots,
- * the bind modes.
+ * What the probe's describe declares (fixed for one boot): the storage's size, the item tags it takes, how many
+ * slots.
  * @typedef {object} Declared
- * @property {number} storageBytes       max_bytes of the canonical form; 0: no storage
+ * @property {number} storageBytes       the storage's size; 0: no storage
  * @property {number[]} items            the item tags the probe takes
  * @property {number} slotsMax
- * @property {string[]} bindModes
  */
 /**
  * The live state (op state, lock-free; probe.config §3.3): the saved settings and the slots and binds.
  * @typedef {object} State
  * @property {string} storage            none, applied, unreadable
- * @property {number} savedHash          the saved settings' hash, as applied to this boot's fns (0: none / unreadable)
+ * @property {number} savedHash          get's hash when the saved settings became the current ones (0: none / unreadable)
  * @property {number} unreadableReason   0 none, 1 form, 2 an interface gone / of another revision, 3 refused
  * @property {string | null} unreadable  why, when unreadable
  * @property {SlotState[]} slots
  * @property {BindState[]} binds
  */
-
-/** A save writes the probe's flash: the link waits at least this for its answer (Host.request expectMs). */
-export const SAVE_EXPECT_MS = 2000;
 
 export class ProbeConfig extends Interface {
   static NAME = CFG.name;
@@ -387,7 +339,7 @@ export class ProbeConfig extends Interface {
   static UNSET = CFG.op.unset;
   static STATE = CFG.op.state;
 
-  /** The hash and the items as [tag, value] in the canonical order, paged. No lock. Every page carries the same hash;
+  /** The hash and the items as [tag, value] in get's order (tag, then key), paged. No lock. Every page carries the same hash;
    * when it changes between pages the probe's settings moved and the read starts over.
    * @returns {Promise<{ hash: number, items: [number, Uint8Array][] }>} */
   async get() {
@@ -442,8 +394,39 @@ export class ProbeConfig extends Interface {
     return hash;
   }
 
-  /** Save the current settings (a probe with storage; the whole is replaced) -> the hash saved. Needs the lock. */
-  async save() { return ProbeConfig.hashAnswer(await this.call(ProbeConfig.SAVE, undefined, { expectMs: SAVE_EXPECT_MS })); }
+  /** Save the current settings (a probe with storage; the whole is replaced) -> the hash saved. Needs the lock. The
+   * probe answers nothing while it writes: its argument time is max_op_ms (probe.config §2, core §4.4). */
+  async save() { return ProbeConfig.hashAnswer(await this.call(ProbeConfig.SAVE, undefined, { expectMs: await maxOpMs(this.host) })); }
+
+  /** Whether a save would change what is stored (host guide §15 step 5): not when the storage is applied and its
+   * storage_hash is the current settings' (get's) hash. A flash write wears it and stops the probe meanwhile. */
+  async needsSave() {
+    const st = await this.state();
+    return !(st.storage === 'applied' && st.savedHash === (await this.get()).hash);
+  }
+
+  /** Make the probe's settings `wanted` (host guide §15): get, compared item by item (`sameItems`); when they differ,
+   * set what is wanted and unset the keys get has and `wanted` does not; with `save`, save when `needsSave`. -> whether
+   * anything was sent. Needs the lock when something changes.
+   * @param {(Item | Uint8Array)[]} wanted @param {{ save?: boolean }} [opts] */
+  async apply(wanted, { save = false } = {}) {
+    const have = (await this.get()).items;
+    let changed = false;
+    if (!sameItems(have, wanted)) {
+      const want = ordered(wanted);
+      const keys = new Set(want.map(([t, v]) => keyOf(t, v).join(':')));
+      await this.set(want.map(([t, v]) => m.tlv(t, v)));
+      const gone = [...new Map(have.map(([t, v]) => keyOf(t & 0x7f, v)).filter((k) => !keys.has(k.join(':')))
+        .map((k) => [k.join(':'), k])).values()];
+      if (gone.length) await this.unset(gone);
+      changed = true;
+    }
+    if (save && await this.needsSave()) {
+      await this.save();
+      changed = true;
+    }
+    return changed;
+  }
 
   /** Erase what is saved (the current settings stay). Needs the lock. */
   async erase() { await this.call(ProbeConfig.ERASE); }
@@ -451,16 +434,12 @@ export class ProbeConfig extends Interface {
   /** The declarations (describe, cached by the host while the probe's boot_id holds). @returns {Promise<Declared>} */
   async describe() {
     /** @type {Declared} */
-    const d = { storageBytes: 0, items: [], slotsMax: 0, bindModes: [] };
+    const d = { storageBytes: 0, items: [], slotsMax: 0 };
     for (const [rawTag, v] of await describe(this.host, this.fn)) {
       const tag = rawTag & 0x7f;
       if (tag === DESCRIBE.storage && v.length >= 4) d.storageBytes = getU32(v);
       else if (tag === DESCRIBE.items) d.items = [...v];
       else if (tag === DESCRIBE.slots_max && v.length) d.slotsMax = v[0];
-      else if (tag === DESCRIBE.bind_modes && v.length >= 4) {
-        const bits = getU32(v);
-        d.bindModes = Object.keys(MODE).filter((k) => (bits >>> MODE[k]) & 1);
-      }
     }
     return d;
   }
@@ -484,15 +463,13 @@ export class ProbeConfig extends Interface {
       st.unreadable = why ? (UNREADABLE[why] ?? String(why)) : null;
       const nSlots = rd.u8();
       for (let i = 0; i < nSlots; i++) {   // count x slot_state, no element length (core §2.3)
-        const slot = rd.u8(), state = rd.u8(), connection = rd.u16(), tried = rd.u64(), resetAt = rd.u64();
-        const scheme = rd.u8(), tid = rd.bytes(rd.u8());
-        st.slots.push({ slot, state: SLOT_STATE[state] ?? String(state), connection, lastTryAtNs: tried === NEVER_NS ? null : tried,
-          targetIdScheme: scheme, targetId: tid.length ? tid : null, resetAtNs: resetAt === NEVER_NS ? null : resetAt });
+        const slot = rd.u8(), state = rd.u8(), connection = rd.u16(), tried = rd.u64();
+        st.slots.push({ slot, state: SLOT_STATE[state] ?? String(state), connection, lastTryAtNs: tried === NEVER_NS ? null : tried });
       }
       const nBinds = rd.u8();
       for (let i = 0; i < nBinds; i++) {
-        const port = rd.u8(), mode = rd.u8(), sel = rd.u8(), flow = rd.u8();
-        st.binds.push({ port, mode: nameOf(MODE, mode), selected: sel === 0xff ? null : sel, flow: BIND_FLOW[flow] ?? String(flow) });
+        const port = rd.u8(), flow = rd.u8();
+        st.binds.push({ port, flow: BIND_FLOW[flow] ?? String(flow) });
       }
       rd.tail();
       if (!more || !(nSlots || nBinds)) return st;

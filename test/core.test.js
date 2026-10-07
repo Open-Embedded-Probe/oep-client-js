@@ -4,11 +4,11 @@ import { test } from 'node:test';
 import * as cobs from '../src/cobs.js';
 import { Writer, utf8 } from '../src/bytes.js';
 import { PLAN_APPLY, PLAN_NAME, PLAN_RELEASE, describe, find, listEntries, maxOpMs, notOffered, offers, ops, probeInfo } from '../src/core.js';
-import { NoSession, Rejected } from '../src/errors.js';
+import { NoSession, Rejected, Unsupported } from '../src/errors.js';
 import * as m from '../src/message.js';
 import * as reg from '../src/registry.js';
 import { openTcp } from '../src/node/index.js';
-import { haveFake, startFake } from './fake.js';
+import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 
 test('crc16 and COBS as transports §1 says', () => {
   assert.equal(cobs.crc16(utf8('123456789')), 0x29b1);
@@ -23,9 +23,9 @@ test('crc16 and COBS as transports §1 says', () => {
 });
 
 for (const framing of /** @type {const} */ (['length', 'cobs'])) {
-  test(`confirm, list, describe and a session with the fake probe (${framing})`, { skip: !haveFake }, async () => {
-    const fake = await startFake([], framing);
-    const hst = await openTcp({ port: fake.port, framing });
+  test(`confirm, list, describe and a session with the virtual bench (${framing})`, { skip: !haveVirtualBench }, async () => {
+    const bench = await startVirtualBench([], framing);
+    const hst = await openTcp({ port: bench.port, framing });
     try {
       assert.equal(hst.revision, 1);
       const entries = await listEntries(hst);
@@ -36,7 +36,7 @@ for (const framing of /** @type {const} */ (['length', 'cobs'])) {
       assert.equal(info.model, 'esp32p4');
       assert.equal(info.unitId, 'fafe00000035');
       assert.equal(info.maxOpMs, 10000);                                  // core §7.5 max_op_ms (0x4D)
-      assert.equal(info.discoverable, true);                              // 0x4A: the P4 fake is on the project's VID:PID (§7.5)
+      assert.ok(!('discoverable' in info) && !('profile' in info) && !('reserved' in info));   // gone from fn 0's describe
       assert.equal(await maxOpMs(hst), 10000);
       assert.equal(hst.describes.size, 1);                                // describe is cached (declarations only)
       assert.equal(hst.bootId, hst.limits?.bootId);                       // confirm tells the boot_id (core §7.1)
@@ -61,7 +61,7 @@ for (const framing of /** @type {const} */ (['length', 'cobs'])) {
       await hst.end();
     } finally {
       await hst.link.close();
-      fake.stop();
+      bench.stop();
     }
   });
 }
@@ -92,33 +92,36 @@ test('one TLV form: tag(u8) len(u16) value whatever the length (core §2.2); one
   assert.deepEqual(rd.tail().get(0x41), Uint8Array.of(5));
 });
 
-test('the probe takes a long non-critical TLV and refuses a broken one', { skip: !haveFake }, async () => {
-  const fake = await startFake();
-  const hst = await openTcp({ port: fake.port });
+test('the probe skips an unknown long non-critical TLV without a trace and refuses a broken one (core §2.3)', { skip: !haveVirtualBench }, async () => {
+  const bench = await startVirtualBench();
+  const hst = await openTcp({ port: bench.port });
   try {
     const big = new Uint8Array(300).fill(1);
     const open = new Writer().u32(3000).u8(0).done();                                          // an open (the id in the header) ...
     const r = await hst.request(0, m.OP.open, Uint8Array.from([...open, ...m.tlv(0x21, big)]), { session: 0x1234 });
     const rd = new m.Reader(r.payload);
     rd.u32(); rd.u32();
-    assert.deepEqual(rd.tail().ignored, [0x21]);                                               // ... with a long TLV it ignores
-    hst.session = 0x1234;
-    await assert.rejects(hst.request(0, m.OP.open, Uint8Array.from([...open, 0x21, 5, 0, 9]), { session: 0x1234 }),
+    assert.deepEqual(rd.tail().tlvs, []);                                                      // ... with a long TLV it ignores: no ignored list
+    await hst.request(0, m.OP.end, new Uint8Array(), { session: 0x1234 });                    // the lock free again: an
+    await assert.rejects(hst.request(0, m.OP.open, Uint8Array.from([...open, 0x21, 5, 0, 9]), { session: 0x1235 }),   // open
       (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);                       // a len past the end
-    await assert.rejects(hst.request(0, m.OP.open, Uint8Array.from([...open, 0x00, 0, 0]), { session: 0x1234 }),
-      (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);                       // tag 0x00 is reserved
+    // 0x00 and 0x7F are never tags (core §2.2): with bit 7, an unknown critical tag (unsupported, as received)
+    await assert.rejects(hst.request(0, m.OP.open, Uint8Array.from([...open, 0x80, 0, 0]), { session: 0x1236 }),
+      (e) => e instanceof Unsupported && e.result.payload[0] === 0x80);
+    await assert.rejects(hst.request(0, m.OP.open, Uint8Array.from([...open, 0xff, 0, 0]), { session: 0x1237 }),
+      (e) => e instanceof Unsupported && e.result.payload[0] === 0xff);
+    assert.throws(() => m.tlv(0x7f, []), RangeError);                                         // never sent by this host
     const tlvs = await describe(hst, 0);
     assert.ok(tlvs.some(([tag]) => (tag & 0x7f) === reg.CORE.tlv.describe.max_op_ms));
-    await hst.end();
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });
 
-test('a lapsed lease is no_session, never resumed: the host opens anew (core §6.2, §9)', { skip: !haveFake }, async () => {
-  const fake = await startFake();
-  const hst = await openTcp({ port: fake.port });
+test('a lapsed lease is no_session, never resumed: the host opens anew (core §6.2, §9)', { skip: !haveVirtualBench }, async () => {
+  const bench = await startVirtualBench();
+  const hst = await openTcp({ port: bench.port });
   try {
     const opened = await hst.open(1000);
     assert.equal(opened.leaseMs, 1000);
@@ -138,13 +141,13 @@ test('a lapsed lease is no_session, never resumed: the host opens anew (core §6
     await assert.rejects(hst.keepalive(), NoSession);                                         // end released it: no resume
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });
 
-test('subscribe is the emitting fn\'s own op 0x30 (min_bytes u16, max_delay_ms u32, no target fn); unsubscribe 0x32; gpio has neither', { skip: !haveFake }, async () => {
-  const fake = await startFake();
-  const hst = await openTcp({ port: fake.port });
+test('subscribe is the emitting fn\'s own op 0x30 (min_bytes u16, max_delay_ms u32, no target fn); unsubscribe 0x32; gpio has neither', { skip: !haveVirtualBench }, async () => {
+  const bench = await startVirtualBench();
+  const hst = await openTcp({ port: bench.port });
   try {
     await hst.open(3000);
     const logic = await find(hst, 'oep.fixture.logic');
@@ -167,6 +170,6 @@ test('subscribe is the emitting fn\'s own op 0x30 (min_bytes u16, max_delay_ms u
     await hst.end();
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });

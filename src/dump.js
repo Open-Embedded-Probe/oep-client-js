@@ -11,7 +11,7 @@ import { hex } from './bytes.js';
 import * as catalog from './catalog.js';
 import * as m from './message.js';
 import { CORE_KNOWN, KNOWN, opNames, ranges } from './interfaces.js';
-import { kind } from './names.js';
+import * as names from './names.js';
 
 /** @typedef {{ entry: catalog.ListEntry, description: catalog.Description, tlvs: [number, Uint8Array][] }} Offer */
 /**
@@ -27,13 +27,13 @@ import { kind } from './names.js';
  */
 
 /** fn 0's describe TLVs every probe gives (core §1.2, §7.5). @type {[number, string][]} */
-const REQUIRED_CORE_TAGS = /** @type {const} */ (['unit_id', 'transport', 'max_op_ms', 'discoverable']).map((k) => [reg.CORE.tlv.describe[k], k]);
+const REQUIRED_CORE_TAGS = /** @type {const} */ (['unit_id', 'transport', 'max_op_ms']).map((k) => [reg.CORE.tlv.describe[k], k]);
 /** The describe tags an interface's document requires: name -> [tag, its name] (oep-if-restart §1). @type {Record<string, [number, string][]>} */
 const REQUIRED_TAGS = { [reg.PROBE_RESTART.name]: [[reg.PROBE_RESTART.tlv.describe.restart_max_ms, 'restart_max_ms']] };
 
 /**
  * core §1.2 (C-10) as far as a lock-free look shows it: confirm's answer carries TLV transport (§7.1),
- * fn 0's describe carries unit_id, transport, max_op_ms, discoverable and ops. -> what is missing (empty: nothing seen
+ * fn 0's describe carries unit_id, transport, max_op_ms and ops. -> what is missing (empty: nothing seen
  * missing).
  * @param {{ revision: number, transport: number | null }} limits confirm's answer (Host.limits)
  * @param {[number, Uint8Array][]} coreDescribe fn 0's describe TLVs @returns {string[]}
@@ -56,10 +56,11 @@ export function interfaceMissing(entry, tlvs) {
 }
 
 /**
- * Every interface the probe lists under `prefix` (exact: that name only) with its describe, paged. No lock. The
+ * Every interface the probe lists under `prefix` (on label boundaries; exact: that name only - list itself returns every
+ * one, core §7.2, and the host filters) with its describe, paged. No lock. The
  * confirm (when the host has none yet) asks as Host.confirm does: the revision in use once there is one (core §7.1,
  * C-15). fn 0 (the core, never listed) is described first, always: `core`. `missing`: what core §1.2 requires and the
- * probe did not give. An ops outside core §7.4's encoding shows as `unusable` on its row (fn 0's: the probe).
+ * probe did not give. An ops outside core §7.4's form shows as `unusable` on its row (fn 0's: the probe).
  * @param {import('./host.js').Host} hst @param {string} prefix @param {boolean} exact @returns {Promise<Capabilities>}
  */
 export async function collect(hst, prefix = '', exact = false) {
@@ -88,14 +89,14 @@ export async function collect(hst, prefix = '', exact = false) {
   /** @type {catalog.ListEntry[]} */
   const entries = [];
   for (;;) {
-    const r = await hst.request(m.CORE_FN, m.OP.list, catalog.packListRequest(prefix, exact, entries.length), { locked: false });
+    const r = await hst.request(m.CORE_FN, m.OP.list, catalog.packListRequest(entries.length), { locked: false });
     requests.list++;
     const { total, entries: page } = catalog.unpackListResult(r.payload);
     entries.push(...page);
     if (!page.length || entries.length >= total) break;
   }
   for (const e of entries) hst.revisions.set(e.fn, e.revision);
-  for (const entry of entries) {
+  for (const entry of prefix ? entries.filter((e) => names.matches(e.name, prefix, exact)) : entries) {
     const tlvs = await describeAll(entry.fn);
     const description = catalog.decodeDescription(tlvs);
     caps.offers.push({ entry, description, tlvs });
@@ -124,7 +125,6 @@ export async function collect(hst, prefix = '', exact = false) {
  * @property {number} [maxLength]
  * @property {string[]} [ops]                      the ops tag's ops by name (core §7.4)
  * @property {string[]} [features]
- * @property {string} [implementation]
  * @property {Record<string, string>} [declares]     interface-specific tags, decoded (a repeated tag: '; '-joined)
  * @property {string} [unusable]                     unknown critical tags
  */
@@ -146,7 +146,7 @@ export function describeOffer(o) {
   /** @param {number} r */
   const role = (r) => k?.roles[r] ?? `role${r}`;
   /** @type {OfferRow} */
-  const out = { fn: o.entry.fn, instance: o.entry.instance, name, revision: o.entry.revision, namespace: kind(name), known: k !== null };
+  const out = { fn: o.entry.fn, instance: o.entry.instance, name, revision: o.entry.revision, namespace: names.kind(name), known: k !== null };
   if (k) out.summary = k.summary;
   if (d.roles.size) {
     out.roles = {};
@@ -163,7 +163,6 @@ export function describeOffer(o) {
   if (d.maxLength !== null) out.maxLength = d.maxLength;
   if (d.ops !== null) out.ops = opNames(name, d.ops);
   if (d.features !== null) out.features = features(d.features, k?.features ?? {});
-  if (d.implementation !== null) out.implementation = catalog.IMPLEMENTATIONS[d.implementation] ?? String(d.implementation);
   /** @type {Record<string, string>} */
   const specific = {};
   for (const [tag, value] of d.specific) {
@@ -186,9 +185,9 @@ export function describeOffer(o) {
 /** Everything collected as plain data (the shape `toJson` writes).
  * @param {Capabilities} caps */
 export function toData(caps) {
-  const { fn, ops, features, implementation, declares, unusable } = describeOffer(caps.core);
+  const { fn, ops, features, declares, unusable } = describeOffer(caps.core);
   return { revision: caps.revision, maxFrame: caps.maxFrame, requests: { ...caps.requests }, missingRequired: [...caps.missing],
-    core: { fn, ops, features, implementation, declares, unusable }, interfaces: caps.offers.map(describeOffer) };
+    core: { fn, ops, features, declares, unusable }, interfaces: caps.offers.map(describeOffer) };
 }
 
 /** @param {Capabilities} caps */
@@ -223,7 +222,6 @@ function rowLines(r, pad) {
   if (limits.length) lines.push(`${pad}  ${limits.join(', ')}`);
   if (r.ops) lines.push(`${pad}  ops: ${r.ops.join(', ') || 'none'}`);
   if (r.features?.length) lines.push(`${pad}  features: ${r.features.join(', ')}`);
-  if (r.implementation) lines.push(`${pad}  implementation: ${r.implementation}`);
   for (const [k, v] of Object.entries(r.declares ?? {})) lines.push(`${pad}  ${k}: ${v}`);
   if (r.unusable) lines.push(`${pad}  UNUSABLE: ${r.unusable}`);
   return lines;

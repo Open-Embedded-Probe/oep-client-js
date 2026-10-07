@@ -8,14 +8,19 @@
 // failure). A request the probe ran but that did not get through is completed failed (nothing done) or partial (some
 // done) with the success shape, so `done` and `status` say how far it went: this module throws TargetError with them.
 // Every block op is self-contained (oep-if-debug §4): the probe restores the GPRs, DATA0 / DATA1 and abstractauto
-// before it answers, so nothing of the probe's own is left in the target between requests.
+// before it answers, so nothing of the probe's own is left in the target between requests. DATA0 that this host's own
+// dmi sequences change (readRegister) is the host's to write back before the hart runs (debug §4): the console's
+// mailbox lives there (`RiscvDm.dataSaved`, `RiscvDm.restoreData`).
+//
+// The waits: attach, scan and riscv-dm's reset take as long as the probe needs, up to max_op_ms - their argument time
+// (core §4.4, debug §1, §4.3).
 
 import * as reg from './registry.js';
 import { Writer, concat, getU16, getU32 } from './bytes.js';
 import * as catalog from './catalog.js';
 import * as m from './message.js';
 import { Failed, OepError, Rejected, rejection } from './errors.js';
-import { Interface, describe, maxOpMs } from './core.js';
+import { FALLBACK_MAX_OP_MS, Interface, describe, maxOpMs } from './core.js';
 
 export const STATUS = reg.STATUS;
 export const OK = STATUS.ok;
@@ -24,13 +29,6 @@ export const TIMEOUT = STATUS.timeout;
 export const STATUS_NAMES = Object.fromEntries(Object.entries(STATUS).map(([k, v]) => [v, k]));
 const RV = reg.TARGET_RISCV_DM;
 const RVSWD = reg.WIRE_RVSWD;
-/** One attach answer at most (oep-if-debug §1): its argument time (core §4.4). */
-export const ATTACH_BUDGET_MS = reg.LIMITS.attach_budget_ms;
-/** No scan combination starts later than this; a scan's argument time adds one attach to it. */
-export const SCAN_BUDGET_MS = reg.LIMITS.scan_budget_ms;
-/** After a reset's release, the most a probe waits for a silent DM (attach's reset TLV, riscv-dm reset; debug §3, §4.3):
- * argument time (core §4.4). */
-export const RESET_SETTLE_MS = reg.LIMITS.reset_settle_ms;
 export const STEP = RV.enum.dmi_step;
 export const STEP_WRITE = STEP.write, STEP_READ = STEP.read, STEP_POLL_READS = STEP.poll_reads;
 export const STEP_WAIT_US = STEP.wait_us, STEP_POLL_US = STEP.poll_us;
@@ -159,18 +157,18 @@ export class WireBase extends Interface {
     return WireBase.DEFAULT_MAX_SPEED;
   }
 
-  /** An argument time, at most the probe's max_op_ms (core §4.4). @param {number} ms */
-  async budget(ms) {
-    try { return Math.min(ms, await maxOpMs(this.host)); } catch { return ms; }
+  /** The probe's max_op_ms (core §7.5), FALLBACK_MAX_OP_MS when it cannot be read. */
+  async maxOpMs() {
+    try { return await maxOpMs(this.host); } catch { return FALLBACK_MAX_OP_MS; }
   }
 
-  /** attach's argument time (core §4.4, C-06 / P2-★4): attach_budget_ms, and with the reset TLV its holdMs and
-   * reset_settle_ms (the wait for a target that restarts by itself after the release, debug §3), at most max_op_ms - the
-   * host's wait for its answer adds host_wait_add_ms and the transfer time. @param {[number, number] | null} [reset] */
-  attachMs(reset = null) { return this.budget(ATTACH_BUDGET_MS + (reset ? reset[1] + RESET_SETTLE_MS : 0)); }
+  /** attach's argument time (core §4.4, debug §1): max_op_ms - the probe answers within it, its search, retries, the
+   * reset TLV's hold and the wait for a silent DM included. The host's wait adds host_wait_add_ms and the transfer
+   * time. @param {[number, number] | null} [reset] */
+  attachMs(reset = null) { return this.maxOpMs(); }
 
-  /** scan's argument time: scan_budget_ms + attach_budget_ms (one combination's try), at most max_op_ms. */
-  scanMs() { return this.budget(SCAN_BUDGET_MS + ATTACH_BUDGET_MS); }
+  /** scan's argument time: max_op_ms (debug §1). */
+  scanMs() { return this.maxOpMs(); }
 
   /** [channel, holdMs], critical: hold the reset line (open drain, low) that long, then attach (§3).
    * @param {[number, number] | null | undefined} reset */
@@ -270,7 +268,7 @@ export class Wire extends WireBase {
   static TAG_TARGET_ID = RVSWD.tlv.attach_answer.target_id;
   static TAG_DPC = RVSWD.tlv.attach_answer.dpc;
   static TAG_SEARCH_RETRIES = RVSWD.tlv.attach_answer.search_retries;
-  static SCHEME_WCH_DMI_7F = reg.COMMON.enum.target_id_scheme.wch_dmi_7f;   // one scheme space (common)
+  static SCHEME_DMI_7F = reg.COMMON.enum.target_id_scheme.dmi_7f;   // the u32 at DMI 0x7F (debug §3; one scheme space, common)
 
   hadReset = false;
   existing = false;
@@ -278,7 +276,6 @@ export class Wire extends WireBase {
   halted = false;
   /** @type {number | null} the halted hart's dpc (the answer's TLV 0x11), else null */ dpc = null;
   speedHz = 0;
-  /** @type {number[]} */ ignored = [];
   /** @type {[number, Uint8Array] | null} (scheme, value) the last attach read, or null */ targetId = null;
   /** @type {number | null} the last attach's failed speed-search tries (0xFFFF: 65535 or more; null: not said) */
   searchRetries = null;
@@ -331,7 +328,7 @@ export class Wire extends WireBase {
    * halting before the first instruction with halt - the way back from firmware that turns the debug pins into GPIOs
    * (on an existing connection: the target is reset, mark reset detail 3). this.targetId: [scheme, value] of the
    * target's identity when the probe could read one; this.searchRetries: the answer's failed speed-search tries. The
-   * answer is waited for attach_budget_ms (+ holdMs) as its argument time (core §4.4).
+   * answer is waited for max_op_ms as its argument time (core §4.4, debug §1).
    * @param {AttachOptions} [opts]
    */
   async attach(opts = {}) {
@@ -343,7 +340,6 @@ export class Wire extends WireBase {
     this.existing = !!(this.flags & ATTACH_FLAGS.existing);
     this.halted = !!(this.flags & ATTACH_FLAGS.halted);
     const tail = rd.tail();
-    this.ignored = tail.ignored;
     this.takeTargetId(tail);
     const dpc = tail.get(Wire.TAG_DPC);
     this.dpc = this.halted && dpc && dpc.length >= 4 ? getU32(dpc) : null;
@@ -420,10 +416,13 @@ export class StepListError extends TargetError {
 }
 
 /** run's answer (§4.4). stopped: the hart halted on its own (ebreak) before timeoutMs; notHalted: the limit passed and
- * the probe could not halt the hart (dpc and values mean nothing); values: the registers asked for in `outs`, in order.
- * @typedef {{ status: number, stopped: boolean, notHalted: boolean, dpc: number, elapsedUs: number, values: number[] }} RunResult */
+ * the probe could not halt the hart (dpc and values mean nothing); notRun: the preparation (registers, dcsr, pc) failed
+ * - the hart was not run and is still halted, the loader did not run (dpc means nothing); values: the registers asked
+ * for in `outs`, in order.
+ * @typedef {{ status: number, stopped: boolean, notHalted: boolean, notRun: boolean, dpc: number, elapsedUs: number,
+ *   values: number[] }} RunResult */
 
-/** run's `stopped`: 0 the limit passed and the probe halted it, 1 stopped on its own, 2 not halted. */
+/** run's `stopped`: 0 the limit passed and the probe halted it, 1 stopped on its own, 2 not halted, 3 not run. */
 export const RUN_STOPPED = RV.enum.run_stopped;
 
 /** The kinds of a packed step list, in order (so the count and the value rule need no bookkeeping by callers).
@@ -504,10 +503,6 @@ export class RiscvDm extends Interface {
   static RESET_RUN = RV.enum.reset_mode.run;
   static RESET_RUN_CONFIRM = RV.enum.reset_mode.run_verified;
   static RESET_HALT = RV.enum.reset_mode.halt_at_reset;
-  static METHOD_DEFAULT = RV.enum.reset_method.probe_default;
-  static METHOD_NDMRESET = RV.enum.reset_method.ndmreset;
-  static METHOD_SYSTEM = RV.enum.reset_method.system_reset;
-  static TAG_RESET_METHOD = RV.tlv.reset.method;
   static TAG_STEP_LEFT = RV.tlv.step_answer.step_left;
   static DPC = 0x07B1;
   /** The optional ops (debug §4), by name: block (read_block / write_block, a pair), run, reset, step. */
@@ -518,6 +513,8 @@ export class RiscvDm extends Interface {
   maxLength = null;
   /** @type {number | null} words (u32) one block operation may move: maxLength / 4 */
   maxWords = null;
+  /** @type {number | null} DATA0 as it was before this host's own abstract commands changed it (null: unchanged) */
+  dataSaved = null;
 
   /** @param {import('./host.js').Host} hst @param {number} conn @param {{ fn?: number, name?: string }} [opts] */
   static async on(hst, conn, { fn, name } = {}) {
@@ -540,10 +537,9 @@ export class RiscvDm extends Interface {
     return new Set(Object.entries(RiscvDm.OPTIONAL).filter(([, ops]) => ops.every((op) => offered.has(op))).map(([name]) => name));
   }
 
-  /** reset's argument time (core §4.4): reset_settle_ms - the wait for a DM that does not answer while the target
-   * restarts by itself after ndmreset (debug §4.3) - at most max_op_ms. */
+  /** reset's argument time (core §4.4): max_op_ms (debug §4.3). */
   async resetMs() {
-    try { return Math.min(RESET_SETTLE_MS, await maxOpMs(this.host)); } catch { return RESET_SETTLE_MS; }
+    try { return await maxOpMs(this.host); } catch { return FALLBACK_MAX_OP_MS; }
   }
 
   /** @param {string} what @param {number} op */
@@ -559,15 +555,30 @@ export class RiscvDm extends Interface {
   halt() { return this.statusOnly('halt', RiscvDm.HALT); }
 
   /** One resumereq; ok = the hart left debug mode (status state if the probe saw it not go). Parts that need more (the
-   * CH32 rule) are the host's (§4.2). */
-  resume() { return this.statusOnly('resume', RiscvDm.RESUME); }
+   * CH32 rule) are the host's (§4.2). DATA0 is written back first (`restoreData`). */
+  async resume() {
+    await this.restoreData();
+    return this.statusOnly('resume', RiscvDm.RESUME);
+  }
+
+  /** Write DATA0 back as it was before this host's own abstract commands changed it (debug §4: before the hart runs;
+   * readRegister leaves it changed). Nothing when none ran since the hart last ran; resume, step and run call it first. */
+  async restoreData() {
+    if (this.dataSaved === null) return;
+    await this.dmi([RiscvDm.stepWrite(0x04, this.dataSaved)]);
+    this.dataSaved = null;
+  }
 
   /** A GPR / CSR of the halted hart through an abstract command (access register, 32 bits) in plain DMI steps, so any
-   * probe with dmi does it. A cmderr is cleared, then thrown.
+   * probe with dmi does it. A cmderr is cleared, then thrown. DATA0 is left holding the value; its value from before
+   * (the console's mailbox, console §3) is read first and kept (`dataSaved`) to be written back before the hart runs
+   * (`restoreData`, debug §4).
    * @param {number} regno */
   async readRegister(regno) {
-    const { values } = await this.dmi([RiscvDm.stepWrite(0x17, (0x00220000 | regno) >>> 0),
-      RiscvDm.stepPoll(0x16, 1 << 12, 0, 100), RiscvDm.stepRead(0x04)]);
+    const save = this.dataSaved === null;
+    const { values } = await this.dmi([...(save ? [RiscvDm.stepRead(0x04)] : []),
+      RiscvDm.stepWrite(0x17, (0x00220000 | regno) >>> 0), RiscvDm.stepPoll(0x16, 1 << 12, 0, 100), RiscvDm.stepRead(0x04)]);
+    if (save) this.dataSaved = /** @type {number} */ (values.shift());
     const cs = values[0], data0 = values[1];
     if ((cs >> 8) & 7) {
       await this.dmi([RiscvDm.stepWrite(0x16, 0x700)]);
@@ -576,35 +587,33 @@ export class RiscvDm extends Interface {
     return data0;
   }
 
-  /** @param {number} mode @param {number | null} method */
-  async resetMode(mode, method) {
-    const body = new Writer().u8(mode);
-    if (method != null) body.raw(m.tlv(RiscvDm.TAG_RESET_METHOD, [method], true));
-    const r = await this.request(RiscvDm.RESET, body.done(), { expectMs: await this.resetMs() });
+  /** reset's answer: status flags(bit0 reached, bit1 verified) pc (§4.3); its argument time is max_op_ms - the probe
+   * answers within it, a DM silent after the release included (core §4.4). @param {number} mode */
+  async resetMode(mode) {
+    const r = await this.request(RiscvDm.RESET, new Writer().u8(mode).done(), { expectMs: await this.resetMs() });
     const rd = ran(r);
-    const status = rd.u8(), flags = rd.u8(), attempts = rd.u8(), pc = rd.u32();
+    const status = rd.u8(), flags = rd.u8(), pc = rd.u32();
     rd.tail();
     check('reset', r, status);
-    return { flags, attempts, pc };
+    return { flags, pc };
   }
 
-  /** Reset and let it run (confirm: seen running). method: METHOD_* (critical; none or METHOD_DEFAULT: the probe's
-   * default, ndmreset in revision 1). The reset op never drives a reset line (debug §4.3): a line moves only through
-   * attach's reset TLV (`Wire.attachUnderReset`) or a fixture.
-   * @param {{ confirm?: boolean, method?: number | null }} [opts] */
-  reset({ confirm = true, method = null } = {}) {
-    return this.resetMode(confirm ? RiscvDm.RESET_RUN_CONFIRM : RiscvDm.RESET_RUN, method);
+  /** Reset through ndmreset and let it run (confirm: seen running, the pc read). The reset op never drives a reset line
+   * (debug §4.3): a line moves only through attach's reset TLV (`Wire.attachUnderReset`) or a fixture. -> { flags, pc }
+   * @param {{ confirm?: boolean }} [opts] */
+  reset({ confirm = true } = {}) {
+    return this.resetMode(confirm ? RiscvDm.RESET_RUN_CONFIRM : RiscvDm.RESET_RUN);
   }
 
-  /** Reset and stop before the first instruction (haltreq held through the reset). -> dpc
-   * @param {{ method?: number | null }} [opts] */
-  async resetHalt({ method = null } = {}) { return (await this.resetMode(RiscvDm.RESET_HALT, method)).pc; }
+  /** Reset and stop before the first instruction (haltreq held through the reset). -> dpc */
+  async resetHalt() { return (await this.resetMode(RiscvDm.RESET_HALT)).pc; }
 
   /** One instruction (dcsr.step, one resume, privilege kept). -> { moved, before, after } (dpc before / after, §4.2). A
    * hart that did not come back throws StepError (§4.2, P2-○4): `stepLeft` false - the probe halted it with haltreq
    * and restored it, `after` valid; true (answer TLV step_left) - it could not halt it again: the hart runs and
-   * dcsr.step may still be set, so the host halts it and clears dcsr.step. */
+   * dcsr.step may still be set, so the host halts it and clears dcsr.step. DATA0 is written back first (`restoreData`). */
   async step() {
+    await this.restoreData();
     const r = await this.request(RiscvDm.STEP);
     const rd = ran(r);
     const status = rd.u8(), moved = rd.u8() !== 0, before = rd.u32(), after = rd.u32();
@@ -670,15 +679,19 @@ export class RiscvDm extends Interface {
     const status = rd.u8(), stopped = rd.u8(), dpc = rd.u32(), elapsedUs = rd.u32(), nvals = rd.u8();
     const values = rd.words(nvals);
     rd.tail();
-    return { status, stopped: stopped === RUN_STOPPED.stopped, notHalted: stopped === RUN_STOPPED.not_halted, dpc, elapsedUs, values };
+    return { status, stopped: stopped === RUN_STOPPED.stopped, notHalted: stopped === RUN_STOPPED.not_halted,
+      notRun: stopped === RUN_STOPPED.not_run, dpc, elapsedUs, values };
   }
 
   /** Set registers and dpc (dcsr.ebreakm, prv = M), resume, wait for the hart's own ebreak (forced halt at the
    * timeout: stopped false, status timeout - returned, not thrown; notHalted when the probe could not even stop it).
-   * timeoutMs null: the probe's max_op_ms (core §7.5), the most it allows. Other statuses throw TargetError (§4.4).
+   * timeoutMs null: the probe's max_op_ms (core §7.5), the most it allows. Other statuses throw TargetError (§4.4) - a
+   * preparation that failed (stopped 3) too: the hart was not run, it is still halted, and the error's `result` says so
+   * (`RiscvDm.runResult(e.result).notRun`). DATA0 is written back first (`restoreData`).
    * @param {number} pc @param {[number, number][]} regs @param {{ timeoutMs?: number | null, outs?: number[] }} [opts] */
   async run(pc, regs, { timeoutMs = 200, outs = [REG_A0] } = {}) {
     const limit = timeoutMs ?? await maxOpMs(this.host);
+    await this.restoreData();
     const r = await this.request(RiscvDm.RUN, RiscvDm.runBody(pc, regs, { timeoutMs: limit, outs }), { expectMs: limit });
     const res = RiscvDm.runResult(r);
     if (res.status === TIMEOUT && !res.stopped) return res;
@@ -742,7 +755,7 @@ export async function attachAfterGpioReset(hst, wire, gpioFn, channel, { tries =
   /** @type {m.Result | null} */
   let last = null;
   const attachReq = wire.req(Wire.ATTACH, await wire.attachBody({ halt: true }));   // built once: its describe is not in the race
-  const expectMs = await wire.attachMs();             // the attach's budget is its argument time (core §4.4)
+  const expectMs = await wire.attachMs();             // max_op_ms is the attach's argument time (core §4.4)
   for (let i = 0; i < tries; i++) {
     await hst.call(gpioFn, GPIO.op.set, gpioSetBody(channel, GPIO.enum.mode.open_drain_low));
     await sleep(lowMs);

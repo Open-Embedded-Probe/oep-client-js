@@ -2,12 +2,11 @@
 // oep-spec's test vectors (test/vectors/*.json, copied from oep-spec tests/vectors, never edited) against this client's
 // own code: COBS and serial frames (cobs.js), headers and TLVs (message.js), the CRCs, confirm (the request this host
 // sends, the answer as Host reads it), discovery (list, describe and the header refusals of the smallest probe: the
-// requests as this host builds them, the answers as it reads them), probe.config's canonical form and hash (config.js), the refusals as the host
-// reads them, the session scenarios (sessions.json: the requests open / keepalive / end / lock_state send and the
+// requests as this host builds them, the answers as it reads them), the refusals as the host reads them, the session scenarios (sessions.json: the requests open / keepalive / end / lock_state send and the
 // answers as the host reads them) and the per-op vectors (ops.json: where this client has the op, its request byte for
 // byte and its reading of the answer), and the ops encoding (ops_encoding.json: catalog.checkOps / unpackOps / packOps, and
 // what the host does with an ops outside it). Where a vector and this code disagree, the spec's text decides (core §0 rule 4) and the vector is the
-// one the spec corrects. Mirrors oep-client-python's tests/test_vectors.py (whose fake-side checks are the fake's).
+// one the spec corrects. Mirrors oep-client-python's tests/test_vectors.py (whose virtual-bench-side checks are the virtual bench's).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -91,8 +90,7 @@ test('answer headers', () => {
 test('TLVs in the one encoding (tag, len u16, value)', () => {
   for (const c of HEADERS.tlvs) {
     const value = 'value_hex' in c ? hx(c.value_hex) : new Uint8Array(c.value_len).fill(c.value_byte);
-    if ((c.tag & 0x7f) === m.TAG_IGNORED) assert.deepEqual(m.Tail.parse(hx(c.tlv_hex)).ignored, [...value], c.name);   // the probe's own list: a host never sends it
-    else assert.equal(hex(m.tlv(c.tag & 0x7f, value, (c.tag & 0x80) !== 0)), c.tlv_hex, c.name);
+    assert.equal(hex(m.tlv(c.tag & 0x7f, value, (c.tag & 0x80) !== 0)), c.tlv_hex, c.name);
     assert.deepEqual(m.splitTlvs(hx(c.tlv_hex)), [[c.tag, value]], c.name);
   }
 });
@@ -101,18 +99,18 @@ test('TLVs in the one encoding (tag, len u16, value)', () => {
 
 const CHECKS = load('checks.json');
 
-test('CRC check values (CRC-16 of transports §1, CRC-32 of core §5.2 / probe.config §2)', () => {
+test('CRC check values (CRC-16 of transports §1)', () => {
   for (const c of CHECKS.cases.filter((/** @type {any} */ c) => c.algorithm !== 'crc8-dmseq')) {
-    const data = hx(c.input_hex);
-    const got = c.algorithm === 'crc16-ccitt-false' ? cobs.crc16(data) : config.crc32(data);
-    assert.equal(got, c.crc, c.name);
+    assert.equal(c.algorithm, 'crc16-ccitt-false', c.name);
+    assert.equal(cobs.crc16(hx(c.input_hex)), c.crc, c.name);
   }
 });
 
 test('the dmseq CRC-8 and DATA0 words have no counterpart here', () => {
   // the probe's and the target's (target-console-dmseq): this client reads a console's bytes, it never decodes dmseq
   // words. Listed so a new algorithm in checks.json is not missed.
-  assert.deepEqual(new Set(CHECKS.cases.map((/** @type {any} */ c) => c.algorithm)), new Set(['crc16-ccitt-false', 'crc32-ieee', 'crc8-dmseq']));
+  // no CRC-32 any more (core §5.2: the resend table is corr and answer alone)
+  assert.deepEqual(new Set(CHECKS.cases.map((/** @type {any} */ c) => c.algorithm)), new Set(['crc16-ccitt-false', 'crc8-dmseq']));
 });
 
 // ---- confirm (core §7.1) ------------------------------------------------------------------------------------------
@@ -176,9 +174,8 @@ test('discovery: the requests as the host builds them, as serial frames too', ()
   for (const c of DISCOVERY.exchanges) {
     const q = c.request;
     let req;
-    if ('prefix' in q) {
-      assert.equal(q.flags & ~catalog.LIST_EXACT, 0, c.name);
-      req = new m.Request(q.corr, 0, m.OP.list, catalog.packListRequest(q.prefix, !!(q.flags & catalog.LIST_EXACT), q.first));
+    if (!('fn' in q)) {                                          // list: first(u16) alone (core §7.2)
+      req = new m.Request(q.corr, 0, m.OP.list, catalog.packListRequest(q.first));
     } else {
       req = new m.Request(q.corr, 0, m.OP.describe, catalog.packDescribeRequest(q.fn, q.first));
     }
@@ -230,19 +227,7 @@ test('discovery: the header refusals as the host reads them (core §4.3 order 1)
   }
 });
 
-// ---- probe.config's canonical form and hash (probe-config §2) -------------------------------------------------------
-
-test('probe.config: the canonical form and its hash', () => {
-  for (const c of load('probe_config_hash.json').cases) {
-    const items = c.items_sent.map((/** @type {any} */ it) => m.tlv(it.tag & 0x7f, hx(it.value_hex), (it.tag & 0x80) !== 0));
-    const canon = config.canonical(items);
-    assert.equal(hex(Uint8Array.from(canon.flatMap(([t, v]) => [...m.tlv(t, v)]))), c.canonical_hex, c.name);
-    assert.deepEqual(canon.map(([t, v]) => [t, hex(v)]), c.canonical_order.map((/** @type {any} */ it) => [it.tag, it.value_hex]), c.name);
-    assert.equal(config.canonicalHash(items), c.hash, c.name);
-  }
-});
-
-// ---- refusals and the ignored list (core §4.3, §2.3) ----------------------------------------------------------------
+// ---- refusals and an ignored unknown TLV (core §4.3, §2.3) ---------------------------------------------------------
 
 const REFUSALS = load('refusals.json');
 
@@ -254,10 +239,8 @@ test('refusals: the requests parse, and the answers read as the host reads them'
     if (req.session !== m.NO_SESSION_ID) assert.equal(req.session, 0x11223344, c.name);   // the vectors' lock holder
     const res = m.Result.unpack(hx(c.answer_hex));
     if (c.answer === 'completed success') {
-      assert.ok(res.succeeded, c.name);
-      const tail = m.Tail.parse(res.payload);                    // gpio set answers no fixed part (fixture §1)
-      assert.ok(tail.ignored.length && !tail.moreIgnored, c.name);
-      continue;
+      assert.ok(res.succeeded && res.payload.length === 0, c.name);   // gpio set answers no fixed part (fixture §1); the
+      continue;                                                   // unknown TLV is ignored without a trace
     }
     assert.ok(c.answer === 'malformed' || c.answer === 'unsupported', `a new kind of answer in refusals.json: ${c.answer}`);
     assert.equal(res.resolution, m.REJECTED, c.name);
@@ -420,16 +403,14 @@ async function onClient(c) {
     const { hst, sent } = client(c);
     const n = getU32(r.payload);
     const data = core.linkSourceData((await hst.call(1, core.LINK_SOURCE, core.linkSourceRequest(n), { locked: false })).payload);
-    assert.deepEqual([...data], Array.from({ length: Math.min(n, core.linkSize(1024)) }, (_, k) => k & 0xff));   // max_frame - 26 (§2)
+    assert.deepEqual([...data], Array.from({ length: Math.min(n, core.linkSize(1024)) }, (_, k) => k & 0xff));   // max_frame - 7 (§2)
     return sent;
   }
   if (name.startsWith('link sink') || name.startsWith('link port_speed')) {
     if (name.includes('port_speed')) {
       const { hst, sent } = client(c, S);
-      const body = new Uint8Array(12);
-      const v = new DataView(body.buffer);
-      v.setUint32(1, 921600, true); v.setUint16(6, 2000, true); v.setUint32(8, 3000, true);
-      await assert.rejects(hst.call(1, core.LINK_PORT_SPEED, body), unknownOperation);   // WireSkein's check
+      const { speedRequest } = await import('../src/speed.js');   // baud step verify_ms (oep-if-link §3)
+      await assert.rejects(hst.call(1, core.LINK_PORT_SPEED, speedRequest(921600, 0, 2000)), unknownOperation);   // WireSkein's check
       return sent;
     }
     const { hst, sent } = client(c);
@@ -463,7 +444,7 @@ async function onClient(c) {
     return sent;
   }
   if (name.startsWith('rvswd scan')) {
-    if (name.includes('count 0') || name.includes('with skip')) return null;   // skip: the client's own loop sends it
+    if (name.includes('count 0') || name.includes('skip')) return null;   // skip: the client's own loop sends it
     const { hst, sent } = client(c, S);
     const found = await new rv.Wire(hst, Number(Object.keys(c.fns).find((k) => c.fns[k] === 'oep.wire.rvswd')), 'oep.wire.rvswd').scan([[1, 2]]);
     assert.deepEqual(found, [{ kind: 1, pins: [1, 2], dmstatus: 0x00400382 }]);
@@ -476,6 +457,12 @@ async function onClient(c) {
     if (name.includes('halt') && name.includes('unknown connection')) await assert.rejects(dm.halt(), NoConnection);
     else if (name.includes('halt')) await dm.halt();
     else if (name.includes('run not offered')) await assert.rejects(dm.run(0x20000000, [], { timeoutMs: 100, outs: [] }), unknownOperation);
+    else if (name.includes('preparation fails')) {                  // stopped 3: not run, still halted (debug §4.4)
+      await assert.rejects(dm.run(0x20000000, [[0x100A, 7]], { timeoutMs: 100, outs: [] }), (e) => {
+        const run = rv.RiscvDm.runResult(/** @type {any} */ (e).result);
+        return e instanceof rv.TargetError && run.notRun && !run.notHalted && e.status === reg.STATUS.line;
+      });
+    }
     else if (name.includes('n = 0')) assert.deepEqual(await dm.dmi([]), { done: 0, values: [] });
     else assert.deepEqual(await dm.dmi([rv.RiscvDm.stepRead(0x11)]), { done: 1, values: [0x00400382] });
     return sent;
@@ -509,9 +496,8 @@ async function onClient(c) {
     assert.deepEqual([st.storage, st.savedHash, st.unreadable], ['none', 0, null]);
     assert.equal(st.slots.length, 1);
     const [slot] = st.slots;
-    assert.deepEqual([slot.slot, slot.state, slot.connection, Number(slot.lastTryAtNs), slot.resetAtNs, hex(slot.targetId ?? new Uint8Array())],
-      [0, 'connected', 1, 1_000_000, null, '00352000']);
-    assert.deepEqual(st.binds, [{ port: 0, mode: 'last-reset', selected: 0, flow: 'streaming' }]);
+    assert.deepEqual([slot.slot, slot.state, slot.connection, Number(slot.lastTryAtNs)], [0, 'connected', 1, 1_000_000]);
+    assert.deepEqual(st.binds, [{ port: 0, flow: 'streaming' }]);
     return sent;
   }
   if (name.startsWith('logic segments')) {
@@ -542,19 +528,20 @@ test('ops: where this client has the op, its request is the case\'s and its read
 
 const OPS_ENCODING = load('ops_encoding.json').cases;
 
-test('ops encoding: checkOps takes the valid values and refuses the others; a valid value decodes to its set and back', () => {
+test('ops encoding: checkOps takes the valid values and refuses the others; a valid value decodes to its set', () => {
   assert.deepEqual(new Set(OPS_ENCODING.map((/** @type {any} */ c) => c.valid)), new Set([true, false]));
   for (const c of OPS_ENCODING) {
     const v = hx(c.value_hex);
     assert.equal(catalog.checkOps(v) === '', c.valid, `${c.name}: ${catalog.checkOps(v)}`);
     if (!c.valid) continue;
     assert.deepEqual([...catalog.unpackOps(v)].sort((x, y) => x - y), c.ops, c.name);
-    assert.equal(hex(catalog.packOps(c.ops)), c.value_hex, c.name);                   // the one encoding of that set
+    // one set may have several values; packOps gives one that decodes to the same set
+    assert.deepEqual([...catalog.unpackOps(catalog.packOps(c.ops))].sort((x, y) => x - y), c.ops, c.name);
   }
   assert.throws(() => catalog.packOps([]), RangeError);                                // an empty set has none
 });
 
-test('ops encoding: every ops in the discovery and ops vectors is canonical', () => {
+test('ops encoding: every ops in the discovery vectors keeps core §7.4\'s form', () => {
   let seen = 0;
   for (const c of DISCOVERY.exchanges) {
     const p = m.Result.unpack(hx(c.answer_hex)).payload;

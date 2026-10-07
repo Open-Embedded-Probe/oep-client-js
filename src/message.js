@@ -7,7 +7,10 @@
 // Every fixed form (a fixed part, a TLV's value, a sequence's element, a probe.config item) is fixed by (name, revision)
 // and never extended at its end; a sequence is count x element with no element length (core §2.3). After a result's
 // fixed part (and any counted list or length-prefixed data) come TLVs (tag u8, len u16, value - core §2.2, one form
-// whatever the length); a host skips tags it does not know. A request may end with TLVs; tag bit 7 = critical.
+// whatever the length); a host skips tags it does not know. A request may end with TLVs; tag bit 7 = critical: a probe
+// that does not implement the tag refuses the request rejected unsupported (the tag as received) when it is set and
+// ignores the TLV when it is not; a TLV the probe implements is checked the same with or without the bit (core §2.3).
+// Tags 0x00 and 0x7F are never TLV tags.
 
 import * as reg from './registry.js';
 import { getI32, getU16, getU32, getU64, text, utf8 } from './bytes.js';
@@ -27,7 +30,9 @@ export const REJECT = reg.REJECT_REASONS;
 /** @type {Record<number, string>} */
 export const REJECT_NAMES = Object.fromEntries(Object.entries(REJECT).map(([k, v]) => [v, k.replace(/_/g, ' ')]));
 
-export const TAG_CRITICAL = reg.TAG_CRITICAL, TAG_IGNORED = reg.TAG_IGNORED, TAG_INVALID = reg.TAG_INVALID;
+export const TAG_CRITICAL = reg.TAG_CRITICAL;
+/** Never a TLV tag, in every context (core §2.2, §2.5). */
+export const TAG_RESERVED = 0x7f;
 /** The rejected unsupported payload's first byte for a fixed-part value (core §4.3); never a TLV tag. */
 export const TAG_FIXED = reg.TAG_RESERVED_ZERO;
 /** Every fn's describe: base(u8) bitmap - the ops it offers (core §1.2, §7.4). */
@@ -117,7 +122,7 @@ export class Result {
  * @param {number} tag @param {Uint8Array | number[]} value @param {boolean} critical */
 export function tlv(tag, value, critical = false) {
   if (value.length > 0xffff) throw new RangeError(`TLV 0x${tag.toString(16)}: value of ${value.length} bytes does not fit a u16 length`);
-  if ((tag & 0x7f) === TAG_IGNORED || tag === TAG_FIXED) throw new RangeError('tags 0x00 and 0x7F are reserved (the unsupported marker, the ignored list)');
+  if ((tag & 0x7f) === TAG_RESERVED || (tag & 0x7f) === TAG_FIXED) throw new RangeError('tags 0x00 and 0x7F are never TLV tags (core §2.2)');
   const out = new Uint8Array(TLV_HEADER + value.length);
   out[0] = tag | (critical ? TAG_CRITICAL : 0);
   out[1] = value.length & 0xff; out[2] = value.length >> 8;
@@ -144,28 +149,18 @@ export function splitTlvs(data) {
   return out;
 }
 
-/** The TLVs after a result's known part (unknown tags kept), and `ignored`: the request tags the probe ignored (0x7F). */
+/** The TLVs after a result's known part, in order (unknown tags kept, for whoever knows them). */
 export class Tail {
   constructor() {
     /** @type {[number, Uint8Array][]} */ this.tlvs = [];
-    /** @type {number[]} */ this.ignored = [];
   }
   /** The first TLV of `tag` (core §2.3: a tag twice in an answer - the host uses the first). @param {number} tag */
   get(tag) { return this.tlvs.find(([t]) => t === tag)?.[1]; }
   /** @param {number} tag */ all(tag) { return this.tlvs.filter(([t]) => (t & 0x7f) === tag).map(([, v]) => v); }
-  /** The probe ignored more than it lists (core §2.3, C-04: 0x00 as the last of at most 16 entries): every TLV of the
-   * request not listed may have been ignored too. */
-  get moreIgnored() { return this.ignored.includes(TAG_FIXED); }
-  /** Whether the request's TLV `tag` (its number, bit 7 cleared) may not have taken effect: listed, or not listed but
-   * the list ends in 0x00 ("more were ignored"). @param {number} tag */
-  mayHaveIgnored(tag) { return this.ignored.includes(tag & 0x7f) || this.moreIgnored; }
   /** @param {Uint8Array} data */
   static parse(data) {
     const t = new Tail();
-    for (const [tag, value] of splitTlvs(data)) {
-      if (tag === TAG_IGNORED) t.ignored.push(...value);
-      else t.tlvs.push([tag, value]);
-    }
+    t.tlvs = splitTlvs(data);
     return t;
   }
 }
@@ -205,7 +200,8 @@ export function shown(raw) {
 
 const strict = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
-/** Text a request may carry (core §2.1): valid UTF-8 without C0 control characters or 0x7F. @param {Uint8Array} raw */
+/** Text this host puts in a request: valid UTF-8 without C0 control characters or 0x7F (what a host shows after
+ * replacing them, core §2.1; the probe does not refuse other text). @param {Uint8Array} raw */
 export function validText(raw) {
   let s;
   try { s = strict.decode(raw); } catch { return false; }

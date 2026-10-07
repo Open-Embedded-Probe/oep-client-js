@@ -11,10 +11,11 @@
 // client keeps it (`LogicCapture.generation`, from start / status / the group's start) and passes it on; `readSegment`
 // takes the segment's own.
 //
-// configure: a TLV the probe cannot honour is refused (rejected unsupported, 0x0B, payload = the tag) when the host
-// marked it critical, and otherwise ignored and listed in the answer's ignored TLV (0x7F, oep-core §2.3). mode, rate,
-// trigger, pretrigger and frontend always go critical (oep-if-capture §3.3, P2-○8); samples and segments go critical
-// only when asked: the probe rounds samples down to its limit and the answer (Config.samples / .segments) is what holds.
+// configure: a value of one of its TLVs the probe cannot honour is refused (rejected unsupported, 0x0B, payload = the
+// tag as sent; oep-core §2.3, oep-if-capture §3.3) - every capture probe implements these tags, so the critical bit
+// changes nothing there; this host sends mode, rate, trigger, pretrigger and frontend critical anyway (its own choice,
+// for a probe that does not know a tag). The probe rounds samples down to its limit and the answer (Config.samples /
+// .segments) is what holds.
 //
 // blocking_ms (P2-○9): a start whose answer says blocking_ms > 0 is followed by nothing on any transport for that long
 // (`blocked`), then - on a length-prefixed link - the resync of transports §5; neither the lease nor the answer's wait
@@ -38,8 +39,8 @@ export const PRETRIGGER = C.pretrigger;
 export const FRONTEND = ANA.tlv.configure.frontend;
 const A = ANA.tlv.configure_answer;
 export const ACTUAL_RATE = A.actual_rate, LAYOUT = A.layout, ACTUAL_SAMPLES = A.actual_samples;
-export const ACTUAL_SEGMENTS = A.actual_segments, TIMING = A.timing, SCALE = A.scale, BLOCKING = A.blocking_ms;
-export const SKEW = A.skew, FRONTEND_USED = A.frontend_used, REFERENCE = A.reference, RATE_ACCURACY = A.rate_accuracy;
+export const ACTUAL_SEGMENTS = A.actual_segments, SCALE = A.scale, BLOCKING = A.blocking_ms;
+export const SKEW = A.skew, FRONTEND_USED = A.frontend_used, REFERENCE = A.reference;
 export const FACTORY = ANA.tlv.calibration_answer.factory, VREFINT = ANA.tlv.calibration_answer.vrefint;
 /** status's TLV: why the state is 6 */
 export const STATUS_ERROR = CAP.tlv.status_answer.error;
@@ -49,9 +50,8 @@ export const DATA_GENERATION = CAP.tlv.data.generation;
 export const GROUP_GENERATIONS = GRP.tlv.start_answer.generations;
 /** @type {Record<number, string>} */
 export const REFERENCE_SOURCE = Object.fromEntries(Object.entries(ANA.enum.reference_source).map(([k, v]) => [v, k]));
-/** configure's TLVs always sent critical (oep-if-capture §3.3 "sent critical", P2-○8). */
+/** configure's TLVs this host sends critical (its own choice: the rule is the same with or without bit 7, core §2.3). */
 export const ALWAYS_CRITICAL = Object.freeze(new Set([MODE, RATE, TRIGGER, PRETRIGGER, FRONTEND]));
-export const IGNORED = m.TAG_IGNORED;
 export const CRITICAL = m.TAG_CRITICAL;
 export const ONE_SHOT = CAP.enum.mode.one_shot, REPEAT = CAP.enum.mode.repeat, STREAMING = CAP.enum.mode.streaming;
 const LT = CAP.enum.trigger, AT = ANA.enum.trigger;   // logic: immediate / level / edge; analog: immediate / cross_up / cross_down
@@ -115,7 +115,7 @@ export class Segment {
   get gap() { return (this.flags & SEGMENT_GAP) !== 0; }
   /** flags bit1: ended short (stop). */
   get short() { return (this.flags & SEGMENT_SHORT) !== 0; }
-  /** flags bit2: the time base bent inside the segment (samples later than the timing answer, oep-if-capture §2). */
+  /** flags bit2: the time base bent inside the segment - a sample taken one sample period or more late (oep-if-capture §2). */
   get slipped() { return (this.flags & SEGMENT_SLIPPED) !== 0; }
 
   /** The known fields from a Reader; what follows them (a later revision's) is left for the caller to skip.
@@ -143,17 +143,12 @@ export class Config {
     /** @type {number[]} analog: the channel of the m-th slot */ this.order = [];
     this.samples = 0;
     this.segments = 0;
-    this.jitterKind = 0;
-    this.jitterNs = 0;
-    /** rate_accuracy: the rate was measured (else computed from a divider) */ this.rateMeasured = false;
-    /** its uncertainty (0: unknown) */ this.ratePpm = 0;
     /** @type {Map<number, number>} analog, per channel (role) */ this.skewNs = new Map();
     /** @type {Map<number, number>} analog, per channel (signed) */ this.zero = new Map();
     /** @type {Map<number, number>} analog, nV per value, per channel (signed: an inverting frontend) */ this.scaleNv = new Map();
     /** @type {Map<number, number>} analog: the frontend each channel took */ this.frontend = new Map();
     /** @type {{ source: string, mv: number, measured: boolean } | null} analog: the ADC's reference */ this.reference = null;
     this.blockingMs = 0;
-    /** @type {number[]} */ this.ignored = [];
   }
 
   /** The actual rate in Hz (a float; rateNum / rateDen exactly). */
@@ -185,8 +180,6 @@ export function parseConfig(payload, analog) {
       c.order = Array.from(rd.bytes(rd.u8()));
     } else if (tag === ACTUAL_SAMPLES) c.samples = rd.u32();
     else if (tag === ACTUAL_SEGMENTS) c.segments = rd.u32();
-    else if (tag === TIMING) { c.jitterKind = rd.u8(); c.jitterNs = rd.u32(); }
-    else if (tag === RATE_ACCURACY) { c.rateMeasured = rd.u8() === 1; c.ratePpm = rd.u32(); }
     else if (tag === SCALE && analog) {
       const role = rd.u8();
       c.zero.set(role, rd.i32());                     // signed: an inverting frontend (§3.3)
@@ -197,7 +190,6 @@ export function parseConfig(payload, analog) {
       const source = rd.u8(), mv = rd.u32(), how = rd.u8();
       c.reference = { source: REFERENCE_SOURCE[source] ?? String(source), mv, measured: how === 1 };
     } else if (tag === BLOCKING) c.blockingMs = rd.u32();
-    else if (tag === IGNORED) c.ignored = Array.from(v);
   }
   return c;
 }
@@ -369,8 +361,9 @@ export class LogicCapture extends Interface {
     return this.config;
   }
 
-  /** -> the probe's actual values (Config.ignored: tags the probe ignored). mode, rate, trigger, pretrigger and
-   * frontend always go critical (§3.3); read Config.samples / .segments: the probe rounds samples down.
+  /** -> the probe's actual values. A value the probe cannot honour is refused: Unsupported, .tag = the TLV as sent
+   * (§3.3). mode, rate, trigger, pretrigger and frontend go critical; `critical`: more tags to send critical (samples,
+   * segments). Read Config.samples / .segments: the probe rounds samples down.
    * @param {ConfigureOptions} opts */
   async configure({ rate, mode = ONE_SHOT, samples, segments, trigger, pretrigger, query = false, critical = [], frontends }) {
     const crit = new Set([...ALWAYS_CRITICAL, ...critical]);

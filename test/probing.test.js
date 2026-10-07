@@ -8,7 +8,7 @@ import { connect, PROBE_WAIT_MS } from '../src/open.js';
 import { NotOepProbe, UnitIdMismatch } from '../src/errors.js';
 import { Request, Result, COMPLETED, SUCCESS, OP } from '../src/message.js';
 import { openTcp } from '../src/node/index.js';
-import { haveFake, startFake } from './fake.js';
+import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 
 /**
  * A length-framed transport that answers each request with `answer(message)` (null: silence); what was written is kept.
@@ -63,14 +63,14 @@ test('probing: an answer that is not a valid confirm closes the device, nothing 
   assert.equal(t.closed, true);
 });
 
-test('named unit id: describe must say it, else closed', { skip: !haveFake }, async () => {
-  const fake = await startFake(['--profile', 'p4-x035']);
+test('named unit id: describe must say it, else closed', { skip: !haveVirtualBench }, async () => {
+  const bench = await startVirtualBench(['--profile', 'p4-x035']);
   try {
-    const hst = await openTcp({ port: fake.port, unitId: 'fafe00000035' });
+    const hst = await openTcp({ port: bench.port, unitId: 'fafe00000035' });
     assert.ok(hst.limits);
     await hst.link.close();
-    await assert.rejects(openTcp({ port: fake.port, unitId: 'ffffffffffff' }), UnitIdMismatch);
+    await assert.rejects(openTcp({ port: bench.port, unitId: 'ffffffffffff' }), UnitIdMismatch);
   } finally {
-    fake.stop();
+    bench.stop();
   }
 });

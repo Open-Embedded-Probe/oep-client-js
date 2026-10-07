@@ -5,13 +5,15 @@
 //
 // The minimal form (§17.2, the default): try a candidate -> switch to the requested baud (the probe's answered baud
 // only when the platform refuses it: WebSerial `open({ baudRate })`, serialport `update`) -> settle 20 ms -> confirm
-// (100 ms, up to 3) -> commit. About 50 ms, no measurement. The full form (`verify: true`, or `flows` given; §17.3): a
+// (100 ms, up to 3) -> commit. About 50 ms, no measurement. The request is baud, step and verify_ms; the port is the
+// one it comes in on (the transport TLV of confirm's answer, a UART bridge). The full form (`verify: true`, or `flows` given; §17.3): a
 // baseline at the boot speed per flow (this session's frames when 60 or more and under 10 %, else 60 measured per flow
 // at its n; over 10 % once more at n = 1), then per candidate every flow the caller will use (in = oep.probe.link source,
-// out = sink, duplex = both interleaved, each with its in-flight n) for 16 frames at max_frame - 26, a flow failing on
+// out = sink, duplex = both interleaved, each with its in-flight n) for 16 full frames (source max_frame - 7, sink
+// max_frame - 12), a flow failing on
 // broken + lost >= 3 and a ratio over max(2 x baseline, 5 %), run once more at n = 1 before giving up on it (then n = 1
 // is the link's cap), one failed flow failing the candidate; commit when every flow passed. A failed candidate: revert
-// (step 2, at the new rate), the boot speed, confirms up to port_speed_idle_max_ms + 1 s. The report (`host.link.speed`)
+// (step 2, at the new rate), the boot speed, confirms up to port_speed_idle_ms + host_wait_add_ms (4 s). The report (`host.link.speed`)
 // records the baseline, every candidate's flows and the step downs - for budgeting a capture or a write. In use the
 // link holds a new rate to a probation first (32 KiB and 1 s, judged as the verify judges a flow: a breakage there is a
 // verify failure), then judges the frames of the last 3 s (none under 50) over max(2 x baseline, 10 %); a breakdown
@@ -21,10 +23,10 @@
 // within 2 s of a breakdown at another rate unknown (speedrecord.js) - and puts passed rates first, failed ones out
 // (all failed: the slowest is tried once). The same procedure as oep-client-python's link.raise_speed.
 //
-// The default ceiling (oep-if-link §3 obligation 7): the default candidate is 500000 alone, and a host does not try
+// The default ceiling (host guide §17): the default candidate is 500000 alone, and a host does not try
 // faster unless the user explicitly chose it - pass a rate above DEFAULT_CEILING only when the user named it. Such a
 // rate, in the minimal and the full form alike, is committed only after its 1 s verify (guide §17.3.3): in the try
-// state, full frames (max_frame - 26) of source (in) and of sink (out), and of duplex too when the full form verifies
+// state, full frames of source (in) and of sink (out), and of duplex too when the full form verifies
 // it, each for at least FAST_VERIFY_MS at its n, judged as a flow is, no second run at n = 1; its try asks verify_ms
 // 4000 (6000 with duplex), so it needs a lease of 5000 (7000) ms or more (`leaseFor`; a shorter one skips the
 // candidate). Committed, it has the probation and in-use judging of any rate.
@@ -35,7 +37,7 @@ import * as core from './core.js';
 import * as cobs from './cobs.js';
 import { getU32, text } from './bytes.js';
 import { Failed, Rejected, Timeout } from './errors.js';
-import { IDLE_MAX_MS, KEEPALIVE_MS, OPEN_RETRY_MS } from './link.js';
+import { KEEPALIVE_MS, OPEN_RETRY_MS } from './link.js';
 import { SpeedRecord, defaultStore, fileStore } from './speedrecord.js';
 
 const OP_PORT_SPEED = reg.PROBE_LINK.op.port_speed;
@@ -43,9 +45,9 @@ const STEP = reg.PROBE_LINK.enum.port_speed_step;
 const UNIT_ID_TAG = reg.CORE.tlv.describe.unit_id;
 const UART_BRIDGE = reg.CORE.enum.transport_kind.uart_bridge;
 
-/** oep-if-link §3 obligation 7, host guide §17.3.1: the default is 500000 alone. */
+/** host guide §17.3.1: the default is 500000 alone. */
 export const DEFAULT_CANDIDATES = Object.freeze([500000]);
-/** Obligation 7: never tried above this by default; a faster rate only on the user's choice ... */
+/** host guide §17: never tried above this by default; a faster rate only on the user's choice ... */
 export const DEFAULT_CEILING = 500000;
 /** ... committed only after full frames ran this long each way in the try state (guide §17.3.3). */
 export const FAST_VERIFY_MS = 1000;
@@ -56,7 +58,7 @@ export const ceiling = { rate: DEFAULT_CEILING };
 export const FLOWS = /** @type {const} */ (['in', 'out', 'duplex']);
 /** The probe waits this long for the commit (guide §17.2 / §17.3.2: 2000). */
 export const VERIFY_MS = 2000;
-/** After the switch: confirm, 100 ms each, up to 3 (oep-if-link §3 obligation 2). */
+/** After the switch: confirm, 100 ms each, up to 3 (host guide §17.2). */
 export const CONFIRM_TRIES = 3, CONFIRM_WAIT_MS = 100;
 /** Full form: at least this many frames per flow (guide §17.3.2 item 3-3) ... */
 export const FLOW_FRAMES = 16;
@@ -159,15 +161,14 @@ function speedReport(base, rate) {
   return r;
 }
 
-/** @param {number} port @param {number} baud @param {number} step @param {number} verifyMs @param {number} idleMs */
-function request(port, baud, step, verifyMs, idleMs) {
-  const out = new Uint8Array(12);
+/** port_speed's request (oep-if-link §3): baud(u32) step(u8) verify_ms(u16) - on the port the request comes in on.
+ * @param {number} baud @param {number} step @param {number} verifyMs */
+export function speedRequest(baud, step, verifyMs) {
+  const out = new Uint8Array(7);
   const v = new DataView(out.buffer);
-  v.setUint8(0, port);
-  v.setUint32(1, baud, true);
-  v.setUint8(5, step);
-  v.setUint16(6, verifyMs, true);
-  v.setUint32(8, idleMs, true);
+  v.setUint32(0, baud, true);
+  v.setUint8(4, step);
+  v.setUint16(5, verifyMs, true);
   return out;
 }
 
@@ -251,7 +252,8 @@ export async function flowRun(hst, link, flow, n, size, frames, rate, minMs = 0)
   const limits = await hst.confirmed();
   const inflight = Math.max(1, Math.min(n, Math.floor(limits.window / (size + 24))));   // the probe's window too
   const data = Uint8Array.from({ length: size }, (_, k) => k & 0xff);
-  const sizeBody = core.linkSourceRequest(size), sinkBody = core.linkSinkRequest(data);
+  const sinkData = data.subarray(0, Math.min(size, core.linkSinkSize(limits.maxFrame)));   // a sink request fits max_frame
+  const sizeBody = core.linkSourceRequest(size), sinkBody = core.linkSinkRequest(sinkData);
   const fn = /** @type {number} */ (link.speedFn ?? await core.linkFn(hst));
   const timeoutMs = answerWaitMs(size, rate, n);
   await keep(hst, link);
@@ -278,7 +280,7 @@ export async function flowRun(hst, link, flow, n, size, frames, rate, minMs = 0)
         return;
       }
       const good = linkAnswerGood(kinds[i], st.value, data);
-      if (good) moved += size; else res.broken++;
+      if (good) moved += kinds[i] === 'in' ? size : sinkData.length; else res.broken++;
     });
     res.lost += lost;
     res.frames += msgs.length;
@@ -377,7 +379,7 @@ async function verifyFlows(hst, link, rate, trial, flows, baseline, frames, size
 }
 
 /**
- * The flows of the 1 s verify of a rate above the ceiling (oep-if-link §3 obligation 7, guide §17.3.3): in (source)
+ * The flows of the 1 s verify of a rate above the ceiling (guide §17.3.3): in (source)
  * and out (sink) whatever the caller uses, each at the n the caller gave it (else the most this link keeps in flight),
  * and duplex too when the full form verifies it.
  * @param {FlowSpec[] | null} flowSpecs @param {boolean} verify @param {number} nMax @returns {[Flow, number][]}
@@ -408,8 +410,8 @@ export function leaseFor(candidates, { flows = null, verify = null } = {}) {
 }
 
 /**
- * A rate above the ceiling (oep-if-link §3 obligation 7, guide §17.3.3): every flow of `flows` with full frames
- * (`size`, max_frame - 26) for at least FAST_VERIFY_MS each, back to back at its n, judged as a flow is judged
+ * A rate above the ceiling (guide §17.3.3): every flow of `flows` with full frames
+ * (`size`: source max_frame - 7, sink max_frame - 12) for at least FAST_VERIFY_MS each, back to back at its n, judged as a flow is judged
  * (broken + lost >= FLOW_FAIL_MIN and a ratio over max(2 x baseline, VERIFY_FLOOR)); no second run at n = 1. One
  * failed flow fails the candidate.
  * @param {import('./host.js').Host} hst @param {import('./link.js').Link} link @param {number} rate
@@ -434,23 +436,22 @@ async function verifyFast(hst, link, rate, trial, flows, baseline, size) {
 }
 
 /**
- * port_speed (oep-oep-if-link §3) on the UART bridge this host opened, by the host guide's §17 procedure: try `candidates`
+ * port_speed (oep-if-link §3: baud, step and verify_ms, on the port the request comes in on) on the UART bridge this host opened, by the host guide's §17 procedure: try `candidates`
  * in order and commit the first that passes. The session must be open (the rate lasts as long as it does).
  *
  * The minimal form (§17.2, the default; about 50 ms, no measurement): try -> switch to the requested baud (the probe's
  * answer only when the platform refuses it) -> 20 ms -> confirm (100 ms, up to 3) -> commit. The full form (`verify:
  * true`, or `flows` given; §17.3): first the boot speed's baseline per flow (`baseline` given, this session's frames at
  * the boot speed when 60 or more, else 60 frames measured per flow at its n - over 10 % again at n = 1, still over: not
- * raised), then per candidate every flow for `frames` (16) frames of max_frame - 26 bytes - the quick gate; a flow
+ * raised), then per candidate every flow for `frames` (16) full frames - the quick gate; a flow
  * fails on broken + lost >= 3 and a ratio over max(2 x baseline, 5 %), runs again at n = 1 first (then n = 1 is the
  * link's cap), and one failed flow fails the candidate. `flows`: 'in' | 'out' | 'duplex' or [flow, n] (n 0 = the most
  * this link keeps in flight; default: all three at that n) - verify only what the session will use (§17.3.1).
  *
  * A failed candidate: revert (step 2, at the new rate; its answer need not come), the boot speed, confirms up to
- * port_speed_idle_max_ms + 1 s (an Error when none is answered). verifyMs: how long the probe waits for the commit
- * (default VERIFY_MS 2000, kept a second under the lease). idleMs: once committed, the probe reverts after this long
- * with no good frame (default and at most 3000; 0 and more mean that); the link's keepalive interval is set under half
- * of it.
+ * port_speed_idle_ms + host_wait_add_ms (an Error when none is answered). verifyMs: how long the probe waits for the
+ * commit (default VERIFY_MS 2000, kept a second under the lease). Once committed, the probe goes back after
+ * port_speed_idle_ms (3 s) with no good frame; the link's keepalive (KEEPALIVE_MS, 1 s) stays under half of it.
  *
  * In use (§17.3.2 item 4): the first period at a committed rate is its probation - until `probationBytes` (32 KiB,
  * both ways) have moved and `probationMs` (1000) have passed; 0 and 0: none - judged as the verify judges a flow (3
@@ -466,25 +467,25 @@ async function verifyFast(hst, link, rate, trial, flows, baseline, size) {
  * (`report.skipped`; when every candidate is marked failed, the slowest is tried once anyway: `report.retried`), and
  * this run's outcomes are written; a failure measured within `settleMs` (2000) of a breakdown at another rate is
  * written unknown (off by default). maxTries: the most candidates tried in this call after the record ordered and
- * filtered them (null = all; the rest: `report.capped`; a step down in use goes only to these). port: the transport
- * index (default: the probe's first UART bridge). A link that cannot change its rate (USB, a broker's TCP) and a probe
+ * filtered them (null = all; the rest: `report.capped`; a step down in use goes only to these). The port is the one
+ * this host's requests come in on (the transport TLV of confirm's answer, a UART bridge). A link that cannot change its rate (USB, a broker's TCP) and a probe
  * without the feature are reported not supported and stay at their speed. -> the report, also kept as
  * `host.link.speed`.
  *
- * A candidate above DEFAULT_CEILING (500000) is the user's explicit choice (oep-if-link §3 obligation 7: never one of
- * the host's own defaults): in either form it gets the 1 s verify (guide §17.3.3) in place of the 16 frames - in
+ * A candidate above DEFAULT_CEILING (500000) is the user's explicit choice (host guide §17: never one of the host's own
+ * defaults): in either form it gets the 1 s verify (guide §17.3.3) in place of the 16 frames - in
  * (source) and out (sink) with full frames for FAST_VERIFY_MS each at the caller's n (the most the link keeps when not
  * given), and duplex when the full form verifies it, no second run at n = 1 - with verify_ms raised to `fastVerifyMs`
  * (4000 / 6000). A session whose lease is shorter than that verify_ms + 1 s skips the candidate (`leaseFor` gives the
  * lease to open with). Committed, it has the same probation and in-use judging as any rate.
  * @param {import('./host.js').Host} hst @param {readonly number[]} [candidates]
  * @param {{ flows?: FlowSpec[] | null, verify?: boolean | null, baseline?: number | null, frames?: number,
- *   verifyMs?: number, idleMs?: number, port?: number, record?: boolean | string | SpeedRecord,
+ *   verifyMs?: number, record?: boolean | string | SpeedRecord,
  *   maxTries?: number | null, probationBytes?: number, probationMs?: number, settleMs?: number }} [opts]
  * @returns {Promise<SpeedReport>}
  */
 export async function raiseSpeed(hst, candidates = DEFAULT_CANDIDATES, { flows = null, verify = null, baseline = null,
-  frames = FLOW_FRAMES, verifyMs, idleMs = IDLE_MAX_MS, port, record = false, maxTries = null,
+  frames = FLOW_FRAMES, verifyMs, record = false, maxTries = null,
   probationBytes = PROBATION_BYTES, probationMs = PROBATION_MS, settleMs = SETTLE_MS } = {}) {
   const link = hst.link;
   const base = link.baseBaud;
@@ -498,13 +499,12 @@ export async function raiseSpeed(hst, candidates = DEFAULT_CANDIDATES, { flows =
   if (where === null) { report.why = why; return report; }
   link.speedFn = fn;
   if (hst.session === null) throw new m.OepError('raiseSpeed needs an open session (the rate lasts as long as the session)');
-  const at = port ?? where;
+  const at = where;
   report.supported = true;
   const full = verify ?? flows !== null;
   report.verified = full;
   const leaseMs = hst.leaseMs ?? 0;
   const wait = Math.min(65535, verifyMs ?? Math.min(VERIFY_MS, leaseMs ? Math.max(500, leaseMs - 1000) : VERIFY_MS));
-  idleMs = idleMs > 0 && idleMs <= IDLE_MAX_MS ? idleMs : IDLE_MAX_MS;
   if (link.unusableSession !== hst.session) {
     link.unusable = new Map();
     link.failed = new Map();
@@ -526,7 +526,7 @@ export async function raiseSpeed(hst, candidates = DEFAULT_CANDIDATES, { flows =
     }
   }
   /** @type {Run} */
-  const run = { flowSpecs: flows, flows: [], verify: full, frames, wait, idleMs, at, rec, size: 0, nMax: 1,
+  const run = { flowSpecs: flows, flows: [], verify: full, frames, wait, at, rec, size: 0, nMax: 1,
     probationBytes: Math.max(0, Math.trunc(probationBytes)), probationMs: Math.max(0, probationMs), settleMs };
   link.fallback = false;   // every failure here is handled here
   try {
@@ -539,7 +539,7 @@ export async function raiseSpeed(hst, candidates = DEFAULT_CANDIDATES, { flows =
 /**
  * One raiseSpeed call's settings, kept for its step downs in use.
  * @typedef {{ flowSpecs: FlowSpec[] | null, flows: [Flow, number][], verify: boolean, frames: number, wait: number,
- *   idleMs: number, at: number, rec: SpeedRecord | null, size: number, nMax: number, probationBytes: number,
+ *   at: number, rec: SpeedRecord | null, size: number, nMax: number, probationBytes: number,
  *   probationMs: number, settleMs: number }} Run
  */
 
@@ -613,7 +613,7 @@ async function raise(hst, link, report, candidates, run, baseline, maxTries) {
  */
 async function tryRates(hst, link, report, rates, run) {
   const base = /** @type {number} */ (link.baseBaud);
-  const { rec, at, idleMs } = run;
+  const { rec, at } = run;
   let wait = run.wait;                     // this candidate's verify_ms (longer above the ceiling)
   const key = link.recordKey;
   /** @param {SpeedTrial} trial @param {boolean} passed @param {string} phase */
@@ -627,10 +627,10 @@ async function tryRates(hst, link, report, rates, run) {
     link.brokeRate = trial.rate;
   };
   /** A candidate that did not pass: revert at the rate now (its answer need not come), the boot speed, confirmed within
-   * port_speed_idle_max_ms + 1 s (or verify_ms and a second when that is longer). @param {number} rate @param {boolean} revert */
+   * port_speed_idle_ms + host_wait_add_ms (or verify_ms and a second when that is longer). @param {number} rate @param {boolean} revert */
   const back = async (rate, revert) => {
     if (revert) {
-      const msg = new m.Request(hst.nextCorr(), /** @type {number} */ (link.speedFn), OP_PORT_SPEED, request(at, rate, STEP.revert, 0, 0), hst.session).pack();
+      const msg = new m.Request(hst.nextCorr(), /** @type {number} */ (link.speedFn), OP_PORT_SPEED, speedRequest(rate, STEP.revert, 0), hst.session).pack();
       await link.sendOnce(msg, { timeoutMs: 300, resend: false }).catch(() => {});   // lost at that rate, or the probe is back already
     }
     if (!(await link.backToBase(Math.max(OPEN_RETRY_MS, wait + 1000)))) throw new Error(`after trying ${rate}: no answer at the boot speed ${base}`);
@@ -643,7 +643,7 @@ async function tryRates(hst, link, report, rates, run) {
     trial.why = barred(link, rate);
     if (trial.why) continue;
     trial.settling = link.brokeAt !== null && link.brokeRate !== rate && performance.now() - link.brokeAt < run.settleMs;
-    const fast = rate > ceiling.rate;      // the user's choice: the 1 s verify each way (obligation 7)
+    const fast = rate > ceiling.rate;      // the user's choice: the 1 s verify each way (guide §17.3.3)
     const flowsFast = fast ? fastFlows(run.flowSpecs, run.verify, run.nMax) : [];
     wait = fast ? Math.min(65535, Math.max(run.wait, fastVerifyMs(flowsFast.length))) : run.wait;
     if (fast && hst.leaseMs && hst.leaseMs - 1000 < wait) {
@@ -652,7 +652,7 @@ async function tryRates(hst, link, report, rates, run) {
     }
     let answer;
     try {
-      answer = await speedCall(hst, link, request(at, rate, STEP.try, wait, idleMs));
+      answer = await speedCall(hst, link, speedRequest(rate, STEP.try, wait));
     } catch (e) {
       if (e instanceof Timeout) {
         trial.why = 'no answer to the try';   // it may have switched: wait it out at the boot speed
@@ -699,7 +699,7 @@ async function tryRates(hst, link, report, rates, run) {
       continue;
     }
     try {
-      await speedCall(hst, link, request(at, rate, STEP.commit, 0, idleMs));
+      await speedCall(hst, link, speedRequest(rate, STEP.commit, 0));
     } catch (e) {
       if (!(e instanceof Timeout || e instanceof Rejected || e instanceof Failed)) throw e;
       trial.why = `the commit failed: ${e.message}`;
@@ -712,7 +712,7 @@ async function tryRates(hst, link, report, rates, run) {
     link.inflightCap = trial.nCap;
     link.speedPort = at;
     link.baselineRatio = Math.max(0, ...Object.values(report.baseline));
-    link.keepaliveMs = Math.min(KEEPALIVE_MS, idleMs / 2.5);   // under half of idle_ms (oep-if-link §3 obligation 4)
+    link.keepaliveMs = KEEPALIVE_MS;       // under half of port_speed_idle_ms (host guide §17)
     link.window = [];
     link.stepDue = '';
     note(trial, true, run.verify || fast ? 'verify' : 'confirm');

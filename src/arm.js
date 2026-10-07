@@ -51,7 +51,7 @@ export class SwdWire extends WireBase {
     this.existing = !!(this.flags & ATTACH_FLAGS.existing);
     const tries = rd.tail().get(SWD.tlv.attach_answer.search_retries);   // oep-if-debug §1 (optional)
     this.searchRetries = tries && tries.length >= 2 ? tries[0] | (tries[1] << 8) : null;
-    return { conn, dpidr, dormant: !!(this.flags & ATTACH_FLAGS.dormant_woken) };
+    return { conn, dpidr, dormant: !!(this.flags & SWD.enum.attach_flags.dormant_woken) };
   }
 }
 

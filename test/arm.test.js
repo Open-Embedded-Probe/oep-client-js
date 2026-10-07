@@ -1,5 +1,5 @@
 // @ts-check
-// oep.wire.swd and oep.target.arm-adi on a scripted host (the fake probe has no SWD), as oep-client-python's
+// oep.wire.swd and oep.target.arm-adi on a scripted host (the virtual bench has no SWD), as oep-client-python's
 // tests/test_target_parts.py: a tiny ADIv6 DP + one MEM-AP, and a Cortex-M debug core behind a MemAp stand-in.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';

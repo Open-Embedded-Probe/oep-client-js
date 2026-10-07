@@ -1,6 +1,6 @@
 // @ts-check
 // The host side of oep-spec's 2026-10-06 structure (2e5dc4c, 0bce222, c475dad and the clock op that follows them),
-// without the fake: fn 0's clock read against this host's clock (Host.clock), fn 0 sends no notifications (an fn 0
+// without the virtual bench: fn 0's clock read against this host's clock (Host.clock), fn 0 sends no notifications (an fn 0
 // event is only kept), a completed restart on oep.probe.restart's fn takes a raised link back to the boot speed (and
 // one on another fn does not), plan / restart found by name on a ScriptedHost, dump's core block and an invalid ops.
 import assert from 'node:assert/strict';
@@ -108,7 +108,7 @@ test('plan_apply / plan_release / restart go to the fn list gives their interfac
   await hst.requestRestart();
   assert.deepEqual(hst.log.map(([fn, op]) => [fn, op]), [[10, 1], [10, 2], [11, 1]]);
   const [, , apply] = hst.log[0];
-  assert.deepEqual([...apply], [0x90, 5, 0, 3, 0, 1, 20, 0]);  // role_assignment, sent critical (oep-if-plan §2.1)
+  assert.deepEqual([...apply], [0x10, 5, 0, 3, 0, 1, 20, 0]);  // role_assignment, sent plain (oep-if-plan §2.1, core §2.3)
   assert.deepEqual([...hst.log[1][2]], [1, 3, 0]);
   const none = new ScriptedHost(new Map([['0:2', () => ok([0, 0, 0])]]));   // list: total 0, count 0
   none.session = 7;
@@ -125,9 +125,9 @@ test('dump: fn 0\'s row is the core with fn 0\'s op names; an ops outside core �
   const row = dump.describeOffer(coreOffer);
   assert.deepEqual(row.ops, Object.entries(m.OP).sort((a, b) => a[1] - b[1]).map(([k]) => k));
   assert.equal(row.declares?.['max op ms'], '1000');
-  const bad = /** @type {[number, Uint8Array][]} */ ([[m.TAG_OPS, Uint8Array.of(0x01, 0x01, 0x00)]]);
+  const bad = /** @type {[number, Uint8Array][]} */ ([[m.TAG_OPS, Uint8Array.of(0xf9, 0x01)]]);   // a bit past op 0xFF
   const r = dump.describeOffer({ entry: { fn: 3, instance: 0, revision: 1, flags: 0, name: 'oep.fixture.gpio' }, description: decodeDescription(bad), tlvs: bad });
-  assert.match(/** @type {string} */ (r.unusable), /zero byte \(core §7\.4\)/);
+  assert.match(/** @type {string} */ (r.unusable), /past op 0xff/);
   const text = dump.toText({ revision: 1, maxFrame: 1024, core: coreOffer, offers: [], requests: { confirm: 1, list: 1, describe: 1 }, missing: [] });
   assert.match(text, /\ncore {9}fn 0 {3}\(no name; the probe itself\)\n/);
 });

@@ -116,7 +116,7 @@ export class PositionStream extends Interface {
   async mark(value) { await this.call(PositionStream.MARK, this.streamBody(Uint8Array.of(value & 0xff))); }
 
   /** -> bytes accepted: what went into the probe's send queue from data's start, min(count, its free space) (common
-   * §1.4; delivery is not implied) - a console's queue is its describe's send_queue bytes, handed to the target 2
+   * §1.4; delivery is not implied) - a console's queue is the probe's own size (not declared), handed to the target 2
    * (dmseq) or 3 (DMDATA) bytes at a time; SDI takes nothing (console §2, §3). Fewer than asked is completed partial, not
    * an error; nothing accepted (the queue full) is completed failed (thrown as Failed): StreamIO.write loops on it.
    * @param {Uint8Array} data */
@@ -162,14 +162,6 @@ export class Console extends PositionStream {
   async mechanisms() {
     return (await describe(this.host, this.fn)).filter(([tag]) => (tag & 0x7f) === CON.tlv.describe.mechanisms)
       .flatMap(([, v]) => [...v]);
-  }
-
-  /** The bytes of each stream's send queue that write fills (describe tag 0x41, u16, at least 64; console §1, §2); null
-   * when the probe declares none (no mechanism of it carries host -> target bytes). @returns {Promise<number | null>} */
-  async sendQueue() {
-    const v = (await describe(this.host, this.fn))
-      .find(([tag, value]) => (tag & 0x7f) === CON.tlv.describe.send_queue && value.length >= 2)?.[1];
-    return v ? getU16(v) : null;
   }
 
   /**
@@ -339,23 +331,17 @@ export class StreamIO {
 }
 
 /** A console stream read from a position onwards (default: from now), as a plain byte stream. Build with
- * `await ConsoleIO.create(console, start?)`. A write chunk is the probe's send_queue (`sendQueue()`), at most what one
- * frame carries: a line no longer than send_queue goes in one write (host guide §14). */
+ * `await ConsoleIO.create(console, start?)`. A write chunk is at most what one frame carries; what the probe's send
+ * queue takes is its `accepted` (host guide §14: the rest goes after a short wait). */
 export class ConsoleIO extends StreamIO {
   /** @param {Console} console @param {bigint | null} position */
   constructor(console, position = null) {
     super(console, position);
     this.console = console;
-    /** @type {number | null | undefined} the probe's send_queue, once asked */ this.queue = undefined;
   }
 
-  /** The probe's send_queue (describe tag 0x41; null: none declared). */
-  async sendQueue() {
-    if (this.queue === undefined) this.queue = await this.console.sendQueue();
-    return this.queue;
-  }
-
-  async writeCap() { return (await this.sendQueue()) ?? StreamIO.MAX_WRITE; }
+  /** The frame bounds it (`writeLimit`); the send queue takes what it can. */
+  async writeCap() { return 0xffff; }
 }
 
 /** @param {Uint8Array} hay @param {Uint8Array} needle */

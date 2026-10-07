@@ -16,9 +16,9 @@
 // confirms); a reboot also drops the remembered name -> fn mapping and the describes, so they are listed again.
 //
 // A probe whose confirm answer is outside core §7.1's bounds (max_frame under 64, window under max_frame, max_inflight
-// 0; C-20), whose fn 0 describe declares a max_op_ms outside 1..600000 (core §4.4, §7.5; C-47), or whose fn 0 ops is
-// outside core §7.4's one encoding, is not used: NotUsable is thrown with the values, and nothing more is sent through
-// this host. An fn whose ops is outside it is not used (FnNotUsable), until the probe restarts.
+// 0), whose fn 0 describe declares a max_op_ms outside 1..600000 (core §7.5), or whose fn 0 ops is outside core §7.4's
+// form, does not conform and is not used (host guide §5): NotUsable is thrown with the values, and nothing more is sent
+// through this host. An fn whose ops is outside it is not used (FnNotUsable), until the probe restarts.
 
 import * as reg from './registry.js';
 import { Writer, text, utf8 } from './bytes.js';
@@ -51,7 +51,7 @@ const CONFIRM_TRANSPORT = reg.CORE.tlv.confirm_answer.transport;
  * @typedef {{ leaseMs: number, bootId: number }} Opened
  */
 
-/** fn 0's describe max_op_ms is 1 to this (core §7.5, C-47). */
+/** fn 0's describe max_op_ms is 1 to this (core §7.5). */
 export const MAX_OP_MS_MAX = reg.LIMITS.max_op_ms_max;
 
 /** core §7.1 (C-20): max_frame >= min_max_frame (64), window >= max_frame, max_inflight >= 1. -> '' or why not.
@@ -64,7 +64,7 @@ export function checkConfirm(maxFrame, window, maxInflight) {
   return '';
 }
 
-/** core §4.4 / §7.5 (C-47): max_op_ms is 1 to MAX_OP_MS_MAX (600000). -> '' or why the probe is not used.
+/** core §7.5: max_op_ms is 1 to MAX_OP_MS_MAX (600000). -> '' or why the probe is not used (host guide §5).
  * @param {number} value */
 export function checkMaxOpMs(value) {
   if (value < 1 || value > MAX_OP_MS_MAX) {
@@ -74,8 +74,8 @@ export function checkMaxOpMs(value) {
   return '';
 }
 
-/** oep.probe.restart: the probe begins its restart at most this long after its answer has left (oep-if-restart §2). */
-export const RESTART_AFTER_ANSWER_MS = reg.LIMITS.restart_after_answer_ms;
+/** restartProbe: the short wait before the first reopen (host guide §5.2, about 100 ms). */
+export const RESTART_AFTER_ANSWER_MS = 100;
 /** restartProbe: the wait for a probe whose oep.probe.restart declares no restart_max_ms (oep-if-restart §1). */
 export const RESTART_WAIT_MS = 10000;
 
@@ -122,6 +122,9 @@ export class Host {
     /** @type {number | null} the lease the last open gave */ this.leaseMs = null;
     this.unusable = '';                      // why this probe is not used (C-20, C-47, core §7.4): set, nothing more is sent
     /** @type {Map<number, string>} fn -> why it is not used (its ops outside core §7.4), until the probe restarts */ this.unusableFns = new Map();
+    /** the session id kept per probe for the next run (keptsession.KeptSession; connect sets one): null = not kept
+     * @type {import('./keptsession.js').KeptSession | null} */
+    this.kept = null;
     this.useLink(link);
   }
 
@@ -143,6 +146,7 @@ export class Host {
     if (link && 'blind' in link) link.blind = () => this.blindStop();   // the §5.1 resync's stops when pushes keep coming
     if (link && 'confirmBody' in link) link.confirmBody = () => this.confirmBody();   // the link's own confirms: the revision in use (C-15)
     if (link && 'onBootId' in link) link.onBootId = (/** @type {number} */ bootId) => this.bootIdSeen(bootId);   // the link's own confirms (resync, recovery)
+    if (link && 'beforeClose' in link) link.beforeClose = () => this.kept?.release();   // the kept id stays for the next run
   }
 
   nextCorr() { this.corr = (this.corr % 0xffff) + 1; return this.corr; }
@@ -235,7 +239,7 @@ export class Host {
     throw new NotUsable(why);
   }
 
-  /** Stop using `fn` (its ops outside core §7.4's one encoding): every later request to it throws FnNotUsable with
+  /** Stop using `fn` (its ops outside core §7.4's form): every later request to it throws FnNotUsable with
    * `why`, until the probe restarts. Throws it now. @param {number} fn @param {string} why @returns {never} */
   fnNotUsable(fn, why) {
     this.unusableFns.set(fn, why);
@@ -374,6 +378,7 @@ export class Host {
    */
   async open(leaseMs = 0, { force = false, owner } = {}) {
     await this.requireV1();
+    if (this.kept && this.session === null) await this.kept.beforeOpen(this, owner);   // once: the previous run's session ended (host guide §5)
     const sid = this.newSession();
     const w = new Writer().u32(leaseMs).u8(force ? 1 : 0);
     if (owner) w.raw(m.tlv(OWNER, ownerText(owner)));
@@ -387,7 +392,37 @@ export class Host {
     this.session = sid;
     this.bootIdSeen(bootId);                                // a reboot: one loss, and the names listed again
     this.leaseMs = lease;
+    if (this.kept) await this.kept.opened(sid);
     return { leaseMs: lease, bootId };
+  }
+
+  /**
+   * End session `sid` that a previous run of this host left open (host guide §5; transports §3: a closed transport does
+   * not end a session): open it - taken as a resend of its open while it holds the lock (core §6.2: nothing released;
+   * with the lock free, a session under that id) - and end it at once, releasing what it held. -> true when it was
+   * ended; false when another session holds the lock (locked: not this host's to end). This host's own session is not
+   * touched. @param {number} sid @param {string} [owner] @returns {Promise<boolean>}
+   */
+  async endPrevious(sid, owner) {
+    const w = new Writer().u32(reg.LIMITS.lease_min_ms).u8(0);
+    if (owner) w.raw(m.tlv(OWNER, ownerText(owner)));
+    let r;
+    try {
+      r = await this.request(m.CORE_FN, m.OP.open, w.done(), { session: sid });
+    } catch (e) {
+      if (e instanceof Rejected) return false;
+      throw e;
+    }
+    const rd = new m.Reader(r.payload);
+    rd.u32();
+    this.bootIdSeen(rd.u32());
+    try {
+      await this.request(m.CORE_FN, m.OP.end, new Uint8Array(), { session: sid });
+    } catch (e) {
+      if (e instanceof Rejected) return false;
+      throw e;
+    }
+    return true;
   }
 
   /** End the session: the probe releases the lock and everything the session created (core §6.4, §9). A resent end is
@@ -396,6 +431,7 @@ export class Host {
     await this.request(m.CORE_FN, m.OP.end);
     this.session = null;
     this.swept();
+    if (this.kept) await this.kept.ended();
   }
 
   async keepalive() { await this.request(m.CORE_FN, m.OP.keepalive); }
@@ -434,7 +470,7 @@ export class Host {
   // ---- restart (oep.probe.restart, oep-if-restart) ---------------------------------------------------------
 
   /** The fn of the probe's oep.probe.restart (OepError when it lists none: the interface is optional), told to the link
-   * too: a completed restart puts a raised port_speed back at the boot speed (oep-if-link §3 host obligation 6). */
+   * too: a completed restart puts a raised port_speed back at the boot speed (oep-if-link §3 host 2). */
   async restartTarget() {
     const fn = await restartFn(this);
     if (this.link && 'restartFn' in this.link) this.link.restartFn = fn;
@@ -453,15 +489,16 @@ export class Host {
   }
 
   /**
-   * Restart the probe and wait until it is back (oep-if-restart §3) -> its new boot_id. The session must hold
+   * Restart the probe and wait until it is back (host guide §5.2; oep-if-restart §2) -> its new boot_id. The session must hold
    * the lock. After the answer nothing more goes out. `reopen` (optional): opens the transport again and gives a new
    * Link, started (a serial port at its boot speed, a USB device found again once it has re-enumerated, a TCP
    * connection made again); the old link is then closed, RESTART_AFTER_ANSWER_MS waited, and reopen + confirm retried
-   * until `waitMs`. Without it the link stays (a transport the restart leaves open: a UART bridge, a broker, the fake
-   * over TCP): the host waits and confirms again until `waitMs`. `waitMs` undefined: the probe's restart_max_ms
-   * (oep.probe.restart's describe, oep-if-restart §1, read before the restart), or RESTART_WAIT_MS (10 s) when it
-   * declares none (a probe that does not conform); a confirm sent before then is waited for as core §4.4 says, and none
-   * answered by then means the probe is gone (the last error is thrown, oep-if-restart §3). When the answer is lost, the same: a resend the
+   * until `waitMs`. Without it the link stays (a transport the restart leaves open: a UART bridge, a broker, the
+   * virtual bench over TCP): the host waits and confirms again until `waitMs`. `waitMs` undefined: the probe's
+   * restart_max_ms (oep.probe.restart's describe, oep-if-restart §1, read before the restart), or RESTART_WAIT_MS (10 s)
+   * when it declares none (a probe that does not conform); a `waitMs` longer than a declared restart_max_ms is cut to it
+   * (host guide §5.2: a host retries only until restart_max_ms has passed). A confirm sent before then is waited for as
+   * core §4.4 says, and none answered by then means the probe is gone (the last error is thrown, host guide §5.2). When the answer is lost, the same: a resend the
    * restarted probe refused no_session counts as the restart having happened. The confirm's boot_id must differ from
    * the one before (NotRestarted otherwise); everything this host remembered of the old boot is dropped (core §6.5).
    * @param {{ reopen?: () => Promise<import('./link.js').Link>, waitMs?: number }} [opts]
@@ -471,7 +508,8 @@ export class Host {
     await this.requireV1();
     const before = this.bootId ?? (await this.confirm()).bootId;
     const fn = await this.restartTarget();
-    if (waitMs === undefined) waitMs = (await restartMaxMs(this)) ?? RESTART_WAIT_MS;
+    const declared = await restartMaxMs(this);
+    if (waitMs === undefined || (declared !== null && waitMs > declared)) waitMs = declared ?? RESTART_WAIT_MS;   // never past it (host guide §5.2)
     const epoch = this.epoch;
     try {
       await this.call(fn, RESTART_OP);

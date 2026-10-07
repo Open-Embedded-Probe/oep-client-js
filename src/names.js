@@ -2,7 +2,7 @@
 // Interface names (oep-spec docs/capability-identification-comparison.ja.md, draft).
 //
 // A name is dot-separated labels of lowercase ASCII letters, digits and '-' - each label 1 or more of them, not
-// starting or ending with '-', at least two labels - 1 to 64 bytes (core §7.2, §13 rule 1). The first label says which
+// starting or ending with '-', at least two labels - 1 to 48 bytes (core §7.2, §13 rule 1). The first label says which
 // kind of namespace it is:
 //
 //   oep.                      the project's own interfaces (the reserved short prefix in place of a reverse-DNS name,
@@ -14,7 +14,7 @@
 
 import * as reg from './registry.js';
 
-export const MAX_NAME = reg.LIMITS.interface_name_max_bytes;   // 64 (core §7.2)
+export const MAX_NAME = reg.LIMITS.interface_name_max_bytes;   // 48 (core §7.2: one list entry fits the smallest max_frame)
 const LABEL = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;              // no '-' at either end (core §13 rule 1)
 const TLD = /^[a-z]{2,63}$/;
 const UUID = /^[0-9a-f]{32}$/;

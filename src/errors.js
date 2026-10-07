@@ -24,7 +24,7 @@ export class Failed extends OepError {
 export class NotV1 extends OepError {}
 /** No answer in time (after the one resend). */
 export class Timeout extends OepError {}
-/** core §5.2 (C-38): a request's resend got no answer either - the transport failed. The outcome of that request, and
+/** core §5.2, host guide §8: a request's resend got no answer either - the transport failed. The outcome of that request, and
  * of every request outstanding with it, is unknown. Nothing else goes out on the transport before the link has
  * recovered with transports §5's confirm (the next request runs it first; when no confirm is answered that request fails
  * with TransportFailed too, `recovery` set, and the transport stays failed: close and open it again). After a recovery,
@@ -34,10 +34,10 @@ export class TransportFailed extends Timeout {
   /** @param {string} message @param {{ broken?: boolean, recovery?: boolean }} [opts] */
   constructor(message, { broken = false, recovery = false } = {}) { super(message); this.broken = broken; this.recovery = recovery; }
 }
-/** The probe declared values a conforming probe never does (core §7.1 confirm's bounds, C-20; §7.5 max_op_ms, C-47;
- * §7.4 an fn 0 ops outside its one encoding): this host sends nothing more to it. The message reports the values. */
+/** The probe declared values a conforming probe never does (core §7.1 confirm's bounds; §7.5 max_op_ms; §7.4 an fn 0
+ * ops outside the value's form): this host sends nothing more to it (host guide §5). The message reports the values. */
 export class NotUsable extends OepError {}
-/** One fn's describe carries an ops value outside core §7.4's one encoding: this host sends nothing more to that fn
+/** One fn's describe carries an ops value outside core §7.4's form: this host sends nothing more to that fn
  * (until the probe restarts); the rest of the probe stays usable. `fn`: the fn. */
 export class FnNotUsable extends OepError {
   /** @param {number} fn @param {string} message */
@@ -73,6 +73,7 @@ export class Locked extends Rejected {
  * ended (end, lease expiry, another session's force and then its end) and the probe released everything it created.
  * Nothing is re-opened silently: the caller opens a new session and builds again (host guide §9). */
 export class NoSession extends Rejected {}
+/** reason 0x05: reserved (core §4.3 defines none); a probe that sends it is refused like any unknown reason. */
 export class Busy extends Rejected {}
 export class NoConnection extends Rejected {}
 
@@ -103,17 +104,16 @@ const UNS = reg.CORE.tlv.unsupported_payload;
 
 const UNA = reg.CORE.tlv.unavailable_payload;
 const CAUSES = Object.fromEntries(Object.entries(reg.CORE.enum.unavailable_cause).map(([k, v]) => [v, k]));
-const KINDS = Object.fromEntries(Object.entries(reg.CORE.enum.holder_kind).map(([k, v]) => [v, k]));
 
-/** rejected unavailable (core §4.3): cause, channels, holderFn, holderKind from the payload's TLVs (each may be missing). */
+/** rejected unavailable (core §4.3): cause, channels and fn from the payload's TLVs (each may be missing); `tlvs` has
+ * every TLV, the interface's own (0x40 and up) too. cause held_by_settings (5): the settings' plan, disable, output idle
+ * or slot hold it - probe.config's get says which. */
 export class Unavailable extends Rejected {
   get tlvs() { try { return splitTlvs(this.result.payload); } catch { return []; } }
   /** @param {number} tag */ first(tag) { return this.tlvs.find(([t]) => (t & 0x7f) === tag)?.[1]; }
   get cause() { const v = this.first(UNA.cause); return v ? (CAUSES[v[0]] ?? String(v[0])) : null; }
   get channels() { return this.tlvs.filter(([t, v]) => (t & 0x7f) === UNA.channel && v.length >= 2).map(([, v]) => getU16(v)); }
-  get holderFn() { const v = this.first(UNA.holder_fn); return v && v.length >= 2 ? getU16(v) : null; }
-  get holderKind() { const v = this.first(UNA.holder_kind); return v ? (KINDS[v[0]] ?? String(v[0])) : null; }
-  /** The fn the probe names (unavailable_payload 0x05), else null. */
+  /** The fn the refusal is about (unavailable_payload 0x05: a track of a capture-group's bind or start), else null. */
   get fn() { const v = this.first(UNA.fn); return v && v.length >= 2 ? getU16(v) : null; }
 }
 

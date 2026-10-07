@@ -1,5 +1,5 @@
 // @ts-check
-// port_speed (oep-if-link §3 the handshake, host guide §17 the procedure; src/speed.js) against oep-client-python's fake
+// port_speed (oep-if-link §3 the handshake, host guide §17 the procedure; src/speed.js) against oep-client-python's virtual bench
 // probe (esp32-v003 has it; --broken-rate models the line, by the probe's rate alone over TCP), behind a line model
 // of the host's side (withLine: frames garbled or dropped as the host would see them), and the link's fall back to
 // the boot speed on a scripted transport. Mirrors oep-client-python's tests/test_port_speed.py.
@@ -10,29 +10,29 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as m from '../src/message.js';
 import * as reg from '../src/registry.js';
-import { NotOepProbe, Rejected, Timeout, Unavailable, Unsupported } from '../src/errors.js';
-import { Link, SWITCH_SETTLE_MS, IDLE_MAX_MS, KEEPALIVE_MS, OPEN_RETRY_MS, IN_USE_WINDOW_MS } from '../src/link.js';
+import { NotOepProbe, Rejected, Timeout, TransportFailed, Unavailable, Unsupported } from '../src/errors.js';
+import { Link, SWITCH_SETTLE_MS, IDLE_MS, KEEPALIVE_MS, OPEN_RETRY_MS, IN_USE_WINDOW_MS, RAISED_FIRST_WAIT_MS, BROKEN_RESENDS } from '../src/link.js';
 import { getU16, getU32, u32 } from '../src/bytes.js';
 import { Host } from '../src/host.js';
 import { connect } from '../src/open.js';
 import * as cobs from '../src/cobs.js';
 import { DEFAULT_CANDIDATES, DEFAULT_CEILING, FAST_VERIFY_MS, FLOW_FRAMES, VERIFY_MS, ceiling, fastVerifyMs, leaseFor, raiseSpeed,
-  resolveFlows, speedText } from '../src/speed.js';
+  resolveFlows, speedRequest, speedText } from '../src/speed.js';
 import { SpeedRecord, fileStore, localStorageStore, memoryStore } from '../src/speedrecord.js';
 import { RiscvDm, Wire } from '../src/riscv.js';
 import { linkSize, take } from '../src/core.js';
 import { openTcp, tcpTransport } from '../src/node/index.js';
-import { haveFake, startFake } from './fake.js';
+import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 
 const FAST = { verifyMs: 900 };   // the probe's try state ends soon: a failed candidate costs under a second
-const UNIT = 'fafe00000003';      // the fake esp32-v003's unit_id
+const UNIT = 'fafe00000003';      // the virtual bench esp32-v003's unit_id
 const NO_PROBATION = { probationBytes: 0, probationMs: 0 };   // the window alone (the probation has its own tests)
-const LINK_FN = 10;               // the fake esp32-v003's oep.probe.link (oep-if-link): port_speed and the link test are its ops
+const LINK_FN = 10;               // the virtual bench esp32-v003's oep.probe.link (oep-if-link): port_speed and the link test are its ops
 const PS = reg.PROBE_LINK.op.port_speed, SOURCE = reg.PROBE_LINK.op.source, SINK = reg.PROBE_LINK.op.sink;
 
-// Most tests here are about the procedure at any rate the fake makes (1500000, 921600 ... included): they run without
+// Most tests here are about the procedure at any rate the virtual bench makes (1500000, 921600 ... included): they run without
 // the default ceiling, so a rate above 500000 is not given the 1 s verify. The tests named "ceiling" put the real one
-// back (oep-if-link §3 obligation 7, host guide §17.3.3). Tests in a file run one after another.
+// back (host guide §17, §17.3.3). Tests in a file run one after another.
 ceiling.rate = Infinity;
 /** @template T @param {() => Promise<T>} body */
 async function withCeiling(body) {
@@ -41,27 +41,27 @@ async function withCeiling(body) {
 }
 
 /** @param {string[]} args  esp32-v003 unless they name a --profile @param {(hst: import('../src/host.js').Host) => Promise<void>} body @param {object} [opts] */
-async function withSpeedFake(args, body, opts = {}) {
-  const fake = await startFake([...(args.includes('--profile') ? [] : ['--profile', 'esp32-v003']), ...args], 'cobs');
-  const hst = await openTcp({ port: fake.port, framing: 'cobs', baudRate: 115200, timeoutMs: 1000, ...opts });
+async function withSpeedBench(args, body, opts = {}) {
+  const bench = await startVirtualBench([...(args.includes('--profile') ? [] : ['--profile', 'esp32-v003']), ...args], 'cobs');
+  const hst = await openTcp({ port: bench.port, framing: 'cobs', baudRate: 115200, timeoutMs: 1000, ...opts });
   hst.link.waitAddMs = 0;    // as withLine
   try {
     if (hst.session === null) await take(hst, 10000);
     await body(hst);
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 }
 
-test('the minimal form tries, confirms and commits without a measurement; the end takes the link back', { skip: !haveFake }, async () => {
+test('the minimal form tries, confirms and commits without a measurement; the end takes the link back', { skip: !haveVirtualBench }, async () => {
   // host guide §17.2: one candidate, switch, 20 ms, a confirm, commit - no flows, no baseline
   /** @type {[number, number | null][]} */ const ops = [];
   await withLine([], {
     onWrite(msg) {
       const req = m.Request.unpack(msg);
       if (req.fn === m.CORE_FN) ops.push([req.op, null]);
-      if (req.fn === LINK_FN && req.op === PS) ops.push([-PS, req.payload[5]]);
+      if (req.fn === LINK_FN && req.op === PS) ops.push([-PS, req.payload[4]]);
       return true;
     },
   }, async (hst) => {
@@ -98,7 +98,7 @@ test('the minimal form tries, confirms and commits without a measurement; the en
   });
 });
 
-test('the default candidate is 500000', { skip: !haveFake }, () => withSpeedFake([], async (hst) => {
+test('the default candidate is 500000', { skip: !haveVirtualBench }, () => withSpeedBench([], async (hst) => {
   const report = await raiseSpeed(hst, undefined, FAST);
   assert.deepEqual([...DEFAULT_CANDIDATES], [500000]);
   assert.equal(report.chosen, 500000);
@@ -106,8 +106,8 @@ test('the default candidate is 500000', { skip: !haveFake }, () => withSpeedFake
   await hst.keepalive();
 }));
 
-test('the minimal form falls back when the confirm does not come, skips an unmakeable rate, and goes on', { skip: !haveFake },
-  () => withSpeedFake(['--broken-rate', '1000000:in'], async (hst) => {   // probe -> host only: the probe sees nothing wrong
+test('the minimal form falls back when the confirm does not come, skips an unmakeable rate, and goes on', { skip: !haveVirtualBench },
+  () => withSpeedBench(['--broken-rate', '1000000:in'], async (hst) => {   // probe -> host only: the probe sees nothing wrong
     const t0 = performance.now();
     const report = await raiseSpeed(hst, [1000000, 9000000, 500000], FAST);
     const [a, b, c] = report.trials;
@@ -124,7 +124,7 @@ test('the minimal form falls back when the confirm does not come, skips an unmak
     await hst.keepalive();
   }));
 
-test('an off probe is not supported and stays at the boot speed', { skip: !haveFake }, () => withSpeedFake(['--no-port-speed'], async (hst) => {
+test('an off probe is not supported and stays at the boot speed', { skip: !haveVirtualBench }, () => withSpeedBench(['--no-port-speed'], async (hst) => {
   let report = await raiseSpeed(hst, [1500000], FAST);
   assert.equal(report.supported, false);
   assert.match(report.why, /does not offer port_speed/);
@@ -141,9 +141,9 @@ test('an off probe is not supported and stays at the boot speed', { skip: !haveF
   await hst.keepalive();
 }));
 
-test('a link that cannot change its rate is not supported', { skip: !haveFake }, async () => {
-  const fake = await startFake(['--profile', 'esp32-v003'], 'cobs');
-  const hst = await openTcp({ port: fake.port, framing: 'cobs' });
+test('a link that cannot change its rate is not supported', { skip: !haveVirtualBench }, async () => {
+  const bench = await startVirtualBench(['--profile', 'esp32-v003'], 'cobs');
+  const hst = await openTcp({ port: bench.port, framing: 'cobs' });
   try {
     await take(hst, 3000);
     const report = await raiseSpeed(hst, [1500000]);
@@ -151,12 +151,12 @@ test('a link that cannot change its rate is not supported', { skip: !haveFake },
     assert.match(report.why, /serial port/);
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });
 
-test('connect with portSpeed takes the lock and raises the speed', { skip: !haveFake },
-  () => withSpeedFake(['--broken-rate', '230400'], async (hst) => {
+test('connect with portSpeed takes the lock and raises the speed', { skip: !haveVirtualBench },
+  () => withSpeedBench(['--broken-rate', '230400'], async (hst) => {
     const report = /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
     assert.deepEqual(report.trials.map((t) => t.committed), [false, true]);
     assert.equal(report.trials[0].why, 'no confirm at the new rate');
@@ -166,7 +166,7 @@ test('connect with portSpeed takes the lock and raises the speed', { skip: !have
     await hst.keepalive();
   }, { portSpeed: [230400, 500000], leaseMs: 10000 }));
 
-test('connect with portSpeed true takes the default candidate', { skip: !haveFake }, () => withSpeedFake([], async (hst) => {
+test('connect with portSpeed true takes the default candidate', { skip: !haveVirtualBench }, () => withSpeedBench([], async (hst) => {
   const report = /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
   assert.equal(report.chosen, 500000);
   await hst.keepalive();
@@ -201,6 +201,39 @@ test('a request unanswered at a raised rate goes back to the boot speed and once
   assert.equal(m.Result.unpack(reply).corr, 2);
   assert.equal(link.baud, 115200);
   assert.equal(link.speedLost, 1);
+});
+
+test('raised, in use: a lost answer goes again at the raised rate first after the first wait, no step down (host guide §17.3.2 item 4)', async () => {
+  /** @type {(c: Uint8Array) => void} */ let deliver = () => {};
+  /** @type {[number, number | undefined][]} */ const writes = [];
+  let dropped = false;
+  /** @type {import('../src/link.js').Transport} */
+  const transport = {
+    framing: 'cobs', kind: 'serial', baudRate: 115200,
+    async setBaudRate(rate) { transport.baudRate = rate; },
+    async write(data) {
+      const req = m.Request.unpack(cobs.unframe(data.subarray(1, data.length - 1)));
+      writes.push([req.corr, transport.baudRate]);
+      if (req.corr === 2 && !dropped) { dropped = true; return; }   // the answer lost on the line, once
+      const result = new m.Result(req.corr, m.COMPLETED, m.SUCCESS, new Uint8Array()).pack();
+      setTimeout(() => deliver(cobs.frame(result)), 1);
+    },
+    start(onData) { deliver = onData; },
+    async close() {},
+  };
+  const link = new Link(transport, { timeoutMs: 3000 });
+  link.waitAddMs = 0;
+  await link.start();
+  await link.setBaud(1500000);
+  const t0 = performance.now();
+  const reply = await link.send(new m.Request(2, 0, m.OP.lock_state, new Uint8Array(), 7).pack());
+  const took = performance.now() - t0;
+  assert.equal(m.Result.unpack(reply).corr, 2);
+  assert.deepEqual(writes, [[2, 1500000], [2, 1500000]]);            // the same corr again, at the raised rate
+  assert.ok(took >= RAISED_FIRST_WAIT_MS - 50 && took < RAISED_FIRST_WAIT_MS + 600, `took ${took}`);
+  assert.equal(link.baud, 1500000);
+  assert.equal(link.speedLost, 0);
+  await link.close();
 });
 
 test('WebSerial: opens 8N1 without flow control; a new rate closes and opens the same port, asserts DTR / RTS, and reads again', async () => {
@@ -243,7 +276,7 @@ test('WebSerial: opens 8N1 without flow control; a new rate closes and opens the
 });
 
 /**
- * The fake probe over TCP behind a line model of the host's side: `onWrite(message, line)` may drop a request (return
+ * The virtual bench over TCP behind a line model of the host's side: `onWrite(message, line)` may drop a request (return
  * false); `garble(line)` breaks the next frame from the probe. line: the host's rate, the requests outstanding (written
  * less frames received), when the rate last changed, and the most outstanding at once since `line.peak` was reset.
  * @param {string[]} args
@@ -253,8 +286,8 @@ test('WebSerial: opens 8N1 without flow control; a new rate closes and opens the
  * @param {number} [leaseMs]
  */
 async function withLine(args, model, body, leaseMs = 10000) {
-  const fake = await startFake(['--profile', 'esp32-v003', ...args], 'cobs');
-  const inner = await tcpTransport({ port: fake.port, framing: 'cobs', baudRate: 115200 });
+  const bench = await startVirtualBench(['--profile', 'esp32-v003', ...args], 'cobs');
+  const inner = await tcpTransport({ port: bench.port, framing: 'cobs', baudRate: 115200 });
   const line = { outstanding: 0, peak: 0, switchedAt: 0, garbled: 0, dropped: /** @type {Uint8Array[]} */ ([]), gaps: /** @type {number[]} */ ([]),
     ops: /** @type {number[]} */ ([]) };
   let rx = new Uint8Array(0);
@@ -297,17 +330,17 @@ async function withLine(args, model, body, leaseMs = 10000) {
     close: () => inner.close(),
   };
   const hst = await connect(transport, { timeoutMs: 1000 });
-  hst.link.waitAddMs = 0;    // the fake answers at once: the floor's 1000 ms (core §4.4) would only slow the losses
+  hst.link.waitAddMs = 0;    // the virtual bench answers at once: the floor's 1000 ms (core §4.4) would only slow the losses
   try {
     await take(hst, leaseMs);
     await body(hst, line);
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 }
 
-test('after the switch: settled before the first byte, a lost first frame found again with a confirm', { skip: !haveFake }, async () => {
+test('after the switch: settled before the first byte, a lost first frame found again with a confirm', { skip: !haveVirtualBench }, async () => {
   let dropNext = false;
   await withLine([], {
     onWrite() {
@@ -329,7 +362,7 @@ test('after the switch: settled before the first byte, a lost first frame found 
   });
 });
 
-test('full form: pipelined frames break, one at a time passes: committed in flight 1, the cap honoured until the boot speed', { skip: !haveFake }, async () => {
+test('full form: pipelined frames break, one at a time passes: committed in flight 1, the cap honoured until the boot speed', { skip: !haveVirtualBench }, async () => {
   /** @type {() => number | null} */ let rateNow = () => 115200;
   await withLine([], {
     garble: (line) => rateNow() !== 115200 && line.outstanding > 1,   // both ways busy at a raised rate: the reply breaks
@@ -359,8 +392,8 @@ test('full form: pipelined frames break, one at a time passes: committed in flig
   });
 });
 
-test('full form: every flow measured at the boot speed and at each candidate; a rate whose frames break fails', { skip: !haveFake },
-  () => withSpeedFake(['--broken-rate', '230400:40:in'], async (hst) => {   // the confirm passes, full answers break
+test('full form: every flow measured at the boot speed and at each candidate; a rate whose frames break fails', { skip: !haveVirtualBench },
+  () => withSpeedBench(['--broken-rate', '230400:40:in'], async (hst) => {   // the confirm passes, full answers break
     // host guide §17.3.2: a baseline per flow at the boot speed, then 16 frames per flow at each candidate; a flow fails
     // on broken + lost >= 3 over max(2 x baseline, 5 %), and one failed flow fails the candidate
     const report = await raiseSpeed(hst, [230400, 500000], { verify: true, verifyMs: 5000 });   // the try state outlasts the measurement
@@ -392,7 +425,7 @@ test('full form: every flow measured at the boot speed and at each candidate; a 
     await hst.keepalive();
   }));
 
-test('full form: only the flows asked are verified; a flow that needs n = 1 caps the link there', { skip: !haveFake }, async () => {
+test('full form: only the flows asked are verified; a flow that needs n = 1 caps the link there', { skip: !haveVirtualBench }, async () => {
   /** @type {() => number | null} */ let rateNow = () => 115200;
   await withLine([], {
     // a link_source answer (probe -> host) arriving while a link_sink (host -> probe) is still out: both ways busy
@@ -417,7 +450,7 @@ test('full form: only the flows asked are verified; a flow that needs n = 1 caps
   });
 });
 
-test('the baseline comes from the session\'s frames when there are enough, or is given', { skip: !haveFake }, () => withSpeedFake([], async (hst) => {
+test('the baseline comes from the session\'s frames when there are enough, or is given', { skip: !haveVirtualBench }, () => withSpeedBench([], async (hst) => {
   for (let i = 0; i < 70; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());
   assert.ok(hst.link.baseCounts.good >= 70);
   assert.equal(hst.link.baseCounts.broken + hst.link.baseCounts.lost, 0);
@@ -438,8 +471,8 @@ test('the baseline comes from the session\'s frames when there are enough, or is
   await hst.keepalive();
 }));
 
-test('a boot speed that loses too much is not raised', { skip: !haveFake },
-  () => withSpeedFake(['--broken-rate', '115200:40:in:every4'], async (hst) => {   // 25 % of full answers
+test('a boot speed that loses too much is not raised', { skip: !haveVirtualBench },
+  () => withSpeedBench(['--broken-rate', '115200:40:in:every4'], async (hst) => {   // 25 % of full answers
     const report = await raiseSpeed(hst, [500000], { flows: [['in', 2]], ...FAST });
     assert.equal(report.supported, true);
     assert.deepEqual(report.trials, []);
@@ -450,19 +483,23 @@ test('a boot speed that loses too much is not raised', { skip: !haveFake },
     assert.equal(hst.link.baud, 115200);
   }));
 
-test('a broken frame towards the probe reverts it and the flow is lost', { skip: !haveFake }, async () => {
-  // the fake breaks requests of 40 bytes and more at 230400 (the probe then goes back: condition 2); the line model adds
-  // what TCP cannot show - a host whose rate is not the probe's is not heard
+test('requests that break towards the probe lose the flow until the try runs out (no going back on broken candidates)', { skip: !haveVirtualBench }, async () => {
+  // the virtual bench breaks requests of 40 bytes and more at 230400: no answer to them, and the probe does not go back on
+  // them (oep-if-link §3) - only its try outliving verify_ms takes it back. The line model adds what TCP cannot show:
+  // a host whose rate is not the probe's is not heard, and the try running out
   /** @type {() => number | null} */ let rateNow = () => 115200;
-  let probeRate = 115200;
+  let probeRate = 115200, tryAt = 0, committed = false;
   await withLine(['--broken-rate', '230400:40:out'], {
     onWrite(msg) {
+      if (!committed && probeRate !== 115200 && performance.now() - tryAt > FAST.verifyMs) probeRate = 115200;   // the try ran out
       if (rateNow() !== probeRate) return false;                        // garbage at the probe: no answer
       const req = m.Request.unpack(msg);
       if (req.fn === LINK_FN && req.op === PS) {
-        if (req.payload[5] === 0) probeRate = getU32(req.payload, 1);   // try: the probe switches once its answer is out
-        else if (req.payload[5] === 2) probeRate = 115200;              // revert
-      } else if (rateNow() === 230400 && msg.length >= 32) probeRate = 115200;   // broken at the probe: it goes back
+        const step = req.payload[4];                                    // baud(u32) step(u8) verify_ms(u16)
+        if (step === 0) { probeRate = getU32(req.payload, 0); tryAt = performance.now(); committed = false; }
+        else if (step === 1) committed = true;
+        else if (step === 2) { probeRate = 115200; committed = false; }
+      }
       return true;
     },
   }, async (hst) => {
@@ -472,8 +509,7 @@ test('a broken frame towards the probe reverts it and the flow is lost', { skip:
     const [a, b] = report.trials;
     assert.equal(a.committed, false);
     assert.ok(a.flows[0].lost > 0);
-    assert.equal(a.flows[0].gone, true);
-    assert.equal(a.why, 'out@4: no answer at 230400 any more (the probe went back)');
+    assert.match(a.why, /^out@4: /);
     assert.equal(b.committed, true);
     assert.equal(hst.link.baud, 500000);
     assert.ok(performance.now() - t0 < 6000);
@@ -506,7 +542,7 @@ function brokenOnce(brokenCorr) {
   return { transport, writes };
 }
 
-test('a broken frame on a port a session holds: the request goes again at once, the same corr', async () => {
+test('a broken frame on a port a session holds: the request goes again at once, the same corr (host guide §8)', async () => {
   const { transport, writes } = brokenOnce(5);
   const link = new Link(transport, { timeoutMs: 2000 });
   await link.start();
@@ -522,6 +558,45 @@ test('a broken frame on a port a session holds: the request goes again at once, 
   assert.equal(link.stats.retries, 1);
   assert.equal(link.stats.corrupt, 1);
   assert.ok(link.stats.noise > 0);
+});
+
+test('broken frames on a held port: resent at once up to BROKEN_RESENDS (3) times, then the transport failed', async () => {
+  assert.equal(BROKEN_RESENDS, 3);
+  /** @param {number} broken  how many answers to corr 5 come broken */
+  const run = async (broken) => {
+    /** @type {(c: Uint8Array) => void} */ let deliver = () => {};
+    /** @type {number[]} */ const writes = [];
+    let left = broken;
+    /** @type {import('../src/link.js').Transport} */
+    const transport = {
+      framing: 'cobs', kind: 'serial',
+      async write(data) {
+        const req = m.Request.unpack(cobs.unframe(data.subarray(1, data.length - 1)));
+        writes.push(req.corr);
+        const out = cobs.frame(new m.Result(req.corr, m.COMPLETED, m.SUCCESS, Uint8Array.of(1, 2, 3)).pack());
+        if (left > 0) { left--; out[2] = out[2] === 1 ? 2 : 1; }
+        setTimeout(() => deliver(out), 1);
+      },
+      start(onData) { deliver = onData; },
+      async close() {},
+    };
+    const link = new Link(transport, { timeoutMs: 2000 });
+    await link.start();
+    const hst = new Host(link);
+    hst.session = 7;
+    const t0 = performance.now();
+    const reply = await link.send(new m.Request(5, 0, m.OP.keepalive, new Uint8Array(), 7).pack()).catch((e) => e);
+    return { reply, writes, took: performance.now() - t0, link };
+  };
+  const three = await run(3);                                          // three broken answers: the fourth try is answered
+  assert.equal(m.Result.unpack(three.reply).corr, 5);
+  assert.deepEqual(three.writes, [5, 5, 5, 5]);
+  assert.ok(three.took < 500, 'each resent at once, no wait');
+  assert.equal(three.link.stats.corrupt, 3);
+  const four = await run(4);                                           // a fourth broken one: the transport failed
+  assert.ok(four.reply instanceof TransportFailed && four.reply.broken);
+  assert.deepEqual(four.writes, [5, 5, 5, 5]);
+  assert.ok(four.took < 500);
 });
 
 test('a broken frame with no session is noise: skipped, the request resent only after its timeout', async () => {
@@ -541,61 +616,62 @@ test('a broken frame with no session is noise: skipped, the request resent only 
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-test('raiseSpeed commits the idle maximum by default, and for 0', { skip: !haveFake }, async () => {
-  /** @type {number[]} */ const idles = [];
+test('raiseSpeed sends baud step verify_ms (no port, no idle_ms); the probe keeps port_speed_idle_ms', { skip: !haveVirtualBench }, async () => {
+  /** @type {Uint8Array[]} */ const sent = [];
   await withLine([], {
     onWrite(msg) {
       const req = m.Request.unpack(msg);
-      if (req.fn === LINK_FN && req.op === PS && req.payload[5] === 1) idles.push(getU32(req.payload, 8));   // step commit
+      if (req.fn === LINK_FN && req.op === PS) sent.push(req.payload);
       return true;
     },
   }, async (hst) => {
-    // a try while committed is rejected (oep-if-link §3: a step that does not fit the port's state): one raise per session
-    for (const opts of [FAST, { ...FAST, idleMs: 0 }, { ...FAST, idleMs: 600000 }, { ...FAST, idleMs: 1500 }]) {
-      const report = await raiseSpeed(hst, [750000], opts);
-      assert.equal(report.chosen, 750000);
-      await hst.end();
-      await take(hst, 10000);
-    }
+    await raiseSpeed(hst, [750000], FAST);
+    assert.equal(hst.link.keepaliveMs, KEEPALIVE_MS);
   });
-  assert.equal(IDLE_MAX_MS, 3000);
-  assert.deepEqual(idles, [3000, 3000, 3000, 1500]);
+  assert.deepEqual(sent.map((p) => p.length), [7, 7]);                 // oep-if-link §3: baud(u32) step(u8) verify_ms(u16)
+  assert.deepEqual(sent.map((p) => [getU32(p), p[4]]), [[750000, 0], [750000, 1]]);
+  assert.equal(IDLE_MS, 3000);
+  assert.ok(KEEPALIVE_MS < IDLE_MS / 2);
 });
 
-test('the keepalive interval stays under half of idle_ms; verify_ms stays a second under the lease', { skip: !haveFake }, async () => {
+test('verify_ms stays a second under the lease', { skip: !haveVirtualBench }, async () => {
   /** @type {number[]} */ const verifies = [];
   const model = {
     /** @param {Uint8Array} msg */
     onWrite(msg) {
       const req = m.Request.unpack(msg);
-      if (req.fn === LINK_FN && req.op === PS && req.payload[5] === 0) verifies.push(getU16(req.payload, 6));   // step try
+      if (req.fn === LINK_FN && req.op === PS && req.payload[4] === 0) verifies.push(getU16(req.payload, 5));   // step try
       return true;
     },
   };
-  await withLine([], model, async (hst) => {
-    await raiseSpeed(hst, [750000], { idleMs: 200 });
-    assert.equal(hst.link.keepaliveMs, 80);                       // under half of idle_ms (oep-if-link §3 obligation 4)
-    await hst.end();
-    await take(hst, 10000);
-    await raiseSpeed(hst, [750000]);
-    assert.equal(hst.link.keepaliveMs, KEEPALIVE_MS);
-  });
-  assert.deepEqual(verifies, [VERIFY_MS, VERIFY_MS]);           // a 10 s lease: the default 2000
+  await withLine([], model, async (hst) => { await raiseSpeed(hst, [750000]); });
+  assert.deepEqual(verifies, [VERIFY_MS]);                          // a 10 s lease: the default 2000
   verifies.length = 0;
   await withLine([], model, async (hst) => { await raiseSpeed(hst, [750000]); }, 2400);
   assert.deepEqual(verifies, [1400]);
 });
 
-// ---- the fake probe's port_speed handshake (oep-if-link §3), driven straight from the link -----------------------------
+test('raised, in use: the first wait is at most a third of port_speed_idle_ms, never under core §4.4\'s floor (host guide §17.3.2 item 4)', () => {
+  assert.equal(RAISED_FIRST_WAIT_MS, 1000);
+  const link = new Link(/** @type {any} */ ({ framing: 'cobs', kind: 'serial', baudRate: 115200, async setBaudRate() {}, async write() {}, start() {}, async close() {} }), { timeoutMs: 3000 });
+  link.held = () => true;
+  link.lease = () => 60000;
+  assert.equal(link.baseWaitMs(), 3000);                            // at the boot speed: the link's timeout
+  link.baud = 921600;                                               // raised, in use
+  assert.equal(link.baseWaitMs(), RAISED_FIRST_WAIT_MS);
+  link.lease = () => 2000;
+  assert.equal(link.baseWaitMs(), 500);                             // and a quarter of the lease
+  link.waitAddMs = 0;
+  assert.ok(link.waitMs(2500) >= 2500);                             // an argument time (core §4.4) is still waited
+  link.waitAddMs = 1000;
+  assert.ok(link.waitMs() >= 1000 + link.transferMs());             // never under the floor
+});
 
-/** The port_speed request body: port(u8) baud(u32) step(u8) verify_ms(u16) idle_ms(u32).
- * @param {number} port @param {number} baud @param {number} step @param {number} [verifyMs] @param {number} [idleMs] */
-function ps(port, baud, step, verifyMs = 5000, idleMs = 0) {
-  const out = new Uint8Array(12);
-  const v = new DataView(out.buffer);
-  v.setUint8(0, port); v.setUint32(1, baud, true); v.setUint8(5, step); v.setUint16(6, verifyMs, true); v.setUint32(8, idleMs, true);
-  return out;
-}
+// ---- the virtual bench's port_speed handshake (oep-if-link §3), driven straight from the link -----------------------------
+
+/** The port_speed request body: baud(u32) step(u8) verify_ms(u16) (oep-if-link §3).
+ * @param {number} baud @param {number} step @param {number} [verifyMs] */
+const ps = (baud, step, verifyMs = 5000) => speedRequest(baud, step, verifyMs);
 const TRY = 0, COMMIT = 1, REVERT = 2;
 /** @param {import('../src/host.js').Host} hst @param {Uint8Array} body */
 const portSpeed = (hst, body) => {
@@ -606,71 +682,58 @@ const portSpeed = (hst, body) => {
 const wrongState = (e) => e instanceof Unavailable && e.cause === 'wrong_state';
 /** @param {unknown} e */
 const malformed = (e) => e instanceof Rejected && e.result.detail === m.REJECT.malformed;
-/** A broken candidate at the probe: bytes between 0x00s that do not decode (oep-if-link §3 "broken"). The link's own
- * write is bypassed so nothing is resent. @param {import('../src/host.js').Host} hst */
+/** A broken candidate at the probe: bytes between 0x00s that do not decode. The link's own write is bypassed so nothing
+ * is resent. @param {import('../src/host.js').Host} hst */
 const noise = (hst) => hst.link.transport.write(Uint8Array.of(0, 0x11, 0x22, 0x33, 0));
 
-test('fake: a step that does not fit the port state is unavailable cause 6; a step above 2 is unsupported, verify_ms 0 in a try malformed', { skip: !haveFake },
-  () => withSpeedFake([], async (hst) => {
-    await assert.rejects(portSpeed(hst, ps(0, 500000, COMMIT)), wrongState);             // commit at the boot speed
-    await assert.rejects(portSpeed(hst, ps(0, 500000, REVERT)), wrongState);             // revert at the boot speed
-    await assert.rejects(portSpeed(hst, ps(0, 500000, 3)), (e) => e instanceof Unsupported && e.tag === null);   // a later revision's step (core §2.5)
-    await assert.rejects(portSpeed(hst, ps(0, 500000, 0xff)), Unsupported);
-    await assert.rejects(portSpeed(hst, ps(0, 500000, TRY, 0)), malformed);             // verify_ms 0 in a try (C-32)
-    const tried = await portSpeed(hst, ps(0, 1500000, TRY));
+test('virtual bench: a step that does not fit the port state is unavailable cause 6; a step above 2 is unsupported, verify_ms 0 in a try malformed', { skip: !haveVirtualBench },
+  () => withSpeedBench([], async (hst) => {
+    await assert.rejects(portSpeed(hst, ps(500000, COMMIT)), wrongState);             // commit at the boot speed
+    await assert.rejects(portSpeed(hst, ps(500000, REVERT)), wrongState);             // revert at the boot speed
+    await assert.rejects(portSpeed(hst, ps(500000, 3)), (e) => e instanceof Unsupported && e.tag === null);   // a later revision's step (core §2.5)
+    await assert.rejects(portSpeed(hst, ps(500000, 0xff)), Unsupported);
+    await assert.rejects(portSpeed(hst, ps(500000, TRY, 0)), malformed);             // verify_ms 0 in a try (C-32)
+    const tried = await portSpeed(hst, ps(1500000, TRY));
     assert.equal(getU32(tried.payload), 1500000);
     await hst.link.setBaud(1500000);
-    await assert.rejects(portSpeed(hst, ps(0, 1500000, TRY)), wrongState);               // a try while trying
-    await assert.rejects(portSpeed(hst, ps(0, 1000000, COMMIT)), wrongState);            // another baud
-    const committed = await portSpeed(hst, ps(0, 1500000, COMMIT));
+    await assert.rejects(portSpeed(hst, ps(1500000, TRY)), wrongState);               // a try while trying
+    await assert.rejects(portSpeed(hst, ps(1000000, COMMIT)), wrongState);            // another baud
+    const committed = await portSpeed(hst, ps(1500000, COMMIT));
     assert.equal(getU32(committed.payload), 1500000);
-    await assert.rejects(portSpeed(hst, ps(0, 1500000, COMMIT)), wrongState);            // committed already
-    await assert.rejects(portSpeed(hst, ps(0, 921600, TRY)), wrongState);                // a try while committed
-    const reverted = await portSpeed(hst, ps(0, 1500000, REVERT));
+    await assert.rejects(portSpeed(hst, ps(1500000, COMMIT)), wrongState);            // committed already
+    await assert.rejects(portSpeed(hst, ps(921600, TRY)), wrongState);                // a try while committed
+    const reverted = await portSpeed(hst, ps(1500000, REVERT));
     assert.equal(getU32(reverted.payload), 115200);
-    assert.equal(hst.link.baud, 115200);                                                 // obligation 6: the link followed
-    await assert.rejects(portSpeed(hst, ps(0, 1500000, REVERT)), wrongState);            // back already: nothing to revert
+    assert.equal(hst.link.baud, 115200);                                                 // oep-if-link §3 host 2: the link followed
+    await assert.rejects(portSpeed(hst, ps(1500000, REVERT)), wrongState);            // back already: nothing to revert
     await hst.keepalive();
   }));
 
-test('fake: self-revert 2 counts a broken candidate only after the first good frame; 4 is 3 in a row, no time window', { skip: !haveFake },
-  () => withSpeedFake([], async (hst) => {
-    // trying: the switch-over's leftovers (before any good frame at the new speed) do not count
-    await portSpeed(hst, ps(0, 230400, TRY));
+test('virtual bench: broken candidates never take it back; committed, it goes back after port_speed_idle_ms with no good frame (oep-if-link §3)', { skip: !haveVirtualBench },
+  () => withSpeedBench([], async (hst) => {
+    await portSpeed(hst, ps(230400, TRY));
     await hst.link.setBaud(230400);
-    await noise(hst);
-    await noise(hst);
-    await portSpeed(hst, ps(0, 230400, COMMIT));                                         // still trying: the commit fits
-    // committed: broken candidates in a row revert at 3; a good frame between restarts the run
-    await noise(hst);
-    await noise(hst);
-    await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array(), { locked: false });   // a good frame
-    await noise(hst);
-    await noise(hst);
-    const reverted = await portSpeed(hst, ps(0, 230400, REVERT));                        // still committed
+    await noise(hst);                                                                  // the switch-over's leftovers
+    await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array(), { locked: false });   // a good frame at the new speed
+    for (let i = 0; i < 5; i++) await noise(hst);
+    await portSpeed(hst, ps(230400, COMMIT));                                         // still trying: the commit fits
+    for (let i = 0; i < 10; i++) await noise(hst);                                    // many in a row
+    const reverted = await portSpeed(hst, ps(230400, REVERT));                        // still committed
     assert.equal(getU32(reverted.payload), 115200);
     assert.equal(hst.link.baud, 115200);
-    // trying: one broken candidate after the first good frame at the new speed reverts
-    await portSpeed(hst, ps(0, 230400, TRY));
+    await portSpeed(hst, ps(230400, TRY));
     await hst.link.setBaud(230400);
-    await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array(), { locked: false });   // the first good frame
+    await portSpeed(hst, ps(230400, COMMIT));
+    hst.link.fallback = false;                                                        // the test's own requests: no keepalive, no fall back
     await noise(hst);
-    await assert.rejects(portSpeed(hst, ps(0, 230400, COMMIT)), wrongState);             // reverted: at the boot speed
-    await hst.link.setBaud(115200);
-    // committed: 3 in a row revert however far apart they are (no window)
-    await portSpeed(hst, ps(0, 230400, TRY));
-    await hst.link.setBaud(230400);
-    await portSpeed(hst, ps(0, 230400, COMMIT, 5000, 3000));
-    await noise(hst);
-    await sleep(1100);
-    await noise(hst);
-    await noise(hst);
-    await assert.rejects(portSpeed(hst, ps(0, 230400, REVERT)), wrongState);             // back already
+    await sleep(IDLE_MS + 300);                                                       // no good frame for port_speed_idle_ms
+    await assert.rejects(portSpeed(hst, ps(230400, REVERT)), wrongState);            // back already
+    hst.link.fallback = true;
     await hst.link.setBaud(115200);
     await hst.keepalive();
   }));
 
-test('a raised link keeps the line alive when quiet', { skip: !haveFake }, async () => {
+test('a raised link keeps the line alive when quiet', { skip: !haveVirtualBench }, async () => {
   let keepalives = 0;
   await withLine([], {
     onWrite(msg) { if (m.Request.unpack(msg).op === m.OP.keepalive) keepalives++; return true; },
@@ -694,13 +757,13 @@ test('a raised link keeps the line alive when quiet', { skip: !haveFake }, async
 });
 
 /**
- * The fake probe over TCP seen as a serial port this host opened, deaf (writes dropped) until `deafMs` has passed:
+ * The virtual bench over TCP seen as a serial port this host opened, deaf (writes dropped) until `deafMs` has passed:
  * the rate a host that died left, going back by itself.
  * @param {number} deafMs
  */
 async function deafSerial(deafMs) {
-  const fake = await startFake(['--profile', 'esp32-v003'], 'cobs');
-  const inner = await tcpTransport({ port: fake.port, framing: 'cobs', baudRate: 115200 });
+  const bench = await startVirtualBench(['--profile', 'esp32-v003'], 'cobs');
+  const inner = await tcpTransport({ port: bench.port, framing: 'cobs', baudRate: 115200 });
   // deaf from the host's first write on: on a loaded machine the time to it varies, and the confirms counted are the
   // ones the host made while the probe was deaf
   /** @type {number | null} */ let t0 = null;
@@ -715,11 +778,11 @@ async function deafSerial(deafMs) {
       await inner.write(data);
     },
   };
-  return { fake, transport, t0: () => /** @type {number} */ (t0), dropped: () => dropped };
+  return { bench, transport, t0: () => /** @type {number} */ (t0), dropped: () => dropped };
 }
 
-test('connect on a serial port waits out a raised rate left over', { skip: !haveFake }, async () => {
-  const { fake, transport, t0, dropped } = await deafSerial(2500);
+test('connect on a serial port waits out a raised rate left over', { skip: !haveVirtualBench }, async () => {
+  const { bench, transport, t0, dropped } = await deafSerial(2500);
   try {
     const hst = await connect(transport, { timeoutMs: 1000 });
     const took = performance.now() - t0();
@@ -728,19 +791,19 @@ test('connect on a serial port waits out a raised rate left over', { skip: !have
     assert.ok(hst.limits);
     await hst.link.close();
   } finally {
-    fake.stop();
+    bench.stop();
   }
 });
 
-test('connect on a serial port gives up after about 4 s; other transports keep their timeout', { skip: !haveFake }, async () => {
+test('connect on a serial port gives up after about 4 s; other transports keep their timeout', { skip: !haveVirtualBench }, async () => {
   // either way the probing rule (transports §3) closes the transport: NotOepProbe, its cause the Timeout
-  const { fake, transport, t0 } = await deafSerial(60000);
+  const { bench, transport, t0 } = await deafSerial(60000);
   try {
     await assert.rejects(connect(transport, { timeoutMs: 1000 }), (e) => e instanceof NotOepProbe && /** @type {any} */ (e).cause instanceof Timeout);
     const took = performance.now() - t0();
     assert.ok(took >= OPEN_RETRY_MS - 100 && took < OPEN_RETRY_MS + 3000, `took ${took}`);
   } finally {
-    fake.stop();
+    bench.stop();
   }
   const other = await deafSerial(60000);
   try {
@@ -748,7 +811,7 @@ test('connect on a serial port gives up after about 4 s; other transports keep t
     await assert.rejects(connect({ ...other.transport, kind: 'tcp' }, { timeoutMs: 300 }), (e) => e instanceof NotOepProbe && /** @type {any} */ (e).cause instanceof Timeout);
     assert.ok(performance.now() - t1 < 3000);                      // the confirm, its resend: no 4 s retry
   } finally {
-    other.fake.stop();
+    other.bench.stop();
   }
 });
 
@@ -770,7 +833,7 @@ async function raisedInUse(every, body, opts = {}) {
   });
 }
 
-test('in use: the 3 s window over 10 % steps down for the session, which goes on at base', { skip: !haveFake }, () => raisedInUse(4, async (hst) => {
+test('in use: the 3 s window over 10 % steps down for the session, which goes on at base', { skip: !haveVirtualBench }, () => raisedInUse(4, async (hst) => {
   // host guide §17.3.2 item 4: the last 3 s judged once 50 frames are in them; over max(2 x baseline, 10 %) broken or
   // lost -> revert, the boot speed, never raised again in this session
   const session = hst.session;
@@ -795,7 +858,7 @@ test('in use: the 3 s window over 10 % steps down for the session, which goes on
   assert.equal(hst.link.baud, 115200);
 }));
 
-test('in use: no judgement under 50 frames or under the floor', { skip: !haveFake }, () => raisedInUse(2, async (hst, line) => {
+test('in use: no judgement under 50 frames or under the floor', { skip: !haveVirtualBench }, () => raisedInUse(2, async (hst, line) => {
   for (let i = 0; i < 12; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());   // 12 and their resends: under 50 frames
   const report = /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
   assert.equal(hst.link.baud, 921600);
@@ -812,7 +875,7 @@ test('in use: no judgement under 50 frames or under the floor', { skip: !haveFak
   assert.ok(hst.link.window.every(([t]) => t - hst.link.window[0][0] <= IN_USE_WINDOW_MS));
 }));
 
-test('in use: the threshold doubles a measured baseline', { skip: !haveFake }, () => raisedInUse(8, async (hst, line) => {
+test('in use: the threshold doubles a measured baseline', { skip: !haveVirtualBench }, () => raisedInUse(8, async (hst, line) => {
   assert.equal(hst.link.baselineRatio, 0.08);                                                       // threshold 16 %
   for (let i = 0; i < 80; i++) await hst.request(m.CORE_FN, m.OP.lock_state, new Uint8Array());   // 1 in 9 frames: 11 %
   const report = /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
@@ -825,7 +888,7 @@ test('in use: the threshold doubles a measured baseline', { skip: !haveFake }, (
   assert.match(report.downWhy, /over 16%/);
 }, { flows: [['in', 1]], baseline: 0.08 }));
 
-test('in use: no answer at a raised rate falls back well inside the lease and the request goes on', { skip: !haveFake }, async () => {
+test('in use: no answer at a raised rate falls back well inside the lease and the request goes on', { skip: !haveVirtualBench }, async () => {
   let deaf = false;
   /** @type {() => number | null} */ let rateNow = () => 115200;
   await withLine([], {
@@ -852,7 +915,7 @@ test('in use: no answer at a raised rate falls back well inside the lease and th
   }, 3000);
 });
 
-test('in use: no answer at the raised rate and no confirm at the boot speed is a link error, never the raised rate again', { skip: !haveFake }, async () => {
+test('in use: no answer at the raised rate and no confirm at the boot speed is a link error, never the raised rate again', { skip: !haveVirtualBench }, async () => {
   let deaf = false;
   await withLine([], {
     onWrite: () => !deaf,                                 // the probe hears nothing more at any rate
@@ -871,7 +934,7 @@ test('in use: no answer at the raised rate and no confirm at the boot speed is a
   });
 });
 
-test('a long run at a raised rate waits its timeoutMs, no step down; the keepalive goes before its corr', { skip: !haveFake }, async () => {
+test('a long run at a raised rate waits its timeoutMs, no step down; the keepalive goes before its corr', { skip: !haveVirtualBench }, async () => {
   /** @type {number[]} */ const sent = [];
   await withLine([], {
     onWrite(msg) { sent.push(m.Request.unpack(msg).corr); return true; },
@@ -947,7 +1010,7 @@ test('setBaud switches to the requested rate, and to the answer only when the pl
 
 // ---- the record (host guide §17.4) ---------------------------------------------------------------------------------
 
-test('the record puts passed rates first, skips failed ones, notes a step down, and expires', { skip: !haveFake }, async () => {
+test('the record puts passed rates first, skips failed ones, notes a step down, and expires', { skip: !haveVirtualBench }, async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'oep-speed-')), 'link-speed.json');
   const rec = new SpeedRecord(await fileStore(path));
   /** @type {() => number | null} */ let rateNow = () => 115200;
@@ -1029,7 +1092,7 @@ async function move(hst, until, size = 40, limitMs = 3000) {
 /** @param {import('../src/host.js').Host} hst */
 const report = (hst) => /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
 
-test('in use: a breakdown steps down to the next lower candidate, never at or above a failed one', { skip: !haveFake }, async () => {
+test('in use: a breakdown steps down to the next lower candidate, never at or above a failed one', { skip: !haveVirtualBench }, async () => {
   /** @type {Set<number>} */ const breaking = new Set();
   let n = 0;
   await withLine(['--broken-rate', '1500000:in'], {                     // no confirm at 1500000
@@ -1064,7 +1127,7 @@ test('in use: a breakdown steps down to the next lower candidate, never at or ab
 });
 /** @type {import('../src/link.js').Link | null} */ let link = null;
 
-test('in use: no step down to a rate above one that failed its verify', { skip: !haveFake }, async () => {
+test('in use: no step down to a rate above one that failed its verify', { skip: !haveVirtualBench }, async () => {
   let breaking = false, n = 0;
   /** @type {() => number | null} */ let rateNow = () => 115200;
   await withLine(['--broken-rate', '230400:in'], { garble: () => breaking && rateNow() === 921600 && ++n % 3 === 0 }, async (hst) => {
@@ -1082,8 +1145,8 @@ test('in use: no step down to a rate above one that failed its verify', { skip: 
   });
 });
 
-test('the probation fails a rate that passes the quick verify and breaks later; the next lower one passes it', { skip: !haveFake },
-  () => withSpeedFake(['--profile', 'esp32-v003-64', '--broken-rate', '921600:40:in:after3000'], async (hst) => {   // 64-byte frames: the quick verify stays under 3000 bytes
+test('the probation fails a rate that passes the quick verify and breaks later; the next lower one passes it', { skip: !haveVirtualBench },
+  () => withSpeedBench(['--profile', 'esp32-v003-64', '--broken-rate', '921600:40:in:after3000'], async (hst) => {   // 64-byte frames: the quick verify stays under 3000 bytes
     const rec = new SpeedRecord(memoryStore());
     const r = await raiseSpeed(hst, [921600, 500000], { flows: [['in', 1]], record: rec, probationBytes: 4096, probationMs: 300, ...FAST });
     const [t] = r.trials;
@@ -1115,8 +1178,8 @@ test('the probation fails a rate that passes the quick verify and breaks later; 
     assert.match(speedText(r), /\(in probation\)/);
   }));
 
-test('a failure soon after a breakdown at another rate is noted unknown', { skip: !haveFake },
-  () => withSpeedFake(['--broken-rate', '921600:40:in', '--broken-rate', '500000:40:in'], async (hst) => {
+test('a failure soon after a breakdown at another rate is noted unknown', { skip: !haveVirtualBench },
+  () => withSpeedBench(['--broken-rate', '921600:40:in', '--broken-rate', '500000:40:in'], async (hst) => {
     const rec = new SpeedRecord(memoryStore());
     let r = await raiseSpeed(hst, [921600, 500000], { flows: [['in', 1]], record: rec, ...FAST });
     const [a, b] = r.trials;
@@ -1135,10 +1198,10 @@ test('a failure soon after a breakdown at another rate is noted unknown', { skip
     assert.equal(rec.results('<stream>', UNIT).get(500000), 'failed');
   }));
 
-test('when the record marks every candidate failed the slowest is tried once; maxTries bounds the tries and the step downs', { skip: !haveFake }, async () => {
+test('when the record marks every candidate failed the slowest is tried once; maxTries bounds the tries and the step downs', { skip: !haveVirtualBench }, async () => {
   const rec = new SpeedRecord(memoryStore());
   for (const rate of [1500000, 921600, 500000]) rec.note('<stream>', UNIT, rate, false, 'verify');
-  await withSpeedFake([], async (hst) => {
+  await withSpeedBench([], async (hst) => {
     const r = await raiseSpeed(hst, [1500000, 921600, 500000], { record: rec, maxTries: 1, ...FAST });
     assert.equal(r.retried, 500000);
     assert.deepEqual(r.skipped, [1500000, 921600]);
@@ -1184,19 +1247,19 @@ test('the record keeps a failure a day and a pass 30 days; an unknown is neither
   assert.deepEqual(longer.lookup('p', 'u'), { passed: [], failed: [921600] });
 });
 
-// ---- the default ceiling (oep-if-link §3 obligation 7, host guide §17.3.3) ------------------------------------------
+// ---- the default ceiling (host guide §17, §17.3.3) ---------------------------------------------------------------
 
 /** A line model that keeps the verify_ms of every port_speed try, by rate. @param {Map<number, number>} tries */
 const keepTries = (tries) => ({
   /** @param {Uint8Array} msg */
   onWrite(msg) {
     const req = m.Request.unpack(msg);
-    if (req.fn === LINK_FN && req.op === PS && req.payload[5] === 0) tries.set(getU32(req.payload, 1), getU16(req.payload, 6));
+    if (req.fn === LINK_FN && req.op === PS && req.payload[4] === 0) tries.set(getU32(req.payload, 0), getU16(req.payload, 5));
     return true;
   },
 });
 
-test('ceiling: the default is 500000 alone, with no measurement', { skip: !haveFake }, () => withCeiling(async () => {
+test('ceiling: the default is 500000 alone, with no measurement', { skip: !haveVirtualBench }, () => withCeiling(async () => {
   const tries = new Map();
   await withLine([], keepTries(tries), async (hst) => {
     assert.equal(DEFAULT_CEILING, 500000);
@@ -1209,7 +1272,7 @@ test('ceiling: the default is 500000 alone, with no measurement', { skip: !haveF
   });
 }));
 
-test('ceiling: a faster rate is committed only after full frames ran 1 s each way', { skip: !haveFake }, () => withCeiling(async () => {
+test('ceiling: a faster rate is committed only after full frames ran 1 s each way', { skip: !haveVirtualBench }, () => withCeiling(async () => {
   const tries = new Map();
   await withLine([], keepTries(tries), async (hst) => {
     const report = await raiseSpeed(hst, [921600]);
@@ -1231,8 +1294,8 @@ test('ceiling: a faster rate is committed only after full frames ran 1 s each wa
   });
 }));
 
-test('ceiling: a faster rate that breaks past the quick verify fails its 1 s verify; 500000 then passes quickly', { skip: !haveFake },
-  () => withCeiling(() => withSpeedFake(['--broken-rate', '921600:40:in:every3:after12000'], async (hst) => {
+test('ceiling: a faster rate that breaks past the quick verify fails its 1 s verify; 500000 then passes quickly', { skip: !haveVirtualBench },
+  () => withCeiling(() => withSpeedBench(['--broken-rate', '921600:40:in:every3:after12000'], async (hst) => {
     const report = await raiseSpeed(hst, [921600, 500000], { flows: [['in', 1]], ...FAST });
     const [a, b] = report.trials;
     assert.equal(a.committed, false);
@@ -1245,7 +1308,7 @@ test('ceiling: a faster rate that breaks past the quick verify fails its 1 s ver
     assert.deepEqual(b.flows.map((f) => [f.flow, f.frames]), [['in', FLOW_FRAMES]]);   // the quick verify at 500000
   })));
 
-test('ceiling: the full form adds duplex and asks verify_ms 6000', { skip: !haveFake }, () => withCeiling(async () => {
+test('ceiling: the full form adds duplex and asks verify_ms 6000', { skip: !haveVirtualBench }, () => withCeiling(async () => {
   const tries = new Map();
   await withLine([], keepTries(tries), async (hst) => {
     const report = await raiseSpeed(hst, [921600], { flows: [['in', 1], ['duplex', 1]] });
@@ -1257,7 +1320,7 @@ test('ceiling: the full form adds duplex and asks verify_ms 6000', { skip: !have
   });
 }));
 
-test('ceiling: a lease too short for the 1 s verify skips the rate; leaseFor gives the lease', { skip: !haveFake }, () => withCeiling(async () => {
+test('ceiling: a lease too short for the 1 s verify skips the rate; leaseFor gives the lease', { skip: !haveVirtualBench }, () => withCeiling(async () => {
   assert.equal(leaseFor([500000, 230400]), 0);
   assert.equal(leaseFor([921600, 500000]), 5000);
   assert.equal(leaseFor([921600], { flows: [['out', 2]] }), 5000);
@@ -1275,8 +1338,8 @@ test('ceiling: a lease too short for the 1 s verify skips the rate; leaseFor giv
   }, 3000);
 }));
 
-test('ceiling: connect with a faster rate takes a lease long enough for its 1 s verify', { skip: !haveFake },
-  () => withCeiling(() => withSpeedFake([], async (hst) => {
+test('ceiling: connect with a faster rate takes a lease long enough for its 1 s verify', { skip: !haveVirtualBench },
+  () => withCeiling(() => withSpeedBench([], async (hst) => {
     const report = /** @type {import('../src/speed.js').SpeedReport} */ (hst.link.speed);
     assert.equal(hst.leaseMs, 5000);
     assert.equal(report.chosen, 921600);

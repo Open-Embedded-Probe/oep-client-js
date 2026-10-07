@@ -16,10 +16,8 @@ import { PositionStream, StreamIO } from './console.js';
 const GPIO = reg.FIXTURE_GPIO, UART = reg.FIXTURE_UART, I2C = reg.FIXTURE_I2C_TARGET, SPI = reg.FIXTURE_SPI_TARGET;
 const MODE = GPIO.enum.mode;
 const TAG_INDEX = GPIO.tlv.unavailable_payload.index;   // 0x40: the list position of what was refused
-/** drive_kind (fixture §1.1): 0 level (a number of the probe's drive_levels), 1 max_ma (an mA ceiling) */
-export const DRIVE_KIND = /** @type {{ level: number, max_ma: number, default: number }} */ (GPIO.enum.drive_kind);
-/** read's drive TLV for a channel not driven in mode 3 / 4 */
-export const NOT_DRIVEN = GPIO.enum.drive_read.not_driven;
+/** drive_level's default (fixture §1.1): 0xFF, drive_levels' default level */
+export const DRIVE_DEFAULT = GPIO.enum.drive_level.default;
 
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -35,43 +33,37 @@ export class GpioUnavailable extends Unavailable {
 
 /**
  * An output strength (oep-if-fixture §1.1), for gpio set and the settings' idle: a level number of the probe's
- * drive_levels (kind 0), or an mA ceiling (kind 1: the strongest level of about that many mA or less, level 0 when every
- * level is stronger). A ceiling carries over between probes; a level number is one probe's list.
+ * drive_levels (0 the weakest, in its order), or the default level (0xFF). Levels are one probe's list: a host that
+ * takes a setting to another probe picks the level again from that probe's drive_levels (`DriveLevels.atMost`).
  */
 export class Drive {
-  /** @param {number} kind  DRIVE_KIND.level / DRIVE_KIND.max_ma / DRIVE_KIND.default @param {number} value  u16 */
-  constructor(kind, value) { this.kind = kind; this.value = value; Object.freeze(this); }
+  /** @param {number} value  a level number (u8), DRIVE_DEFAULT the default level */
+  constructor(value) { this.value = value; Object.freeze(this); }
 
-  /** A level number of the probe's drive_levels. @param {number} n */
-  static level(n) { return new Drive(DRIVE_KIND.level, n); }
+  /** A level number of the probe's drive_levels (0 .. 0xFE). @param {number} n */
+  static level(n) {
+    if (!Number.isInteger(n) || n < 0 || n >= DRIVE_DEFAULT) throw new RangeError(`drive level ${n}: 0 to ${DRIVE_DEFAULT - 1} (0xFF is the default level)`);
+    return new Drive(n);
+  }
 
-  /** An mA ceiling. @param {number} ma */
-  static maxMa(ma) { return new Drive(DRIVE_KIND.max_ma, ma); }
+  /** The default level of drive_levels (0xFF; fixture §1.1). */
+  static default() { return new Drive(DRIVE_DEFAULT); }
 
-  /** The default level of drive_levels (kind 2, value 0; fixture §1.1). */
-  static default() { return new Drive(DRIVE_KIND.default, 0); }
-
-  get isDefault() { return this.kind === DRIVE_KIND.default; }
+  get isDefault() { return this.value === DRIVE_DEFAULT; }
 
   /** A Drive as it is, a number as a level number. @param {Drive | number} drive */
   static of(drive) { return drive instanceof Drive ? drive : Drive.level(Number(drive)); }
 
-  /** kind(u8) value(u16), the form both places use. */
+  /** level(u8), the form both places use. */
   pack() {
-    if (!Object.values(DRIVE_KIND).includes(this.kind) || !Number.isInteger(this.value) || this.value < 0 || this.value > 0xffff) {
-      throw new RangeError(`drive kind ${this.kind} value ${this.value}: kind 0 (level), 1 (max_ma) or 2 (default), value u16`);
-    }
-    if (this.isDefault && this.value) throw new RangeError('drive kind 2 (the default level) carries value 0');
-    return new Writer().u8(this.kind).u16(this.value).done();
+    if (!Number.isInteger(this.value) || this.value < 0 || this.value > 0xff) throw new RangeError(`drive ${this.value}: a u8 level, 0xFF the default`);
+    return Uint8Array.of(this.value);
   }
 
-  /** @param {Uint8Array} data  kind(u8) value(u16) */
-  static unpack(data) { return new Drive(data[0], getU16(data, 1)); }
+  /** @param {Uint8Array} data  level(u8) */
+  static unpack(data) { return new Drive(data[0]); }
 
-  toString() {
-    if (this.isDefault) return 'default';
-    return this.kind === DRIVE_KIND.level ? `level ${this.value}` : `<= ${this.value} mA`;
-  }
+  toString() { return this.isDefault ? 'default' : `level ${this.value}`; }
 }
 
 /**
@@ -82,21 +74,22 @@ export class DriveLevels {
   /** @param {number} defaultLevel @param {number[]} ma */
   constructor(defaultLevel, ma) { this.defaultLevel = defaultLevel; this.ma = Object.freeze([...ma]); Object.freeze(this); }
 
-  /** The level a Drive selects here (null: a level number past the list - the probe ignores that drive).
+  /** The level a Drive selects here (null: a level number past the list - the probe refuses that drive unsupported).
    * @param {Drive | number} drive @returns {number | null} */
   pick(drive) {
     const d = Drive.of(drive);
     if (d.isDefault) return this.defaultLevel;
-    if (d.kind === DRIVE_KIND.level) return d.value < this.ma.length ? d.value : null;
+    return d.value < this.ma.length ? d.value : null;
+  }
+
+  /** The strongest level of about `ma` mA or less (level 0 when every level is stronger): the host's way to carry a
+   * strength between probes (host guide §18.5). @param {number} ma */
+  atMost(ma) {
     let best = 0;
-    this.ma.forEach((x, i) => { if (x <= d.value) best = i; });
-    return best;
+    this.ma.forEach((x, i) => { if (x <= ma) best = i; });
+    return Drive.level(best);
   }
 }
-
-/** read's answer: a level (0 / 1) per channel, and - from a probe that declares drive_levels - the level each channel is
- * driven at in mode 3 / 4 (null when it is not driven so); `drive` is null from a probe without them.
- * @typedef {{ levels: number[], drive: (number | null)[] | null }} GpioRead */
 
 /** One gpio set element: [channel, mode] or [channel, mode, drive] (drive: a Drive, a level number, or null: none).
  * @typedef {[number, number] | [number, number, Drive | number | null | undefined]} GpioElement */
@@ -107,14 +100,14 @@ export class DriveLevels {
  * .channels, and its position .index, TLV 0x40). The open-drain modes never drive a line high: the way to move a
  * target's reset line. An output element (mode 3 / 4) may carry a strength (`Drive`, or a level number) on a probe
  * that declares drive_levels (`driveLevels()`); without one it is driven at the idle item's strength, else the default.
+ * A level past drive_levels, or any drive on a probe without them, is refused unsupported (Unsupported).
  */
 export class Gpio extends Interface {
   static NAME = 'oep.fixture.gpio';
   static REVISION = 1;
   static SET = GPIO.op.set;
   static READ = GPIO.op.read;
-  static TAG_DRIVE = GPIO.tlv.set.drive;                     // set's drive TLV (non-critical, one per element)
-  static TAG_READ_DRIVE = GPIO.tlv.read_answer.drive;
+  static TAG_DRIVE = GPIO.tlv.set.drive;                     // set's drive TLV: index(u8) level(u8), one per element
   static TAG_MODES = GPIO.tlv.describe.modes;
   static TAG_DRIVE_LEVELS = GPIO.tlv.describe.drive_levels;
   static INPUT = MODE.input;
@@ -124,10 +117,10 @@ export class Gpio extends Interface {
   static OUTPUT_HIGH = MODE.output_high;
   static OPEN_DRAIN_LOW = MODE.open_drain_low;
   static OPEN_DRAIN_RELEASE = MODE.open_drain_release;
-  static INPUT_PULLUP_PULLDOWN = MODE.input_pullup_pulldown;   // both pulls: a weak mid level
 
-  /** n(u8) n x (channel(u16) mode(u8)), then a drive TLV (index kind value, non-critical) for each element that carries
-   * a third item (a Drive or a level number; null / undefined: none). @param {GpioElement[]} elements */
+  /** n(u8) n x (channel(u16) mode(u8)), then a drive TLV (index(u8) level(u8), critical: a strength that did not take
+   * would drive the line otherwise) for each element that carries a third item (a Drive or a level number; null /
+   * undefined: none). @param {GpioElement[]} elements */
   static setBody(elements) {
     const w = new Writer().u8(elements.length);
     for (const [ch, mode] of elements) w.u16(ch).u8(mode);
@@ -135,21 +128,18 @@ export class Gpio extends Interface {
     const tlvs = [];
     elements.forEach((e, i) => {
       const drive = e[2];
-      if (drive !== undefined && drive !== null) tlvs.push(m.tlv(Gpio.TAG_DRIVE, concat(Uint8Array.of(i), Drive.of(drive).pack())));
+      if (drive !== undefined && drive !== null) tlvs.push(m.tlv(Gpio.TAG_DRIVE, concat(Uint8Array.of(i), Drive.of(drive).pack()), true));
     });
     return concat(w.done(), ...tlvs);
   }
 
   /** [channel, mode] or [channel, mode, drive] elements, applied in order; drive only on mode 3 / 4 (anything else is
-   * rejected malformed). -> the answer's ignored list (core §2.3): one TAG_DRIVE per drive the probe did not apply (a
-   * level number past its list, an undefined kind, or a probe without drive_levels), at most 16 - a 0x00 last means
-   * more were ignored than listed (C-04, `Tail.moreIgnored`: any drive may not have taken). `readState` shows the
-   * level in force.
-   * @param {GpioElement[]} elements @returns {Promise<number[]>} */
+   * rejected malformed). A level past the probe's drive_levels, or a drive on a probe without them: rejected
+   * unsupported, nothing applied (fixture §1.1).
+   * @param {GpioElement[]} elements @returns {Promise<void>} */
   async set(elements) {
     try {
-      const r = await this.call(Gpio.SET, Gpio.setBody(elements));
-      return new m.Reader(r.payload).tail().ignored;
+      await this.call(Gpio.SET, Gpio.setBody(elements));
     } catch (e) {
       if (e instanceof Unavailable && !(e instanceof GpioUnavailable)) throw new GpioUnavailable(e.result);
       throw e;
@@ -180,18 +170,13 @@ export class Gpio extends Interface {
 
   /** -> one level (0 / 1) per channel. Lock-free. The answer is n(u8) n x level [TLV] (fixture §1).
    * @param {number[]} channels @returns {Promise<number[]>} */
-  async read(channels) { return (await this.readState(channels)).levels; }
-
-  /** -> the levels and, from a probe that declares drive_levels, the level each channel is driven at in mode 3 / 4
-   * (read's answer TLV drive, fixture §1.1; the level's mA is in `driveLevels()`). Lock-free.
-   * @param {number[]} channels @returns {Promise<GpioRead>} */
-  async readState(channels) {
+  async read(channels) {
     const w = new Writer().u8(channels.length);
     for (const c of channels) w.u16(c);
     const rd = new m.Reader((await this.call(Gpio.READ, w.done(), { locked: false })).payload);
     const levels = Array.from(rd.counted(1));
-    const raw = rd.tail().all(Gpio.TAG_READ_DRIVE)[0];
-    return { levels, drive: raw === undefined ? null : Array.from(raw, (b) => (b === NOT_DRIVEN ? null : b)) };
+    rd.tail();
+    return levels;
   }
 
   /** @param {number} channel */
@@ -215,13 +200,8 @@ export class Gpio extends Interface {
   }
 }
 
-/** oep.fixture.uart status (op 0x07, lock-free): what is in force - 'default' (115200 8N1, nothing set), 'session' (a
- * configure), 'item' (the settings' uart item), 'item_fallback' (the item's baud could not be made when the plan ran
- * the UART: the default applies) - and the baud / format it runs with. isDefault: default or item_fallback.
- * @typedef {{ configured: string, baud: number, format: number, isDefault: boolean }} UartStatus */
-
-/** The status's configured byte -> its name (registry uart_configured). @type {Record<number, string>} */
-export const UART_CONFIGURED = Object.fromEntries(Object.entries(UART.enum.uart_configured).map(([k, v]) => [v, k]));
+/** oep.fixture.uart status (op 0x07, lock-free): the baud and format the UART runs with now (fixture §2).
+ * @typedef {{ baud: number, format: number }} UartStatus */
 
 /**
  * oep.fixture.uart: one position stream per fn, like the console without a stream number. The stream exists while
@@ -248,9 +228,9 @@ export class FixtureUart extends PositionStream {
   }
 
   /**
-   * -> the actual baud (within 5 % of the one asked, else the probe refuses Unsupported). fmt (formatByte()) goes as a
-   * critical TLV: a probe that cannot set it refuses (Unsupported) rather than running 8N1; none leaves the default
-   * 8N1. An fn whose plan has neither RX nor TX is rejected Unavailable (cause 6).
+   * -> the actual baud (within 5 % of the one asked, else the probe refuses Unsupported). fmt (formatByte()) goes as
+   * its TLV (critical: this host's choice); a format the probe cannot set is refused Unsupported, never run as 8N1;
+   * none leaves the default 8N1. An fn whose plan has neither RX nor TX is rejected Unavailable (cause 6).
    * @param {number} baud @param {number} [fmt]
    */
   async configure(baud, fmt) {
@@ -262,13 +242,12 @@ export class FixtureUart extends PositionStream {
     return actual;
   }
 
-  /** configured, baud, format as the UART runs now (lock-free). @returns {Promise<UartStatus>} */
+  /** baud and format as the UART runs now (lock-free). @returns {Promise<UartStatus>} */
   async status() {
     const rd = new m.Reader((await this.call(FixtureUart.STATUS, new Uint8Array(), { locked: false })).payload);
-    const c = rd.u8(), baud = rd.u32(), format = rd.u8();
+    const baud = rd.u32(), format = rd.u8();
     rd.tail();
-    const configured = UART_CONFIGURED[c] ?? String(c);
-    return { configured, baud, format, isDefault: configured === 'default' || configured === 'item_fallback' };
+    return { baud, format };
   }
 }
 
@@ -302,23 +281,17 @@ export class FixtureUartIO extends StreamIO {
   async startPosition() { return (await this.uart.read(PositionStream.FROM_OLDEST, 0, 0)).start; }
 }
 
-/** @typedef {{ state: number, mode: number, armed: boolean, queued: number, rxFrames: number, txSlots: number, errors: number }} I2cStatus
- * state 0 not configured, 1 running; mode: the configure mode; armed: mode 1 waiting for a write; queued: frames
- * waiting for readRx; rxFrames: received so far; txSlots: preloaded and not yet read (mode 3); errors: overflows,
- * receive errors and unarmed writes dropped (u32). */
-
 /** @typedef {{ maxLength: number | null, maxClockHz: number | null, features: number, queueDepth: number | null }} TargetDeclarations
  * A fixture target's describe (fixture §3 / §4): maxLength (bytes a frame / transfer), maxClockHz (the verified bus
- * clock limit), features (bits; 0 when not declared), queueDepth (tag 0x40: frames / transfers the queue holds; i2c
- * mode 3 also the most unread preload slots). null: not declared. */
+ * clock limit), features (bits; 0 when not declared), queueDepth (tag 0x40: frames / transfers the queue holds;
+ * i2c-target: also the most unread preload slots). null: not declared. */
 /** @typedef {TargetDeclarations & { csSetupNs: number }} SpiTargetDeclarations
  * csSetupNs (tag 0x43, u32; fixture §4): CS active to the first SCK edge, in ns, for MISO's first bit to be sure; 0 when
  * not declared. */
-/** @typedef {TargetDeclarations & { maxStretchUs: number | null, pullupOhms: number | null }} I2cTargetDeclarations
+/** @typedef {TargetDeclarations & { maxStretchUs: number | null, internalPullups: boolean }} I2cTargetDeclarations
  * maxStretchUs (tag 0x41, u32): the largest stretchUs stretch() accepts; null when not declared (a probe declares it
- * exactly when its ops offer stretch). pullupOhms (tag 0x42, u32; fixture §3, P2-★3): the approximate resistance of the
- * pull-ups the probe enables on SDA / SCL while configured; null when it declares none (features bit2 clear): it then
- * enables none and the bus needs its own. */
+ * exactly when its ops offer stretch). internalPullups (features bit2; fixture §3): the probe enables pull-ups of its
+ * own on SDA / SCL while configured; without them the bus needs its own. */
 
 /** The describe of fixture target `iface` decoded (cached on the host like every describe).
  * @param {Interface} iface @returns {Promise<{ d: import('./catalog.js').Description, own: Map<number, Uint8Array> }>} */
@@ -338,46 +311,45 @@ const ownU32 = (own, tag) => { const v = own.get(tag); return v && v.length >= 4
 /** @param {m.Tail} tail @param {number} tag */
 const nsOf = (tail, tag) => { const v = tail.get(tag); return v && v.length >= 8 ? getU64(v) : null; };
 
+/** @typedef {{ state: number, queued: number, rxFrames: number, txSlots: number, errors: number }} I2cStatus
+ * state 0 not configured, 1 running; queued: frames waiting for readRx; rxFrames: frames queued since configure
+ * (overflows not counted); txSlots: preloadTx slots not read yet; errors: writes that overflowed or were over
+ * max_length (at most 1 a write). */
+
 /**
- * oep.fixture.i2c-target (fixture §3): the probe as an I2C target. Mode 1 fixed rx (armRx with the exact length),
- * 2 framed rx (a 1-byte length write, then the payload), 3 preloaded tx (slots the controller reads).
+ * oep.fixture.i2c-target (fixture §3): the probe as an I2C target at one address, one form: every controller write with
+ * data is one frame in the queue (readRx; cut at max_length, errors + 1), every controller read is answered from the
+ * preloadTx slots in order (0xFF when none is left). stretch (optional, `offers(I2cTarget.STRETCH)`) holds SCL after
+ * each byte.
  */
 export class I2cTarget extends Interface {
   static NAME = I2C.name;
   static REVISION = I2C.revision;
   static CONFIGURE = I2C.op.configure;
-  static ARM_RX = I2C.op.arm_rx;
   static READ_RX = I2C.op.read_rx;
   static PRELOAD_TX = I2C.op.preload_tx;
   static STATUS = I2C.op.status;
-  static RESET = I2C.op.reset;
   static STRETCH = I2C.op.stretch;
-  static MODE_FIXED_RX = I2C.enum.mode.fixed_rx;
-  static MODE_FRAMED_RX = I2C.enum.mode.framed_rx;
-  static MODE_PRELOADED_TX = I2C.enum.mode.preloaded_tx;
   static ROLE_SDA = I2C.enum.role.sda;
   static ROLE_SCL = I2C.enum.role.scl;
   static TAG_NS = I2C.tlv.read_rx_answer.ns;
   static TAG_QUEUE_DEPTH = I2C.tlv.describe.queue_depth;
   static TAG_MAX_STRETCH_US = I2C.tlv.describe.max_stretch_us;
-  static FEATURE_PRELOADED_TX = I2C.enum.features.preloaded_tx;
   static FEATURE_INTERNAL_PULLUPS = I2C.enum.features.internal_pullups;
-  static TAG_PULLUP_OHMS = I2C.tlv.describe.pullup_ohms;
 
   /** What the probe declares for this target (describe): maxLength, maxClockHz, features, queueDepth, maxStretchUs,
-   * pullupOhms. @returns {Promise<I2cTargetDeclarations>} */
+   * internalPullups. @returns {Promise<I2cTargetDeclarations>} */
   async declarations() {
     const { d, own } = await targetDescribe(this);
     const features = d.features ?? 0;
     return { maxLength: d.maxLength, maxClockHz: d.maxClockHz, features,
       queueDepth: ownU8(own, I2cTarget.TAG_QUEUE_DEPTH), maxStretchUs: ownU32(own, I2cTarget.TAG_MAX_STRETCH_US),
-      pullupOhms: features & I2cTarget.FEATURE_INTERNAL_PULLUPS ? ownU32(own, I2cTarget.TAG_PULLUP_OHMS) : null };
+      internalPullups: (features & I2cTarget.FEATURE_INTERNAL_PULLUPS) !== 0 };
   }
 
-  /** The pull-ups the probe enables on SDA / SCL while configured, in ohms (fixture §3, P2-★3); null when it declares
-   * none - the bus then needs its own. A host may warn that the probe's pull-ups shift the levels of a bus that has
-   * them. */
-  async pullupOhms() { return (await this.declarations()).pullupOhms; }
+  /** Whether the probe enables pull-ups of its own on SDA / SCL while configured (describe features bit2, fixture §3);
+   * without them the bus needs its own. */
+  async internalPullups() { return (await this.declarations()).internalPullups; }
 
   /** @type {bigint | null} when the probe received the last frame readRx gave (its clock, ns), when it says */
   lastNs = null;
@@ -390,17 +362,15 @@ export class I2cTarget extends Interface {
    * @type {ReadonlyArray<readonly [number, number]>} */
   static RESERVED_ADDRESSES = Object.freeze([Object.freeze(/** @type {const} */ ([0x00, 0x07])), Object.freeze(/** @type {const} */ ([0x78, 0x7f]))]);
 
-  /** @param {number} address  7 bits; 0x00-0x07 and 0x78-0x7F are the I2C specification's reserved addresses, which a
-   * probe refuses unsupported (fixture §3) - refused here (RangeError) before anything is sent. @param {number} mode */
-  async configure(address, mode) {
+  /** Answer at `address` (7 bits), the target made anew (the queue, the slots and the counts emptied; stretch kept).
+   * 0x00-0x07 and 0x78-0x7F are the I2C specification's reserved addresses, which a probe refuses unsupported (fixture
+   * §3) - refused here (RangeError) before anything is sent. @param {number} address */
+  async configure(address) {
     if (I2cTarget.RESERVED_ADDRESSES.some(([lo, hi]) => address >= lo && address <= hi)) {
       throw new RangeError(`I2C address 0x${address.toString(16).padStart(2, '0')} is reserved (0x00-0x07, 0x78-0x7F; fixture §3)`);
     }
-    await this.call(I2cTarget.CONFIGURE, Uint8Array.of(address, mode));
+    await this.call(I2cTarget.CONFIGURE, Uint8Array.of(address));
   }
-
-  /** @param {number} length */
-  async armRx(length) { await this.call(I2cTarget.ARM_RX, new Writer().u16(length).done()); }
 
   /** -> frames still queued after this one, the oldest frame (none: empty) and ns: when the probe received it (its
    * clock; TLV ns, else null; also this.lastNs). The answer is pending(u8) count(u16) data [TLV]. */
@@ -411,27 +381,23 @@ export class I2cTarget extends Interface {
     return { pending, data, ns: this.lastNs };
   }
 
-  /** -> the slots preloaded so far (u8, wraps). @param {Uint8Array} data */
+  /** One slot the controller's next read is answered from (1 to max_length bytes; at most queueDepth unread: then
+   * rejected unavailable cause 2). The answer is empty. @param {Uint8Array} data */
   async preloadTx(data) {
-    const rd = new m.Reader((await this.call(I2cTarget.PRELOAD_TX, concat(new Writer().u16(data.length).done(), data))).payload);
-    const slots = rd.u8();
-    rd.tail();
-    return slots;
+    await this.call(I2cTarget.PRELOAD_TX, concat(new Writer().u16(data.length).done(), data));
   }
 
   /** Lock-free. @returns {Promise<I2cStatus>} */
   async status() {
     const rd = new m.Reader((await this.call(I2cTarget.STATUS, new Uint8Array(), { locked: false })).payload);
-    const s = { state: rd.u8(), mode: rd.u8(), armed: rd.u8() !== 0, queued: rd.u8(), rxFrames: rd.u32(), txSlots: rd.u8(), errors: rd.u32() };
+    const s = { state: rd.u8(), queued: rd.u8(), rxFrames: rd.u32(), txSlots: rd.u8(), errors: rd.u32() };
     rd.tail();
     return s;
   }
 
-  async reset() { await this.call(I2cTarget.RESET); }
-
   /** Hold SCL low for stretchUs after each received byte (0 = off); an optional op, offered when the describe's ops set
    * it (`offers(I2cTarget.STRETCH)`; otherwise rejected unknown_operation). Above the
-   * declared maxStretchUs: Unsupported. Accepted in any state; configure and reset keep it, the plan's release clears it.
+   * declared maxStretchUs: Unsupported. Accepted in any state; configure keeps it, the plan's release clears it.
    * @param {number} stretchUs */
   async stretch(stretchUs) { await this.call(I2cTarget.STRETCH, new Writer().u32(stretchUs).done()); }
 }
@@ -449,7 +415,6 @@ export class SpiTarget extends Interface {
   static ARM = SPI.op.arm;
   static READ_RX = SPI.op.read_rx;
   static STATUS = SPI.op.status;
-  static RESET = SPI.op.reset;
   static ROLE_SCK = SPI.enum.role.sck;
   static ROLE_MOSI = SPI.enum.role.mosi;
   static ROLE_MISO = SPI.enum.role.miso;
@@ -509,6 +474,4 @@ export class SpiTarget extends Interface {
     rd.tail();
     return s;
   }
-
-  async reset() { await this.call(SpiTarget.RESET); }
 }

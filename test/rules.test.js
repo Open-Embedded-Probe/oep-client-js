@@ -19,7 +19,7 @@ import { Link, RESYNC_WAIT_MS } from '../src/link.js';
 import { connect } from '../src/open.js';
 import { planApply, take } from '../src/core.js';
 import { decodeDescription, packOps } from '../src/catalog.js';
-import { Wire, RiscvDm, StepError, TargetError, ATTACH_BUDGET_MS, SCAN_BUDGET_MS } from '../src/riscv.js';
+import { Wire, RiscvDm, StepError, TargetError } from '../src/riscv.js';
 import { I2cTarget } from '../src/fixture.js';
 import { SpeedRecord, memoryStore } from '../src/speedrecord.js';
 import { raiseSpeed, speedPort } from '../src/speed.js';
@@ -28,7 +28,7 @@ import { SERIAL_LINE, assertLines } from '../src/node/serial.js';
 import { openTcp } from '../src/node/index.js';
 import { tcpTransport } from '../src/node/tcp.js';
 import { usbTransport } from '../src/node/usb.js';
-import { haveFake, startFake } from './fake.js';
+import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 import { ScriptedHost, handlers, ok } from './scripted.js';
 import { KNOWN } from '../src/interfaces.js';
 
@@ -75,12 +75,12 @@ function scripted(respond = (req) => [result(req.corr, req.op === m.OP.confirm ?
 }
 
 /** @param {string[]} args @param {(hst: Host) => Promise<void>} body @param {'length' | 'cobs'} [framing] */
-async function withFake(args, body, framing = 'length') {
-  const fake = await startFake(args, framing);
-  const hst = await openTcp({ port: fake.port, framing });
+async function withBench(args, body, framing = 'length') {
+  const bench = await startVirtualBench(args, framing);
+  const hst = await openTcp({ port: bench.port, framing });
   try { await body(hst); } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 }
 
@@ -130,17 +130,16 @@ test('C-06: each outstanding request\'s wait starts again from the answer before
   await link.close();
 });
 
-test('C-06 / P2-★4: attach and scan wait their budgets', { skip: !haveFake }, () => withFake(['--profile', 'p4-bench'], async (hst) => {
+test('C-06: attach, scan and reset wait max_op_ms (debug §1, §4.3)', { skip: !haveVirtualBench }, () => withBench(['--profile', 'p4-bench'], async (hst) => {
   await hst.open(3000);
   const log = recording(hst);
   const w = await Wire.open(hst);
   const found = await w.scan();
   await w.attach({ pins: found[0].pins });
   const budgets = Object.fromEntries(log.filter((r) => r.fn === w.fn).map((r) => [r.op, r.expectMs]));
-  assert.deepEqual(budgets, { [Wire.SCAN]: SCAN_BUDGET_MS + ATTACH_BUDGET_MS, [Wire.ATTACH]: ATTACH_BUDGET_MS });
-  assert.deepEqual([SCAN_BUDGET_MS, ATTACH_BUDGET_MS], [500, 1000]);
-  assert.equal(await w.attachMs([7, 20]), 1000 + 20 + 700);        // + hold_ms + reset_settle_ms (debug §3, core §4.4)
-  assert.equal(await (await RiscvDm.on(hst, 1)).resetMs(), 700);   // reset: reset_settle_ms (debug §4.3)
+  assert.deepEqual(budgets, { [Wire.SCAN]: 10000, [Wire.ATTACH]: 10000 });   // the probe's max_op_ms (core §4.4)
+  assert.equal(await w.attachMs([7, 20]), 10000);                  // the reset TLV's hold within it too
+  assert.equal(await (await RiscvDm.on(hst, 1)).resetMs(), 10000);
   assert.equal(w.searchRetries, 0);
   await hst.end();
 }));
@@ -157,7 +156,7 @@ test('C-09: a node serial port opens 8N1 without flow control, DTR and RTS asser
 
 // ---- C-15 / C-05: confirm -----------------------------------------------------------------------------------------
 
-test('C-15: every later confirm asks for the revision in use; the refusal says the range', { skip: !haveFake }, () => withFake(['--profile', 'p4-bench'], async (hst) => {
+test('C-15: every later confirm asks for the revision in use; the refusal says the range', { skip: !haveVirtualBench }, () => withBench(['--profile', 'p4-bench'], async (hst) => {
   assert.deepEqual(hst.confirmRange(), [1, 1]);
   assert.equal((await hst.confirm()).revision, 1);
   const log = recording(hst);
@@ -183,11 +182,11 @@ test('C-15: the link\'s own confirms use the revision in use', async () => {
   assert.deepEqual([...sent[sent.length - 1].payload], [...m.CONFIRM_REQUEST, 2, 2]);
 });
 
-test('C-05: the confirm names the transport this host came on', { skip: !haveFake }, () => withFake(['--profile', 'p4-bench'], async (hst) => {
+test('C-05: the confirm names the transport this host came on', { skip: !haveVirtualBench }, () => withBench(['--profile', 'p4-bench'], async (hst) => {
   const where = /** @type {number} */ ((await hst.confirmed()).transport);
   assert.equal(typeof where, 'number');
   const { transports } = await (await import('../src/core.js')).probeInfo(hst);
-  assert.equal(transports.find((x) => x.index === where)?.kind, reg.CORE.enum.transport_kind.tcp);   // fake_serve's TCP listener
+  assert.equal(transports.find((x) => x.index === where)?.kind, reg.CORE.enum.transport_kind.tcp);   // virtual_bench_serve's TCP listener
 }));
 
 /** A Host that knows a describe, oep.probe.link as fn 10 with `link` ops (null: no oep.probe.link) and a confirm answer, and sends
@@ -227,9 +226,9 @@ test('C-24: the speed record keeps nothing under an x- unit_id', () => {
   assert.deepEqual(rec.lookup('/dev/ttyUSB0', 'fafe00000003'), { passed: [921600], failed: [] });
 });
 
-test('C-24: raiseSpeed records nothing for an x- unit_id', { skip: !haveFake }, async () => {
-  const fake = await startFake(['--profile', 'esp32-v003'], 'cobs');
-  const hst = await openTcp({ port: fake.port, framing: 'cobs', baudRate: 115200, timeoutMs: 1000 });
+test('C-24: raiseSpeed records nothing for an x- unit_id', { skip: !haveVirtualBench }, async () => {
+  const bench = await startVirtualBench(['--profile', 'esp32-v003'], 'cobs');
+  const hst = await openTcp({ port: bench.port, framing: 'cobs', baudRate: 115200, timeoutMs: 1000 });
   try {
     const D = reg.CORE.tlv.describe;
     const core = await (await import('../src/core.js')).describe(hst, 0);   // cached: the unit_id swapped for an x- one
@@ -244,7 +243,7 @@ test('C-24: raiseSpeed records nothing for an x- unit_id', { skip: !haveFake }, 
     await hst.end();
   } finally {
     await hst.link.close();
-    fake.stop();
+    bench.stop();
   }
 });
 
@@ -282,10 +281,10 @@ test('C-07: on TCP a pause inside a frame is read on; on vendor bulk it is a los
   assert.ok(bulk.sent.some((r) => r.op === m.OP.confirm));
 });
 
-test('C-07: the TCP transport says it keeps its boundaries', { skip: !haveFake }, async () => {
-  const fake = await startFake(['--profile', 'p4-bench']);
-  const t = await tcpTransport({ port: fake.port });
-  try { assert.equal(t.keepsBoundaries, true); } finally { await t.close(); fake.stop(); }
+test('C-07: the TCP transport says it keeps its boundaries', { skip: !haveVirtualBench }, async () => {
+  const bench = await startVirtualBench(['--profile', 'p4-bench']);
+  const t = await tcpTransport({ port: bench.port });
+  try { assert.equal(t.keepsBoundaries, true); } finally { await t.close(); bench.stop(); }
 });
 
 test('C-07: a resync waits 250 ms after the host\'s last write before its confirm', async () => {
@@ -325,7 +324,7 @@ test('PC-1: findLine takes the firmware labels as step (c); LINE_NAMES from the 
   assert.deepEqual([...config.LINE_NAMES], ['nrst', 'power_hi', 'power_lo']);
 });
 
-test('PC-1: findLine on a Host reads describe\'s labels', { skip: !haveFake }, () => withFake(['--profile', 'esp32-v003'], async (hst) => {
+test('PC-1: findLine on a Host reads describe\'s labels', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
   assert.equal(await config.findLine(hst, null, 'nrst'), 23);
 }));
 
@@ -347,7 +346,7 @@ test('C-22: text from an answer is shown without control characters', () => {
   assert.equal(m.validText(Uint8Array.of(0xff)), false);
 });
 
-test('C-22: the owner goes as valid text of at most 32 bytes, cut on a character', { skip: !haveFake }, () => withFake(['--profile', 'p4-bench'], async (hst) => {
+test('C-22: the owner goes as valid text of at most 32 bytes, cut on a character', { skip: !haveVirtualBench }, () => withBench(['--profile', 'p4-bench'], async (hst) => {
   assert.deepEqual([...ownerText('a\nb')], [...utf8('a?b')]);
   const raw = ownerText('日'.repeat(20));                           // 3 bytes each: cut on a character
   assert.equal(raw.length, 30);
@@ -358,7 +357,7 @@ test('C-22: the owner goes as valid text of at most 32 bytes, cut on a character
   await hst.end();
 }));
 
-test('C-18: the session id is random and never 0', { skip: !haveFake }, () => withFake(['--profile', 'p4-bench'], async (hst) => {
+test('C-18: the session id is random and never 0', { skip: !haveVirtualBench }, () => withBench(['--profile', 'p4-bench'], async (hst) => {
   const log = recording(hst);
   const ids = new Set();
   for (let i = 0; i < 10; i++) { await hst.open(3000, { force: true }); ids.add(hst.session); }
@@ -372,32 +371,24 @@ test('C-18: the session id is random and never 0', { skip: !haveFake }, () => wi
 
 // ---- C-04 / C-10 ------------------------------------------------------------------------------------------------------
 
-test('C-04: the ignored marker', () => {
-  let t = m.Tail.parse(Uint8Array.of(0x7f, 3, 0, 0x31, 0x32, 0x00));
-  assert.ok(t.moreIgnored && t.mayHaveIgnored(0x40) && t.mayHaveIgnored(0x31));
-  t = m.Tail.parse(Uint8Array.of(0x7f, 1, 0, 0x31));
-  assert.ok(!t.moreIgnored && t.mayHaveIgnored(0xb1) && !t.mayHaveIgnored(0x40));
-});
-
-test('C-04: more than 16 ignored TLVs come back as 15 and 0x00 (the fake), read as moreIgnored', { skip: !haveFake }, () => withFake(['--profile', 'p4-bench'], async (hst) => {
+test('C-04 gone: an unknown non-critical TLV is ignored without a trace, an unknown critical one refused (core §2.3)', { skip: !haveVirtualBench }, () => withBench(['--profile', 'p4-bench'], async (hst) => {
   await hst.open(3000);
   const tail = (/** @type {number} */ n) => Uint8Array.from(Array.from({ length: n }, (_, k) => [...m.tlv(0x30 + k, [])]).flat());
-  let t = m.Tail.parse((await hst.call(m.CORE_FN, m.OP.keepalive, tail(20))).payload);
-  assert.deepEqual(t.ignored, [...Array.from({ length: 15 }, (_, k) => 0x30 + k), 0x00]);
-  assert.ok(t.moreIgnored && t.mayHaveIgnored(0x43));
-  t = m.Tail.parse((await hst.call(m.CORE_FN, m.OP.keepalive, tail(16))).payload);
-  assert.equal(t.ignored.length, 16);
-  assert.ok(!t.moreIgnored && !t.mayHaveIgnored(0x40));
+  const r = await hst.call(m.CORE_FN, m.OP.keepalive, tail(20));
+  assert.equal(r.payload.length, 0);                                // no ignored list (0x7F) any more
+  await assert.rejects(hst.call(m.CORE_FN, m.OP.keepalive, m.tlv(0x30, [], true)), (e) => e instanceof Unsupported && e.tag === 0xb0);
+  assert.equal(/** @type {any} */ (m).TAG_IGNORED, undefined);
+  assert.equal(/** @type {any} */ (new m.Tail()).ignored, undefined);
   await hst.end();
 }));
 
 test('C-10: dump says what a probe must give and did not', async () => {
   const D = reg.CORE.tlv.describe;
   assert.deepEqual(dump.requiredMissing({ revision: 1, transport: 0 }, [[D.unit_id, utf8('u')], [D.transport, Uint8Array.of(0, 1)], [D.max_op_ms | 0x80, new Uint8Array(4)],
-    [D.discoverable, Uint8Array.of(0)], [reg.DESCRIBE_COMMON.ops, packOps([1, 2, 3])]]), []);
+    [reg.DESCRIBE_COMMON.ops, packOps([1, 2, 3])]]), []);
   assert.deepEqual(dump.requiredMissing({ revision: 1, transport: null }, []),
     ['confirm\'s transport TLV', 'describe of fn 0: unit_id', 'describe of fn 0: transport', 'describe of fn 0: max_op_ms',
-      'describe of fn 0: discoverable', 'describe of fn 0: ops']);
+      'describe of fn 0: ops']);                                    // no discoverable (core §7.5)
   const restart = { fn: 11, instance: 0, revision: 1, flags: 0, name: 'oep.probe.restart' };
   const ops = /** @type {[number, Uint8Array]} */ ([reg.DESCRIBE_COMMON.ops, packOps([1])]);
   assert.deepEqual(dump.interfaceMissing(restart, [ops]), ['describe of fn 11 (oep.probe.restart): restart_max_ms']);   // oep-if-restart §1
@@ -411,7 +402,7 @@ test('C-10: dump says what a probe must give and did not', async () => {
 
 // ---- the new answer TLVs in the API -------------------------------------------------------------------------------
 
-test('API: searchRetries, StepError.stepLeft, pullupOhms', async () => {
+test('API: searchRetries, StepError.stepLeft, internalPullups', async () => {
   const A = reg.WIRE_RVSWD.tlv.attach_answer;
   let stepTail = Uint8Array.of(0x01, 0, 0);
   let stepStatus = 0x04;
@@ -434,26 +425,29 @@ test('API: searchRetries, StepError.stepLeft, pullupOhms', async () => {
   const I2C = 9;
   const i2c = new ScriptedHost(handlers([]));
   i2c.fns.set('oep.fixture.i2c-target', I2C); i2c.revisions.set(I2C, 1);
-  i2c.describes.set(I2C, [[0x06, new Writer().u32(0b100).done()], [0x42, new Writer().u32(47000).done()]]);
+  i2c.describes.set(I2C, [[0x06, new Writer().u32(0b100).done()]]);
   const t = await I2cTarget.open(i2c);
-  assert.equal(await t.pullupOhms(), 47000);
-  i2c.describes.set(I2C, [[0x06, new Writer().u32(0).done()], [0x42, new Writer().u32(47000).done()]]);
-  assert.equal(await t.pullupOhms(), null);                         // features bit2 clear: it enables none
+  assert.equal(await t.internalPullups(), true);
+  i2c.describes.set(I2C, [[0x06, new Writer().u32(0).done()]]);
+  assert.equal(await t.internalPullups(), false);                  // features bit2 clear: it enables none
 });
 
-test('API: describe shows the capture mode with background, oep.probe.link\'s port_speed, the wires\' attach_writes_unbounded', { skip: !haveFake }, async () => {
-  await withFake(['--profile', 'p4-x035'], async (hst) => {
-    assert.match(dump.toText(await dump.collect(hst, 'oep.fixture.logic', true)), /mode: one-shot, answers while capturing, max \d+ samples x 1 segments/);
+test('API: describe shows the capture mode, channels and trigger, oep.probe.link\'s port_speed; no attach_writes_unbounded', { skip: !haveVirtualBench }, async () => {
+  await withBench(['--profile', 'p4-x035'], async (hst) => {
+    const text = dump.toText(await dump.collect(hst, 'oep.fixture.logic', true));
+    assert.match(text, /mode: one-shot, max \d+ samples x 1 segments/);
+    assert.match(text, /channels: 16\n/);
+    assert.match(text, /trigger: immediate, level, edge; pretrigger up to \d+/);
   });
-  await withFake(['--profile', 'esp32-v003'], async (hst) => {
+  await withBench(['--profile', 'esp32-v003'], async (hst) => {
     assert.match(dump.toText(await dump.collect(hst, 'oep.probe.link', true)), /ops: source, sink, port_speed/);
   });
-  for (const w of ['oep.wire.rvswd', 'oep.wire.swio', 'oep.wire.swd']) assert.equal(KNOWN[w].features[0], 'attach writes unbounded');
+  for (const w of ['oep.wire.rvswd', 'oep.wire.swio', 'oep.wire.swd']) assert.equal(KNOWN[w].features[0], undefined);
 });
 
 // ---- P2-○8 / P2-○9: capture ------------------------------------------------------------------------------------------
 
-test('P2-○8: capture configure sends mode, rate, trigger and pretrigger critical; the answer\'s samples hold', { skip: !haveFake }, () => withFake(['--profile', 'esp32-v003'], async (hst) => {
+test('P2-○8: capture configure sends mode, rate, trigger and pretrigger critical; the answer\'s samples hold', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
   await hst.open(3000);
   const cap = await capture.LogicCapture.open(hst);
   await planApply(hst, [[cap.fn, 0, 4]]);

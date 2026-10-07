@@ -6,6 +6,7 @@ import * as core from './core.js';
 import * as reg from './registry.js';
 import { NotOepProbe, UnitIdMismatch } from './errors.js';
 import { DEFAULT_CANDIDATES, leaseFor, raiseSpeed } from './speed.js';
+import { KeptSession } from './keptsession.js';
 
 /** The probing rule's wait for confirm's answer (transports §3, core §4.4: confirm sets no time, so 1000 ms). */
 export const PROBE_WAIT_MS = reg.TIMING.host_wait_add_ms;
@@ -15,7 +16,7 @@ export const PROBE_WAIT_MS = reg.TIMING.host_wait_add_ms;
  * device too - gets a confirm first, and nothing else until a valid answer (completed, the same corr, a
  * payload starting OEP!) came back. None: the link is closed and NotOepProbe thrown. Vendor bulk / HID: one confirm
  * and its one §5.2 resend, each waiting PROBE_WAIT_MS. A serial port (COBS) first runs Link.waitBootSpeed's confirms
- * (oep-if-link §3 host obligation 7: about 4 s at the boot speed, a raised rate a host that died left over going back),
+ * (transports §4: port_speed_idle_ms + host_wait_add_ms at the boot speed, a raised rate a host that died left over going back),
  * confirms only. TCP (a host-side broker, which opens the probe itself) keeps the link's timeout. On length frames
  * (vendor bulk, HID, TCP) the input is first read and discarded until quiet (transports §5).
  * @param {Link} link @param {Host} host @param {import('./link.js').Transport} transport
@@ -27,7 +28,7 @@ async function probe(link, host, transport) {
     if (transport.framing === 'cobs' && transport.kind === 'serial') await link.waitBootSpeed();
     else if (transport.kind !== 'tcp') link.timeoutMs = PROBE_WAIT_MS;
     // transports §5: the first confirm on a length-prefixed port waits for 50 ms of quiet input and for
-    // host_resync_wait_ms (250 ms) since this host last wrote there
+    // longer than probe_frame_gap_ms (250 ms) since this host last wrote there
     await link.beforeFirstConfirm();
     return await host.confirm();
   } catch (e) {
@@ -72,17 +73,26 @@ export async function checkUnitId(host, unitId) {
  * and no valid answer closes it (NotOepProbe); on a serial port (COBS) the first confirm is retried for about 4 s
  * (Link.waitBootSpeed): a raised rate a host that died left over goes back by then. `unitId`: the unit the device was
  * opened as (by its USB serial): fn 0's describe must say the same unit_id, else the link is closed (UnitIdMismatch).
- * A candidate above 500000 is the user's choice only (oep-if-link §3 obligation 7) and gets raiseSpeed's 1 s verify;
+ * A candidate above 500000 is the user's choice only (host guide §17) and gets raiseSpeed's 1 s verify;
  * the session is then taken with at least `leaseFor(candidates)` ms.
+ *
+ * `keepSession` (default true): the host keeps the id of the session it opens per probe (keptsession.js, keyed by
+ * unit_id; Node: a file under the user's cache directory or $OEP_SESSION_DIR, a browser: localStorage), and its first
+ * open ends the session a previous run left there (host guide §5: a probe keeps a session across a closed transport,
+ * transports §3) - so a host run again after a crash, a kill or a reload does not meet its own old lock. A
+ * keptsession.KeptStore: that place; false: nothing is read or written.
  * @param {import('./link.js').Transport} transport
- * @param {SpeedOptions & { timeoutMs?: number, leaseMs?: number, owner?: string, unitId?: string }} [opts]
+ * @param {SpeedOptions & { timeoutMs?: number, leaseMs?: number, owner?: string, unitId?: string,
+ *   keepSession?: boolean | import('./keptsession.js').KeptStore }} [opts]
  */
-export async function connect(transport, { timeoutMs = 3000, portSpeed, flows, verify, record, leaseMs = 3000, owner, unitId } = {}) {
+export async function connect(transport, { timeoutMs = 3000, portSpeed, flows, verify, record, leaseMs = 3000, owner, unitId,
+  keepSession = true } = {}) {
   const link = new Link(transport, { timeoutMs });
   await link.start();
   const host = new Host(link);
   await probe(link, host, transport);
   if (unitId) await checkUnitId(host, unitId);
+  if (keepSession) host.kept = new KeptSession(keepSession === true ? null : keepSession);
   if (portSpeed === true || (Array.isArray(portSpeed) && portSpeed.length)) {
     const candidates = portSpeed === true ? DEFAULT_CANDIDATES : portSpeed;
     await core.take(host, Math.max(leaseMs, leaseFor(candidates, { flows, verify })), { owner, exclusive: transport.kind === 'serial' });
