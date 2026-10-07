@@ -536,7 +536,16 @@ async function onClient(c) {
     const { segments, more } = await new LogicCapture(hst, 9, LogicCapture.NAME).segmentsPage(getU32(r.payload));
     assert.equal(more, false);
     if (name.includes('from_serial = serial_done')) assert.deepEqual(segments, []);   // common §1.3 paging 2
+    else if (name.includes('dropped segment')) {                      // capture §2.2: serial 2 is not handed out
+      assert.deepEqual(segments.map((s) => [s.serial, Number(s.position), s.samples, Number(s.startNs)]), [[0, 0, 8000, 5_000_000], [1, 1000, 8000, 13_000_000]]);
+    }
     else assert.deepEqual(segments.map((s) => [s.serial, Number(s.position), Number(s.samples), Number(s.startNs), s.generation]), [[0, 0, 1000, 5_000_000, 1]]);
+    return sent;
+  }
+  if (name.startsWith('logic status')) {                             // capture §2.2: state 6, error 2, flags bit0
+    const { hst, sent } = client(c);
+    const st = await new LogicCapture(hst, 9, LogicCapture.NAME).status();
+    assert.deepEqual([st.state, st.segmentsDone, Number(st.writePos), st.dropped, st.generation, st.errorName], [6, 2, 2000, true, 1, 'storage']);
     return sent;
   }
   if (name.startsWith('logic configure without rate')) return null;   // the client always sends mode and rate
@@ -720,7 +729,7 @@ const EVENTS = load('ops.json').events;
 
 test('events: each read with its generation; one of an earlier generation is passed over', async () => {
   const cap = await import('../src/capture.js');
-  assert.equal(EVENTS.length, 4);
+  assert.equal(EVENTS.length, 5);
   for (const c of EVENTS) {
     const frame = hx(c.event_hex);
     const fn = frame[1] | (frame[2] << 8);
@@ -735,9 +744,11 @@ test('events: each read with its generation; one of an earlier generation is pas
     } };
     const hst = /** @type {any} */ ({ link });
     const track = group ? new cap.CaptureGroup(hst, fn, cap.CaptureGroup.NAME) : new cap.LogicCapture(hst, fn, cap.LogicCapture.NAME);
-    track.generation = group ? 5 : 4;
+    track.generation = group ? 5 : c.name.includes('dropped') ? 1 : 4;
     const current = await track.nextEvent(null, 0);
-    if (c.name.includes('previous generation')) {
+    if (c.name.includes('dropped inside a segment')) {                // capture §2.2: reason 3, error 2
+      assert.deepEqual([e.kind, e.reason, e.error, current?.generation], [cap.EVENT_STOPPED, cap.STOPPED_REASON.error, 2, 1], c.name);
+    } else if (c.name.includes('previous generation')) {
       assert.deepEqual([e.kind, e.reason, current, track.staleEvents], [cap.EVENT_STOPPED, cap.STOPPED_REASON.host, null, 1], c.name);
     } else if (group && e.kind === cap.GROUP_EVENT_TRIGGERED) {
       assert.deepEqual([e.triggerFn, Number(e.triggerNs), current?.generation], [9, 7_050_000, 5], c.name);

@@ -607,3 +607,33 @@ test('logic_layout.json: any w (1-128), a sample may cross a byte boundary (capt
     assert.equal(lc.cfg.bytes, data.length, v.name);
   }
 });
+
+test('data dropped inside a segment: not handed out, the track stops in error (capture §2.2)', opts, async () => {
+  const bench = await startVirtualBench();
+  const hst = await openTcp({ port: bench.port });
+  try {
+    await hst.open(3000);
+    const lc = await c.LogicCapture.open(hst);
+    await planApply(hst, [[lc.fn, 0, 20]]);
+    await lc.configure({ rate: 1000, mode: c.REPEAT, samples: 8, segments: 8 });   // a segment every 8 ms
+    await lc.subscribe();
+    await lc.start();
+    await new Promise((r) => setTimeout(r, 30));
+    bench.send(`capture-overflow ${lc.fn}`);                             // the virtual bench's ring overflows
+    let st = await lc.status();
+    for (let i = 0; i < 100 && st.state !== c.STATE.error; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      st = await lc.status();
+    }
+    assert.deepEqual([st.state, st.dropped, st.errorName], [c.STATE.error, true, 'storage']);
+    const segs = await lc.segments();
+    assert.equal(segs.length, st.segmentsDone);                          // only the finished ones
+    assert.equal(st.writePos, BigInt(segs.length) * BigInt(lc.cfg.bytes)); // write_pos at the dropped one's start
+    const stopped = await lc.nextEvent([c.EVENT_STOPPED], 2000);
+    assert.deepEqual([stopped?.reason, stopped?.error], [c.STOPPED_REASON.error, 2]);
+    await assert.rejects(lc.wait(), /storage/);
+  } finally {
+    await hst.link.close();
+    bench.stop();
+  }
+});
