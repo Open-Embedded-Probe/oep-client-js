@@ -179,7 +179,7 @@ The wire is oep-spec's 2026-10-06 simplification of the zero-base rewrite of 202
 session_id, one TLV form, sequences without element lengths, closed fixed forms, the `ops` tag, no resume; see the
 changelog), with the 2026-10-06 structure (the nameless core, the oep.probe interfaces, notifications per interface).
 Tested against oep-client-python's virtual bench (a probe, the targets behind it and the fixture wiring, modelled after
-the real jigs: `python -m oep_client.virtual_bench_serve`) and scripted devices (331 tests, oep-spec's test
+the real jigs: `python -m oep_client.virtual_bench_serve`) and scripted devices (348 tests, oep-spec's test
 vectors among them, sessions.json, ops.json and ops_encoding.json included); the browser transports, DFU and the page are not yet checked on
 hardware.
 
@@ -204,7 +204,7 @@ and WebHID need a Chromium browser (Chrome, Edge) and HTTPS.
 
 ```sh
 npm install
-npm test            # needs python -m pip install oep-client-python (the virtual bench); test/vectors are oep-spec's
+npm test            # explicit virtual backend setup: docs/testing.md
 npm run typecheck
 npm run serve       # the page at http://localhost:4173/
 ```

@@ -17,12 +17,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      # the virtual bench the tests talk to over TCP (oep-client-python's virtual_bench_serve). The tests follow oep-client-python's
-      # main (this client and the virtual bench move together), so take it from git, not from the last PyPI release
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install "oep-client-python @ git+https://github.com/Open-Embedded-Probe/oep-client-python@main"
+      - uses: ./.github/actions/setup-virtual-bench
       - run: npm ci
       - run: npm run check
       - run: npm run build

@@ -157,7 +157,7 @@ wire は oep-spec の 2026-10-01 のゼロベース見直しを 2026-10-06 に�
 TLV の形 1 つ、要素に長さを置かない並び、閉じた固定の形、`ops` tag、再開なし。変更履歴を参照）に、2026-10-06 の構造（名前の
 無い本体、oep.probe のインターフェース、インターフェースごとの通知）を加えたもの。
 oep-client-python の仮想ベンチ（probe とその先の target、治具の配線を実際の治具に合わせて作ったもの:
-`python -m oep_client.virtual_bench_serve`）と台本のデバイスで試しています（331 件。oep-spec の試験ベクタを含み、sessions.json、
+`python -m oep_client.virtual_bench_serve`）と台本のデバイスで試しています（348 件。oep-spec の試験ベクタを含み、sessions.json、
 ops.json、ops_encoding.json も）。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
 
 v1 の凍結までは仕様が壊れることがあり、この package は probe の firmware
@@ -181,7 +181,7 @@ Chromium 系のブラウザ（Chrome、Edge）と HTTPS が要ります。
 
 ```sh
 npm install
-npm test            # python -m pip install oep-client-python（仮想ベンチ）が要る。test/vectors は oep-spec のもの
+npm test            # explicit virtual backend setup: docs/testing.ja.md
 npm run typecheck
 npm run serve       # http://localhost:4173/ でページ
 ```

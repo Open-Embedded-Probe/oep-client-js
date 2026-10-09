@@ -91,3 +91,5 @@ git push --follow-tags
 - The [web page](https://open-embedded-probe.github.io/oep-client-js/) shows the new version.
 
 Never overwrite a broken version. Fix it and publish a new patch version.
+
+For every release check, set up the [pinned virtual test workspace](testing.md). CI, Pages and Release require the same backend; missing dependencies are preparation errors.

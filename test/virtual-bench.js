@@ -1,20 +1,20 @@
 // @ts-check
 // oep-client-python's virtual bench (python -m oep_client.virtual_bench_serve) over TCP, for the tests: a probe, the
 // targets behind it and the fixture wiring, modelled after the real jigs. OEP_PYTHON names the Python that has
-// oep-client-python (default: its sibling checkout's .venv, else python3); without it the tests that need the virtual
-// bench are skipped.
+// oep-client-python (default: python3); no sibling checkout is searched. An explicit OEP_PYTHON or
+// OEP_REQUIRE_VIRTUAL_BENCH=1 makes a missing backend a preparation error instead of a skip.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const sibling = resolve(here, '..', '..', 'oep-client-python', '.venv', 'bin', 'python');
-export const PYTHON = process.env.OEP_PYTHON ?? (existsSync(sibling) ? sibling : 'python3');
+export const PYTHON = process.env.OEP_PYTHON ?? 'python3';
 
 export const haveVirtualBench =
   spawnSync(PYTHON, ['-c', 'import oep_client.virtual_bench_serve'], { stdio: 'ignore' }).status === 0;
+if (!haveVirtualBench && (process.env.OEP_PYTHON !== undefined || process.env.OEP_REQUIRE_VIRTUAL_BENCH === '1')) {
+  throw new Error(`Required virtual bench is unavailable in ${PYTHON}; install the test workspace and set OEP_PYTHON`);
+}
 
 /** A fresh directory for the kept session ids (keptsession.js, $OEP_SESSION_DIR): no test keeps them in the user's cache
  * directory, and each virtual bench starts with none kept (a host run again on it is a test's own doing). */

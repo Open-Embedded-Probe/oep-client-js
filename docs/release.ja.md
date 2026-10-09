@@ -88,3 +88,5 @@ git push --follow-tags
 - [Web ページ](https://open-embedded-probe.github.io/oep-client-js/) に、新しい版が出ていること。
 
 壊れた版を上書きしてはいけません。直して、新しい patch の版を出します。
+
+リリース確認では[固定済みの仮想 test workspace](testing.ja.md)を明示します。CI、Pages、Release は同じ仮想依存を必須とし、準備不足での skip を成功扱いしません。
