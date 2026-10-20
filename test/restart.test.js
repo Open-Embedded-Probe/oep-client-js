@@ -1,16 +1,16 @@
 // @ts-check
-// oep.probe.restart's restart (oep-spec interfaces/oep-if-restart, op 0x01; the interface is optional) against
+// oep.probe.restart's restart (oep-spec interfaces/oep-if-restart; the interface is optional) against
 // oep-client-python's virtual bench: the op answers completed success with no payload and the probe restarts after it
 // (no_session for the old session, a new boot_id in confirm); session_id 0 is refused session_required; a probe that
 // lists no oep.probe.restart gets nothing sent; Host.restartProbe waits and confirms the new boot_id, on the link it has
-// or on one opened again; restart_max_ms is the interface's describe 0x40.
+// or on one opened again; restart_max_ms is the interface's describe restart_max_ms.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as reg from '../src/registry.js';
 import * as m from '../src/message.js';
 import * as core from '../src/core.js';
 import { NoSession, OepError, Rejected } from '../src/errors.js';
-import { RESTART_AFTER_ANSWER_MS, RESTART_WAIT_MS } from '../src/host.js';
+import { RESTART_AFTER_ANSWER_MS, RESTART_EXTERNAL_MS, RESTART_WAIT_MS } from '../src/host.js';
 import { Link } from '../src/link.js';
 import { openTcp, tcpTransport } from '../src/node/index.js';
 import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
@@ -22,14 +22,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** @param {unknown} e */
 const reason = (e) => (e instanceof Rejected ? e.result.detail : null);
 
-test('the registry: restart is oep.probe.restart op 0x01, needs the lock, restart_after_answer_ms 100; fn 0 has none', () => {
-  assert.equal(core.RESTART_NAME, 'oep.probe.restart');
-  assert.equal(RESTART, 0x01);
-  assert.equal(core.RESTART, 0x01);
+test('the registry: restart is oep.probe.restart\'s, needs the lock; fn 0 has none', () => {
+  assert.equal(core.RESTART_NAME, reg.PROBE_RESTART.name);
+  assert.equal(core.RESTART, RESTART);
   assert.ok(!/** @type {Set<number>} */ (reg.PROBE_RESTART.lock_free).has(RESTART));
-  assert.equal(reg.PROBE_RESTART.tlv.describe.restart_max_ms, 0x40);
   assert.ok(!('restart' in m.OP) && !('restart_max_ms' in reg.CORE.tlv.describe));   // the core keeps only what is mandatory
-  assert.equal(RESTART_AFTER_ANSWER_MS, 100);
+  assert.ok(RESTART_AFTER_ANSWER_MS > 0);
 });
 
 test('restart: the answer, then no_session for the old session and a new boot_id', { skip }, async () => {
@@ -152,32 +150,33 @@ test('restart_max_ms: oep.probe.restart\'s describe declares it (2000 on the vir
   }
 });
 
-test('restartProbe waits restart_max_ms by default, then the probe is gone', { skip }, async () => {
+test('restartProbe waits restart_max_ms and the outside\'s time by default, then the probe is gone', { skip }, async () => {
   const bench = await startVirtualBench(['--profile', 'p4-x035']);
   const hst = await openTcp({ port: bench.port });
   try {
     await hst.open(3000);
     const reopen = async () => { throw new Error('no device'); };   // the probe never comes back
+    const window = /** @type {number} */ (await core.restartMaxMs(hst)) + RESTART_EXTERNAL_MS;
     const start = performance.now();
     await assert.rejects(hst.restartProbe({ reopen }), /no device/);
     const took = performance.now() - start;
-    assert.ok(took >= 2000 && took < 5000, `gave up after ${took} ms, not restart_max_ms 2000`);
+    assert.ok(took >= window && took < window + 3000, `gave up after ${took} ms, not restart_max_ms + ${RESTART_EXTERNAL_MS}`);
   } finally {
     try { await hst.link.close(); } catch { /* closed by restartProbe */ }
     bench.stop();
   }
 });
 
-test('restartProbe cuts a longer waitMs to restart_max_ms (host guide §5.2)', { skip }, async () => {
+test('restartProbe takes a waitMs given as it is (host guide §5.2: the reopen\'s deadline is the host\'s)', { skip }, async () => {
   const bench = await startVirtualBench(['--profile', 'p4-x035']);
   const hst = await openTcp({ port: bench.port });
   try {
     await hst.open(3000);
     const reopen = async () => { throw new Error('no device'); };
     const start = performance.now();
-    await assert.rejects(hst.restartProbe({ reopen, waitMs: 8000 }), /no device/);
+    await assert.rejects(hst.restartProbe({ reopen, waitMs: 3000 }), /no device/);
     const took = performance.now() - start;
-    assert.ok(took >= 2000 && took < 5000, `gave up after ${took} ms, not restart_max_ms 2000`);
+    assert.ok(took >= 3000 && took < 6000, `gave up after ${took} ms, not the 3000 ms given`);
   } finally {
     try { await hst.link.close(); } catch { /* closed by restartProbe */ }
     bench.stop();

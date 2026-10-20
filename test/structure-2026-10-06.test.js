@@ -98,7 +98,7 @@ test('a completed restart on oep.probe.restart\'s fn takes a raised link back to
 });
 
 test('plan_apply / plan_release / restart go to the fn list gives their interface; none listed: OepError, nothing sent', async () => {
-  const handlers = new Map([['10:1', () => ok()], ['10:2', () => ok()], ['11:1', () => ok()]]);
+  const handlers = new Map([[`10:${core.PLAN_APPLY}`, () => ok()], [`10:${core.PLAN_RELEASE}`, () => ok()], [`11:${core.RESTART}`, () => ok()]]);
   const hst = new ScriptedHost(handlers);
   hst.fns.set(core.PLAN_NAME, 10);
   hst.fns.set(core.RESTART_NAME, 11);
@@ -106,11 +106,12 @@ test('plan_apply / plan_release / restart go to the fn list gives their interfac
   await core.planApply(hst, [[3, 1, 20]]);
   await core.planRelease(hst, [3]);
   await hst.requestRestart();
-  assert.deepEqual(hst.log.map(([fn, op]) => [fn, op]), [[10, 1], [10, 2], [11, 1]]);
+  assert.deepEqual(hst.log.map(([fn, op]) => [fn, op]), [[10, core.PLAN_APPLY], [10, core.PLAN_RELEASE], [11, core.RESTART]]);
   const [, , apply] = hst.log[0];
-  assert.deepEqual([...apply], [0x10, 5, 0, 3, 0, 1, 20, 0]);  // role_assignment, sent plain (oep-if-plan §2.1, core §2.3)
+  // role_assignment, sent plain (oep-if-plan §2.1, core §2.3)
+  assert.deepEqual([...apply], [...m.tlv(reg.PROBE_PLAN.tlv.plan_apply.role_assignment, Uint8Array.of(3, 0, 1, 20, 0))]);
   assert.deepEqual([...hst.log[1][2]], [1, 3, 0]);
-  const none = new ScriptedHost(new Map([['0:2', () => ok([0, 0, 0])]]));   // list: total 0, count 0
+  const none = new ScriptedHost(new Map([[`0:${m.OP.list}`, () => ok([0, 0, 0])]]));   // list: total 0, count 0
   none.session = 7;
   await assert.rejects(core.planApply(none, [[3, 1, 20]]), (e) => e instanceof OepError && /oep\.probe\.plan/.test(e.message));
   await assert.rejects(none.requestRestart(), (e) => e instanceof OepError && /oep\.probe\.restart/.test(e.message));
@@ -121,12 +122,12 @@ test('plan_apply / plan_release / restart go to the fn list gives their interfac
 
 test('dump: fn 0\'s row is the core with fn 0\'s op names; an ops outside core §7.4 shows as unusable', () => {
   const tlvs = /** @type {[number, Uint8Array][]} */ ([[m.TAG_OPS, packOps(Object.values(m.OP))], [reg.CORE.tlv.describe.max_op_ms, new Writer().u32(1000).done()]]);
-  const coreOffer = { entry: { fn: 0, instance: 0, revision: 1, flags: 0, name: '' }, description: decodeDescription(tlvs), tlvs };
+  const coreOffer = { entry: { fn: 0, instance: 0, revision: 1, name: '' }, description: decodeDescription(tlvs), tlvs };
   const row = dump.describeOffer(coreOffer);
   assert.deepEqual(row.ops, Object.entries(m.OP).sort((a, b) => a[1] - b[1]).map(([k]) => k));
   assert.equal(row.declares?.['max op ms'], '1000');
   const bad = /** @type {[number, Uint8Array][]} */ ([[m.TAG_OPS, Uint8Array.of(0xf9, 0x01)]]);   // a bit past op 0xFF
-  const r = dump.describeOffer({ entry: { fn: 3, instance: 0, revision: 1, flags: 0, name: 'oep.fixture.gpio' }, description: decodeDescription(bad), tlvs: bad });
+  const r = dump.describeOffer({ entry: { fn: 3, instance: 0, revision: 1, name: 'oep.fixture.gpio' }, description: decodeDescription(bad), tlvs: bad });
   assert.match(/** @type {string} */ (r.unusable), /past op 0xff/);
   const text = dump.toText({ revision: 1, maxFrame: 1024, core: coreOffer, offers: [], requests: { confirm: 1, list: 1, describe: 1 }, missing: [] });
   assert.match(text, /\ncore {9}fn 0 {3}\(no name; the probe itself\)\n/);

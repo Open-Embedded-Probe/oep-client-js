@@ -105,12 +105,14 @@ test('the probe skips an unknown long non-critical TLV without a trace and refus
     await hst.request(0, m.OP.end, new Uint8Array(), { session: 0x1234 });                    // the lock free again: an
     await assert.rejects(hst.request(0, m.OP.open, Uint8Array.from([...open, 0x21, 5, 0, 9]), { session: 0x1235 }),   // open
       (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);                       // a len past the end
-    // 0x00 and 0x7F are never tags (core §2.2): with bit 7, an unknown critical tag (unsupported, as received)
-    await assert.rejects(hst.request(0, m.OP.open, Uint8Array.from([...open, 0x80, 0, 0]), { session: 0x1236 }),
-      (e) => e instanceof Unsupported && e.result.payload[0] === 0x80);
-    await assert.rejects(hst.request(0, m.OP.open, Uint8Array.from([...open, 0xff, 0, 0]), { session: 0x1237 }),
-      (e) => e instanceof Unsupported && e.result.payload[0] === 0xff);
-    assert.throws(() => m.tlv(0x7f, []), RangeError);                                         // never sent by this host
+    // TLV number 0 is never a TLV (core §2.2): malformed, with bit 7 too; a named extension (0x7F) whose name passes
+    // its value is malformed, critical or not
+    const zero = m.TAG_FIXED, named = m.TAG_NAMED_EXTENSION;
+    await assert.rejects(hst.request(0, m.OP.open, Uint8Array.from([...open, zero | m.TAG_CRITICAL, 0, 0]), { session: 0x1236 }),
+      (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);
+    await assert.rejects(hst.request(0, m.OP.open, Uint8Array.from([...open, named | m.TAG_CRITICAL, 0, 0]), { session: 0x1237 }),
+      (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);
+    assert.throws(() => m.tlv(zero, []), RangeError);                                         // never sent by this host
     const tlvs = await describe(hst, 0);
     assert.ok(tlvs.some(([tag]) => (tag & 0x7f) === reg.CORE.tlv.describe.max_op_ms));
   } finally {
@@ -145,7 +147,7 @@ test('a lapsed lease is no_session, never resumed: the host opens anew (core §6
   }
 });
 
-test('subscribe is the emitting fn\'s own op 0x30 (min_bytes u16, max_delay_ms u32, no target fn); unsubscribe 0x32; gpio has neither', { skip: !haveVirtualBench }, async () => {
+test('subscribe is the emitting fn\'s own op (min_bytes u16, max_delay_ms u32, no target fn); unsubscribe too; gpio has neither', { skip: !haveVirtualBench }, async () => {
   const bench = await startVirtualBench();
   const hst = await openTcp({ port: bench.port });
   try {
@@ -157,16 +159,16 @@ test('subscribe is the emitting fn\'s own op 0x30 (min_bytes u16, max_delay_ms u
     hst.link.send = (b, o) => { sent.push(b); return send(b, o); };
     await hst.subscribe(logic, 1024, 100);
     const sub = m.Request.unpack(sent[0]);
-    assert.deepEqual([sub.fn, sub.op, [...sub.payload]], [logic, 0x30, [0x00, 0x04, 100, 0, 0, 0]]);
+    assert.deepEqual([sub.fn, sub.op, [...sub.payload]], [logic, m.OP_SUBSCRIBE, [0x00, 0x04, 100, 0, 0, 0]]);
     assert.ok(hst.subscriptions.has(logic));
     await hst.unsubscribe(logic);
     const unsub = m.Request.unpack(sent[1]);
-    assert.deepEqual([unsub.fn, unsub.op, unsub.payload.length], [logic, 0x32, 0]);
+    assert.deepEqual([unsub.fn, unsub.op, unsub.payload.length], [logic, m.OP_UNSUBSCRIBE, 0]);
     await hst.unsubscribe(logic);                                                             // nothing subscribed: ok
     const gpio = await find(hst, 'oep.fixture.gpio');
     assert.equal(await offers(hst, gpio, m.OP_SUBSCRIBE), false);                             // sends no notifications
     await assert.rejects(hst.subscribe(gpio), (e) => e instanceof Rejected && e.result.detail === m.REJECT.unknown_operation);
-    await assert.rejects(hst.subscribe(0), (e) => e instanceof Rejected && e.result.detail === m.REJECT.unknown_operation);   // fn 0 sends none
+    await assert.rejects(hst.subscribe(0), RangeError);                                       // fn 0 sends none: its 0x01 is its own op
     await hst.end();
   } finally {
     await hst.link.close();

@@ -8,7 +8,7 @@
 // Every answer is a fixed part, a counted list or length-prefixed data, then TLVs the host skips (core §2.3).
 
 import * as reg from './registry.js';
-import { Writer, concat, getU16, utf8 } from './bytes.js';
+import { Writer, concat, getU16, text, utf8 } from './bytes.js';
 import * as m from './message.js';
 import { Failed, Timeout } from './errors.js';
 import { Interface, describe } from './core.js';
@@ -31,21 +31,29 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * @typedef {{ start: bigint, more: boolean, gap: boolean, data: Uint8Array, tail: m.Tail }} Chunk
  */
 
-/** One row of the console's streams answer (oep-if-console §1): the stream, its connection and mechanism, who uses it
- * (bit0 a host session, bit1 a slot) and whether it is open (0) or closed but still readable (1).
- * @typedef {{ stream: number, connection: number, mechanism: number, users: number, state: number, open: boolean }} StreamInfo */
+/** One row of the console's streams answer (oep-if-console §1): a live stream, its connection and mechanism (its name in
+ * the probe's list, core §7.7; a number the list lacks as it came).
+ * @typedef {{ stream: number, connection: number, mechanism: string | number }} StreamInfo */
 
 /** serial u32, position u64, kind u8, time_ns u64, detail u8 (common §1.3) */
 export const MARK_BYTES = 22;
+/** The common mark kinds (lost 1, clear 2, host 3) and the console's own (reset 0x40, restart 0x41; console §2).
+ * @type {Record<string, number>} */
+export const MARK_KIND = { ...COMMON.mark_kind, ...CON.enum.mark_kind };
 /** Mark kind -> its name as the spec writes it (link-lost, ...). @type {Record<number, string>} */
-export const MARK_NAMES = Object.fromEntries(Object.entries(COMMON.mark_kind).map(([k, v]) => [v, k.replace(/_/g, '-')]));
-export const MARK_KIND = COMMON.mark_kind;
-/** The mark details by kind name (registry common.enum.mark_detail_*): reset, restart, lost, closed.
- * @type {Record<string, Record<string, number>>} */
-export const MARK_DETAIL = Object.fromEntries(Object.entries(COMMON).filter(([k]) => k.startsWith('mark_detail_'))
-  .map(([k, v]) => [k.slice('mark_detail_'.length), v]));
+export const MARK_NAMES = Object.fromEntries(Object.entries(MARK_KIND).map(([k, v]) => [v, k.replace(/_/g, '-')]));
+/** The mark details by kind name (registry common / console enum mark_detail_*): the common ones, then the console's
+ * (reset, restart, lost's target_timeout). @type {Record<string, Record<string, number>>} */
+export const MARK_DETAIL = {};
+for (const enums of [COMMON, CON.enum]) {
+  for (const [k, v] of Object.entries(enums)) {
+    if (k.startsWith('mark_detail_')) {
+      const kind = k.slice('mark_detail_'.length);
+      MARK_DETAIL[kind] = { ...(MARK_DETAIL[kind] ?? {}), .../** @type {Record<string, number>} */ (v) };
+    }
+  }
+}
 export const READ_FLAGS = COMMON.read_flags;
-export const STREAM_STATE = CON.enum.stream_state;
 
 /** read / marks / clear / mark / write of a position stream (console §1, fixture.uart §2, common §1). */
 export class PositionStream extends Interface {
@@ -58,6 +66,9 @@ export class PositionStream extends Interface {
   static FROM_OLDEST = COMMON.read_from.oldest;
   static FROM_NOW = COMMON.read_from.now;
   static FROM_MARK = COMMON.read_from.last_mark;
+
+  /** The op numbers of this stream's interface (each interface numbers its own: console, fixture.uart). */
+  get streamOps() { return /** @type {typeof PositionStream} */ (this.constructor); }
 
   /** What goes in front of every stream op (the console's stream number; the UART: nothing).
    * @returns {Uint8Array} */
@@ -73,7 +84,7 @@ export class PositionStream extends Interface {
    */
   async read(start = PositionStream.FROM_OLDEST, arg = 0, maximum = 1000) {
     const body = new Writer().u8(start).u64(arg).u16(maximum).done();
-    const rd = new m.Reader((await this.call(PositionStream.READ, this.streamBody(body), { locked: false })).payload);
+    const rd = new m.Reader((await this.call(this.streamOps.READ, this.streamBody(body), { locked: false })).payload);
     const pos = rd.u64(), flags = rd.u8();
     const data = rd.counted(2);
     return { start: pos, more: !!(flags & READ_FLAGS.more), gap: !!(flags & READ_FLAGS.gap), data, tail: rd.tail() };
@@ -87,7 +98,7 @@ export class PositionStream extends Interface {
    * @param {number} fromSerial @returns {Promise<{ marks: Mark[], more: boolean }>} */
   async marksPage(fromSerial = 0) {
     const body = new Writer().u32(fromSerial).done();
-    const rd = new m.Reader((await this.call(PositionStream.MARKS, this.streamBody(body), { locked: false })).payload);
+    const rd = new m.Reader((await this.call(this.streamOps.MARKS, this.streamBody(body), { locked: false })).payload);
     const more = rd.u8(), count = rd.u8();
     /** @type {Mark[]} */
     const marks = [];
@@ -111,18 +122,19 @@ export class PositionStream extends Interface {
     }
   }
 
-  async clear() { await this.call(PositionStream.CLEAR, this.streamPrefix()); }
+  async clear() { await this.call(this.streamOps.CLEAR, this.streamPrefix()); }
 
   /** A host mark (kind host, detail = value). @param {number} value */
-  async mark(value) { await this.call(PositionStream.MARK, this.streamBody(Uint8Array.of(value & 0xff))); }
+  async mark(value) { await this.call(this.streamOps.MARK, this.streamBody(Uint8Array.of(value & 0xff))); }
 
   /** -> bytes accepted: what went into the probe's send queue from data's start, min(count, its free space) (common
    * §1.4; delivery is not implied) - a console's queue is the probe's own size (not declared), handed to the target 2
-   * (dmseq) or 3 (DMDATA) bytes at a time; SDI takes nothing (console §2, §3). Fewer than asked is completed partial, not
-   * an error; nothing accepted (the queue full) is completed failed (thrown as Failed): StreamIO.write loops on it.
+   * (dmseq) or 3 (DMDATA) bytes at a time; an SDI stream's write is unsupported (console §1, §3). Fewer than asked is
+   * completed partial, not an error; nothing accepted (the queue full) is completed failed (thrown as Failed):
+   * StreamIO.write loops on it.
    * @param {Uint8Array} data */
   async write(data) {
-    const r = await this.request(PositionStream.WRITE, this.streamBody(concat(new Writer().u16(data.length).done(), data)));
+    const r = await this.request(this.streamOps.WRITE, this.streamBody(concat(new Writer().u16(data.length).done(), data)));
     if (r.resolution !== m.COMPLETED || (r.detail !== m.SUCCESS && r.detail !== m.PARTIAL)) throw new Failed(r);
     const rd = new m.Reader(r.payload);
     const accepted = rd.u16();
@@ -132,11 +144,12 @@ export class PositionStream extends Interface {
 }
 
 /**
- * oep.target.console: streams on a debug connection, one live stream per connection; reads, marks and the streams
- * list need no lock. A stream lives while anything uses it (the sessions that opened it, a slot's bind): close and a
- * lease lapse take one share; a closed stream (connection lost, every user gone) stays readable until the same place
- * is opened again, when it comes back under the same number. `await Console.open(host)` finds the interface;
- * `console.open(conn)` opens a stream.
+ * oep.target.console: a session's stream on a debug connection, one live stream per connection; reads, marks and the
+ * streams list need no lock. close, the connection's release and the session's end release the stream, its buffer and
+ * its send queue: read what is wanted first (console §2). A closed stream's number answers no_resource and is never
+ * used again. marks, clear, mark and write are optional (`offers`): without marks, read from a mark is unsupported; an
+ * SDI stream takes no write (unsupported). `await Console.open(host)` finds the interface; `console.open(conn)` opens a
+ * stream.
  */
 export class Console extends PositionStream {
   static NAME = 'oep.target.console';
@@ -144,57 +157,64 @@ export class Console extends PositionStream {
   static OPEN = CON.op.open;
   static CLOSE = CON.op.close;
   static STREAMS = CON.op.streams;
-  static SDI = CON.enum.mechanism.sdi;
-  static DMDATA = CON.enum.mechanism.dmdata;
-  static DMSEQ = CON.enum.mechanism.dmseq;
-  /** a slot's "no console" (never opened) */
-  static NONE = CON.enum.mechanism.none;
+  /** the standard mechanisms' names (console §3) */
+  static SDI = 'sdi';
+  static DMDATA = 'dmdata';
+  static DMSEQ = 'dmseq';
+  static TAG_MECHANISM = CON.tlv.describe.mechanism;
 
   /** @param {import('./host.js').Host} hst @param {number} fn @param {string} name @param {Uint8Array} prefix */
   constructor(hst, fn, name, prefix = new Uint8Array()) {
     super(hst, fn, name, prefix);
     this.stream = 1;
-    this.existing = false;
   }
 
-  streamPrefix() { return new Writer().u16(this.stream).done(); }
+  streamPrefix() { return new Writer().u32(this.stream).done(); }
 
-  /** The mechanisms the probe opens (describe tag 0x40). @returns {Promise<number[]>} */
+  /** The mechanisms the probe opens, by name, in its order: a named list (describe tag 0x40 repeated, console §1, core
+   * §7.7); the number of the k-th is k (from 1). @returns {Promise<string[]>} */
   async mechanisms() {
-    return (await describe(this.host, this.fn)).filter(([tag]) => (tag & 0x7f) === CON.tlv.describe.mechanisms)
-      .flatMap(([, v]) => [...v]);
+    return (await describe(this.host, this.fn)).filter(([tag]) => tag === Console.TAG_MECHANISM).map(([, v]) => text(v));
+  }
+
+  /** A mechanism's number on the wire: its place in the probe's list (from 1); a name the probe does not list: 0 (the
+   * probe refuses it unsupported). @param {string | number} mechanism */
+  async mechanismNumber(mechanism) {
+    if (typeof mechanism === 'number') return mechanism;
+    const names = await this.mechanisms();
+    return names.indexOf(mechanism) + 1;
   }
 
   /**
-   * -> the stream. An open stream of the same (connection, mechanism) comes back as it is (this.existing): position
-   * and marks carry on; so does a closed one of the same place and mechanism, under its old number. A mechanism the
-   * probe lacks is rejected Unsupported; another mechanism on a connection whose stream is live is rejected
+   * -> a new stream (u32) on the connection (console §2). mechanism: a name (looked up in describe) or the number. A
+   * mechanism the probe lacks is rejected Unsupported; a connection with a live stream (any mechanism) is rejected
    * Unavailable (cause 6).
-   * @param {number} conn @param {number} mechanism
+   * @param {number} conn @param {string | number} mechanism
    */
   async open(conn, mechanism = Console.DMSEQ) {
-    const rd = new m.Reader((await this.call(Console.OPEN, new Writer().u16(conn).u8(mechanism).done())).payload);
-    this.stream = rd.u16();
-    this.existing = !!(rd.u8() & CON.enum.open_flags.existing);
+    const body = new Writer().u32(conn).u8(await this.mechanismNumber(mechanism)).done();
+    const rd = new m.Reader((await this.call(Console.OPEN, body)).payload);
+    this.stream = rd.u32();
     rd.tail();
     return this.stream;
   }
 
-  /** Take this session's share of the stream (it closes when nobody uses it any more). Closed already: ok. */
+  /** Release the stream, its buffer and its send queue (console §2). */
   async close() { await this.call(Console.CLOSE, this.streamPrefix()); }
 
-  /** The probe's console streams, live and closed-but-readable, in the order they were made (oep-if-console §1,
-   * lock-free; paged by first(u8) / more like connections): how a host without the lock finds a stream's number.
+  /** The probe's live console streams, in the order they were made (oep-if-console §1, lock-free; paged by first(u16) /
+   * more, each page from the number already read, until more 0): how a host without the lock finds a stream's number.
    * @returns {Promise<StreamInfo[]>} */
   async streams() {
     /** @type {StreamInfo[]} */
     const out = [];
+    const names = await this.mechanisms();                   // the mechanism by name (core §7.7)
     for (;;) {
       const rd = new m.Reader((await this.call(Console.STREAMS, new Writer().u16(out.length).done(), { locked: false })).payload);   // first(u16)
       const more = rd.u8(), count = rd.u8();
       for (let i = 0; i < count; i++) {   // count x entry (core §2.3)
-        const stream = rd.u16(), connection = rd.u16(), mechanism = rd.u8(), users = rd.u8(), state = rd.u8();
-        out.push({ stream, connection, mechanism, users, state, open: state === STREAM_STATE.open });
+        const stream = rd.u32(), connection = rd.u32(), mech = rd.u8();
+        out.push({ stream, connection, mechanism: mech >= 1 && mech <= names.length ? names[mech - 1] : mech });
       }
       rd.tail();
       if (!more || !count || out.length > 0xffff) return out;
@@ -234,7 +254,7 @@ export class StreamIO {
   }
 
   /** (read, write) chunk sizes that fit the probe's frame: request header 10 (session_id included) + stream prefix +
-   * count 2; result header 5 + start 8 + flags 1 + len 2. */
+   * count 2 (the console's stream u32, none on a fixture UART); result header 5 + start 8 + flags 1 + len 2. */
   async limits() { return [await this.readLimit(), await this.writeLimit()]; }
 
   async readLimit() {

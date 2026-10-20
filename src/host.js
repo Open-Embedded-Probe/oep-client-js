@@ -23,7 +23,7 @@
 import * as reg from './registry.js';
 import { Writer, text, utf8 } from './bytes.js';
 import * as m from './message.js';
-import { Failed, FnNotUsable, InUse, Locked, NoSession, NotRestarted, NotUsable, NotV1, OepError, Rejected, Timeout, rejection } from './errors.js';
+import { Failed, FnNotUsable, InUse, Locked, NoSession, NotRestarted, NotUsable, NotV1, OepError, Rejected, Timeout, ownerOf, rejection } from './errors.js';
 import { restartFn, restartMaxMs } from './core.js';   // core imports host too: used only inside the restart methods
 
 export const MIN_REVISION = 1, MAX_REVISION = 1;
@@ -37,7 +37,7 @@ const CONFIRM_TRANSPORT = reg.CORE.tlv.confirm_answer.transport;
 /**
  * confirm's answer. transport: the index (fn 0's describe) of the transport this confirm came on (core §7.1, C-05;
  * 0xFF from a relaying broker; null when the probe sent none).
- * @typedef {{ revision: number, flags: number, maxFrame: number, window: number, maxInflight: number, bootId: number,
+ * @typedef {{ revision: number, maxFrame: number, window: number, maxInflight: number, bootId: number,
  *   transport: number | null, tail: m.Tail }} Limits */
 /**
  * Host.clock(): fn 0's clock read against this host's clock. hostBeforeMs / hostAfterMs: this host's `performance.now()`
@@ -53,6 +53,11 @@ const CONFIRM_TRANSPORT = reg.CORE.tlv.confirm_answer.transport;
 
 /** fn 0's describe max_op_ms is 1 to this (core §7.5). */
 export const MAX_OP_MS_MAX = reg.LIMITS.max_op_ms_max;
+/** fn 0's quick ops finish within this and max_op_ms (core §4.4). */
+export const QUICK_OP_MAX_MS = reg.TIMING.core_quick_op_max_ms;
+/** fn 0's quick ops: confirm, list, describe, clock, keepalive, lock_state (core §4.4). */
+export const QUICK_OPS = new Set(/** @type {(keyof typeof reg.CORE.op)[]} */ (['confirm', 'list', 'describe', 'clock', 'keepalive', 'lock_state']).map((k) => reg.CORE.op[k]));
+const MAX_OP_MS_TAG = reg.CORE.tlv.describe.max_op_ms;
 
 /** core §7.1 (C-20): max_frame >= min_max_frame (64), window >= max_frame, max_inflight >= 1. -> '' or why not.
  * @param {number} maxFrame @param {number} window @param {number} maxInflight */
@@ -78,6 +83,8 @@ export function checkMaxOpMs(value) {
 export const RESTART_AFTER_ANSWER_MS = 100;
 /** restartProbe: the wait for a probe whose oep.probe.restart declares no restart_max_ms (oep-if-restart §1). */
 export const RESTART_WAIT_MS = 10000;
+/** restartProbe: past restart_max_ms, what happens outside the probe (enumeration, reconnection; host guide §5.2). */
+export const RESTART_EXTERNAL_MS = 5000;
 
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -114,7 +121,10 @@ export class Host {
     /** @type {Limits | null} */ this.limits = null;
     this.epoch = 0;
     /** @type {Set<number>} */ this.subscriptions = new Set();
+    /** @type {Map<number, [number, number]>} fn -> (min_bytes, max_delay_ms) of its subscribe */ this.conditions = new Map();
+    /** @type {Set<number>} fns whose pushes went to a transport since closed (`transportReopened`) */ this.moved = new Set();
     this.corr = 0;
+    /** @type {Map<number, number>} session_id -> the last corr sent with it (core §4.1) */ this.sidCorr = new Map();
     /** @type {Map<string, number>} interface name -> fn, until the probe reboots */ this.fns = new Map();
     /** @type {Map<number, number>} fn -> interface revision from list */ this.revisions = new Map();
     /** @type {Map<number, [number, Uint8Array][]>} fn -> its describe TLVs (declarations: valid for one boot_id) */ this.describes = new Map();
@@ -143,13 +153,59 @@ export class Host {
     }
     if (link && 'lease' in link) link.lease = () => (this.session !== null ? this.leaseMs : null);   // raised: bounds each wait
     if (link && 'sessionId' in link) link.sessionId = () => this.session;
-    if (link && 'blind' in link) link.blind = () => this.blindStop();   // the §5.1 resync's stops when pushes keep coming
+    if (link && 'onReopen' in link) link.onReopen = () => this.transportReopened();   // subscribe again on the new transport (core §10.3)
     if (link && 'confirmBody' in link) link.confirmBody = () => this.confirmBody();   // the link's own confirms: the revision in use (C-15)
     if (link && 'onBootId' in link) link.onBootId = (/** @type {number} */ bootId) => this.bootIdSeen(bootId);   // the link's own confirms (resync, recovery)
     if (link && 'beforeClose' in link) link.beforeClose = () => this.kept?.release();   // the kept id stays for the next run
   }
 
-  nextCorr() { this.corr = (this.corr % 0xffff) + 1; return this.corr; }
+  /** The next corr: cyclic, never 0, one counter for every session_id this host sends (core §4.1). `sid`: the
+   * session_id the request carries (its last corr is remembered for `sessionRoom`). @param {number} [sid] */
+  nextCorr(sid = 0) {
+    this.corr = (this.corr % 0xffff) + 1;
+    if (sid) this.sidCorr.set(sid, this.corr);
+    if (this.kept) void this.kept.sent(this.corr);   // the next run must go on past it (keptsession)
+    return this.corr;
+  }
+
+  /** core §4.1: session_id 0 requests never move this session's corr half the space or more past its last one (one
+   * counter serves every session_id). When `n` more of them would - the session's next request coming after them -
+   * one keepalive of the session goes first; its corr is then the session's last (it restarts the lease, as any
+   * request of the session does). @param {number} n */
+  async sessionRoom(n) {
+    const last = this.session !== null ? this.sidCorr.get(this.session) : undefined;
+    if (last === undefined) return;
+    let next = this.corr;
+    for (let i = 0; i <= n; i++) next = (next % 0xffff) + 1;
+    if ((next - last + 0x10000) % 0x10000 < reg.LIMITS.corr_half_range) return;
+    try { await this.keepalive(); } catch (e) { if (!(e instanceof Rejected)) throw e; }   // gone: nothing to keep
+  }
+
+  /** fn 0's describe max_op_ms (core §7.5) as far as this host has read it, else null. */
+  maxOpMs() {
+    const v = this.describes.get(m.CORE_FN)?.find(([t]) => t === MAX_OP_MS_TAG)?.[1];   // the first copy (core §2.3)
+    return v && v.length === 4 ? new DataView(v.buffer, v.byteOffset, 4).getUint32(0, true) : null;
+  }
+
+  /** The whole request's processing bound the wait for its answer starts from (core §4.4): max_op_ms; fn 0's confirm /
+   * list / describe / clock / keepalive / lock_state min(max_op_ms, core_quick_op_max_ms); while max_op_ms is not known
+   * yet, core_quick_op_max_ms. An argument's wait alone never stands for it (`expectMs` adds to it).
+   * @param {number} fn @param {number} op */
+  opBoundMs(fn, op) {
+    const known = this.maxOpMs();
+    if (known === null) return QUICK_OP_MAX_MS;
+    return fn === m.CORE_FN && QUICK_OPS.has(op) ? Math.min(known, QUICK_OP_MAX_MS) : known;
+  }
+
+  /** Before a request whose processing bound is max_op_ms - any but fn 0's quick ops - fn 0's describe is read when
+   * max_op_ms is not known yet (core §4.4). A describe that declares none is not asked again (cached).
+   * @param {[number, number][]} ops */
+  async knowMaxOpMs(ops) {
+    if (this.limits === null || this.maxOpMs() !== null || this.describes.has(m.CORE_FN)) return;
+    if (ops.every(([fn, op]) => fn === m.CORE_FN && QUICK_OPS.has(op))) return;
+    const core = await import('./core.js');
+    await core.describe(this, m.CORE_FN);
+  }
 
   /** Before a request takes its corr: the link's keepalive at a raised port_speed rate, so what goes first carries the
    * lower corr (or the probe takes the request for an old one, core §4.1). */
@@ -177,10 +233,13 @@ export class Host {
    */
   async request(fn, op, payload = new Uint8Array(), { locked = true, expectMs = 0, session: sid } = {}) {
     this.requireUsable(fn);
+    await this.subscribeAgain();
+    await this.knowMaxOpMs([[fn, op]]);
     const session = sid ?? await this.sessionFor(locked);
     await this.beforeRequest();
-    const req = new m.Request(this.nextCorr(), fn, op, payload, session);
-    const result = m.Result.unpack(await this.link.send(req.pack(), expectMs ? { expectMs } : undefined));
+    if (!session) await this.sessionRoom(1);
+    const req = new m.Request(this.nextCorr(session), fn, op, payload, session);
+    const result = m.Result.unpack(await this.link.send(req.pack(), { expectMs: Math.max(expectMs, this.opBoundMs(fn, op)) }));
     if (result.corr !== req.corr) throw new m.ProtocolError(`result for correlation ${result.corr}, expected ${req.corr}`);
     if (result.resolution === m.REJECTED) {
       this.rejected(result);
@@ -211,6 +270,7 @@ export class Host {
   swept() {
     this.epoch++;
     this.subscriptions.clear();
+    this.moved.clear();
   }
 
   /** The probe restarted: the resources, and the fn numbers with them (and what their describes said). */
@@ -261,11 +321,15 @@ export class Host {
   async pipeline(requests, { locked = true, expectMs = 0 } = {}) {
     this.requireUsable();
     for (const [fn] of requests) this.requireUsable(fn);
+    await this.subscribeAgain();
+    await this.knowMaxOpMs(requests.map(([fn, op]) => [fn, op]));
     const session = await this.sessionFor(locked);
     await this.beforeRequest();
-    const reqs = requests.map(([fn, op, payload]) => new m.Request(this.nextCorr(), fn, op, payload, session));
+    if (!session) await this.sessionRoom(requests.length);
+    const reqs = requests.map(([fn, op, payload]) => new m.Request(this.nextCorr(session), fn, op, payload, session));
     const limits = await this.confirmed();
-    const replies = await this.link.exchange(reqs.map((r) => r.pack()), { maxInflight: limits.maxInflight, window: limits.window, maxFrame: limits.maxFrame, expectMs });
+    const bound = Math.max(expectMs, ...requests.map(([fn, op]) => this.opBoundMs(fn, op)));
+    const replies = await this.link.exchange(reqs.map((r) => r.pack()), { maxInflight: limits.maxInflight, window: limits.window, maxFrame: limits.maxFrame, expectMs: bound });
     const results = replies.map((b) => m.Result.unpack(b));
     results.forEach((res, i) => {
       if (res.corr !== reqs[i].corr) throw new m.ProtocolError(`result for correlation ${res.corr}, expected ${reqs[i].corr}`);
@@ -314,19 +378,17 @@ export class Host {
     const rd = new m.Reader(r.payload);
     const magic = rd.bytes(4), revision = rd.u8();
     if (text(magic) !== reg.CONFIRM_RESULT_MAGIC) throw new m.ProtocolError(`confirm answered magic ${text(magic)}`);
-    if (revision === 0) {
-      this.revision = 0;
-      throw new NotV1('the probe speaks OEP revision 0');
-    }
-    if (revision < minRev || revision > maxRev) throw new m.ProtocolError(`confirm answered revision ${revision}, outside ${minRev}..${maxRev}`);
-    const flags = rd.u8(), maxFrame = rd.u16(), window = rd.u32(), maxInflight = rd.u8(), bootId = rd.u32();
+    // the fixed part is the same in every protocol revision (core §7.1); a revision outside the range asked (a
+    // revision 0 too) is no answer to this confirm: nothing of it is used
+    if (revision < minRev || revision > maxRev) throw new m.ProtocolError(`confirm answered revision ${revision}, outside the ${minRev}..${maxRev} asked`);
+    const maxFrame = rd.u16(), window = rd.u32(), maxInflight = rd.u8(), bootId = rd.u32();
     const tail = rd.tail();
     const why = checkConfirm(maxFrame, window, maxInflight);
     if (why) this.notUsable(why);            // sends nothing more and reports the values (C-20)
     this.bootIdSeen(bootId);
     this.revision = revision;
     const where = tail.get(CONFIRM_TRANSPORT);
-    this.limits = { revision, flags, maxFrame, window, maxInflight, bootId, transport: where?.length ? where[0] : null, tail };
+    this.limits = { revision, maxFrame, window, maxInflight, bootId, transport: where?.length === 1 ? where[0] : null, tail };   // u8 (core §2.3)
     if (this.link && typeof this.link.limitsSeen === 'function') this.link.limitsSeen(maxFrame);   // the wait's transfer time (core §4.4, N-1)
     return this.limits;
   }
@@ -345,9 +407,16 @@ export class Host {
   async clock() {
     await this.requireV1();
     await this.beforeRequest();             // a raised link's keepalive first: it would land inside the round trip
+    await this.sessionRoom(1);
+    this.requireUsable(m.CORE_FN);
+    const req = new m.Request(this.nextCorr(), m.CORE_FN, m.OP.clock, new Uint8Array(), m.NO_SESSION_ID);
+    const packed = req.pack();
     const hostBeforeMs = performance.now();
-    const r = await this.request(m.CORE_FN, m.OP.clock, new Uint8Array(), { locked: false });
+    const raw = await this.link.send(packed, { expectMs: this.opBoundMs(m.CORE_FN, m.OP.clock) });   // a quick core op's wait (core §4.4)
     const hostAfterMs = performance.now();
+    const r = m.Result.unpack(raw);
+    if (r.corr !== req.corr) throw new m.ProtocolError(`result for correlation ${r.corr}, expected ${req.corr}`);
+    if (r.resolution === m.REJECTED) { this.rejected(r); throw rejection(r); }
     if (!r.succeeded) throw new Failed(r);
     const rd = new m.Reader(r.payload);
     const bootId = rd.u32(), uptimeNs = rd.u64();
@@ -379,6 +448,10 @@ export class Host {
   async open(leaseMs = 0, { force = false, owner } = {}) {
     await this.requireV1();
     if (this.kept && this.session === null) await this.kept.beforeOpen(this, owner);   // once: the previous run's session ended (host guide §5)
+    if (this.maxOpMs() === null) {           // max_op_ms before a request that changes state (core §4.4)
+      const core = await import('./core.js');
+      await core.describe(this, m.CORE_FN);
+    }
     const sid = this.newSession();
     const w = new Writer().u32(leaseMs).u8(force ? 1 : 0);
     if (owner) w.raw(m.tlv(OWNER, ownerText(owner)));
@@ -389,10 +462,17 @@ export class Host {
     const rebooted = this.bootId !== null && bootId !== this.bootId;
     if (this.session !== null && !rebooted) this.swept();   // nothing of the last session is ours (core §9)
     this.subscriptions.clear();
+    this.conditions.clear();
+    this.moved.clear();
     this.session = sid;
     this.bootIdSeen(bootId);                                // a reboot: one loss, and the names listed again
     this.leaseMs = lease;
-    if (this.kept) await this.kept.opened(sid);
+    if (rebooted && this.maxOpMs() === null) {
+      // the old boot's declarations went with it: max_op_ms read again before a request that changes state (core §4.4)
+      const core = await import('./core.js');
+      await core.describe(this, m.CORE_FN);
+    }
+    if (this.kept) await this.kept.opened(sid, this.corr);
     return { leaseMs: lease, bootId };
   }
 
@@ -403,7 +483,11 @@ export class Host {
    * ended; false when another session holds the lock (locked: not this host's to end). This host's own session is not
    * touched. @param {number} sid @param {string} [owner] @returns {Promise<boolean>}
    */
-  async endPrevious(sid, owner) {
+  async endPrevious(sid, owner, /** @type {{ corr?: number }} */ { corr } = {}) {
+    if (corr !== undefined) this.corr = corr;
+    // no session holds the lock: the previous one ended (end, expiry, a force) and released what it held. An open under
+    // its id would start a new session with an ended id (core §5.1: never) - nothing to end
+    if (!(await this.lockState()).locked) return false;
     const w = new Writer().u32(reg.LIMITS.lease_min_ms).u8(0);
     if (owner) w.raw(m.tlv(OWNER, ownerText(owner)));
     let r;
@@ -441,8 +525,7 @@ export class Host {
     const p = (await this.request(m.CORE_FN, m.OP.lock_state, new Uint8Array(), { locked: false })).payload;
     const rd = new m.Reader(p);
     const locked = rd.u8() !== 0, remainingMs = rd.u32();
-    const v = rd.tail().get(reg.CORE.tlv.lock_state_answer.owner);
-    return { locked, remainingMs, owner: v ? m.shown(v) : null };
+    return { locked, remainingMs, owner: ownerOf(p.slice(5)) };
   }
 
   /**
@@ -509,7 +592,9 @@ export class Host {
     const before = this.bootId ?? (await this.confirm()).bootId;
     const fn = await this.restartTarget();
     const declared = await restartMaxMs(this);
-    if (waitMs === undefined || (declared !== null && waitMs > declared)) waitMs = declared ?? RESTART_WAIT_MS;   // never past it (host guide §5.2)
+    // the probe's own restart_max_ms (oep-if-restart §1) plus what happens outside it (an OS enumerating the device
+    // again, a network reconnecting); none declared: RESTART_WAIT_MS. host guide §5.2: the reopen's deadline is the host's
+    if (waitMs === undefined) waitMs = declared !== null ? declared + RESTART_EXTERNAL_MS : RESTART_WAIT_MS;
     const epoch = this.epoch;
     try {
       await this.call(fn, RESTART_OP);
@@ -548,32 +633,45 @@ export class Host {
 
   // ---- notifications (§11) ---------------------------------------------------------------------------------
 
-  /** Events and data pushes from `fn`: its own subscribe (op 0x30, core §11.3; the request names no target fn).
-   * Data goes when minBytes (u16) are ready or maxDelayMs (u32) after the first byte (0, 0: as soon as there is
-   * anything); events go at once and do not count. Replaces fn's last subscription; ends with the lock. An fn that sends
-   * no notifications has no subscribe in its ops and answers unknown_operation (Rejected); fn 0 sends none.
+  /** Events and data pushes from `fn`: its own subscribe (op 0x01, core §10.3: the request carries no target fn). The
+   * data goes when minBytes are ready or maxDelayMs (u32) after its first byte (0, 0: as soon as there is anything);
+   * events go at once, whatever these say. Ends with the lock. An fn that sends no notifications has no subscribe:
+   * rejected unknown_operation. fn 0 sends none, and its 0x01 is its own op: RangeError before sending.
    * @param {number} fn @param {number} minBytes @param {number} maxDelayMs */
   async subscribe(fn, minBytes = 0, maxDelayMs = 0) {
+    if (fn === m.CORE_FN) throw new RangeError('fn 0 sends no notifications (core §10.2): its op 0x01 is not subscribe');
     await this.call(fn, m.OP_SUBSCRIBE, new Writer().u16(minBytes).u32(maxDelayMs).done());
     this.subscriptions.add(fn);
+    this.conditions.set(fn, [minBytes, maxDelayMs]);
+    this.moved.delete(fn);
   }
 
-  /** fn's own unsubscribe (op 0x32, core §11.3): success when fn had no subscription. @param {number} fn */
+  /** fn's own unsubscribe (core §10.3): success when fn had no subscription. @param {number} fn */
   async unsubscribe(fn) {
     await this.call(fn, m.OP_UNSUBSCRIBE);
     this.subscriptions.delete(fn);
+    this.conditions.delete(fn);
+    this.moved.delete(fn);
   }
 
-  /** The requests a resync may send without confirming (transports §5): unsubscribe every subscription and end the
-   * session - both harmless when run twice - for when pushes keep the input from going quiet. */
-  blindStop() {
-    if (this.session === null || !this.revision) return [];
-    const out = [...this.subscriptions].sort((a, b) => a - b).map((fn) =>
-      new m.Request(this.nextCorr(), fn, m.OP_UNSUBSCRIBE, new Uint8Array(), this.session).pack());
-    out.push(new m.Request(this.nextCorr(), m.CORE_FN, m.OP.end, new Uint8Array(), this.session).pack());
-    this.subscriptions.clear();
-    this.session = null;                     // the blind end ends it: nothing of it lasts (core §9)
-    this.epoch++;
-    return out;
+  /** The link closed its transport and opened it again (transports §5: a TCP connection whose framing broke). The
+   * session and its subscriptions stay on the probe, but they still send where their subscribe came - the closed
+   * transport, whose pushes are dropped and never carried to the new one (core §6.2, §10.3; transports §3). Only a
+   * subscribe again moves them: `subscribeAgain` sends it before the next request. */
+  transportReopened() {
+    for (const fn of this.subscriptions) this.moved.add(fn);
+  }
+
+  /** core §10.3: each subscription left on a closed transport is subscribed again, with its conditions, on the
+   * transport in use (its seq starts at 0; what went to the closed one is lost, as the seq and position show). */
+  async subscribeAgain() {
+    if (!this.moved.size) return;
+    const moved = [...this.moved].sort((a, b) => a - b);
+    this.moved.clear();
+    for (const fn of moved) {
+      if (!this.subscriptions.has(fn)) continue;
+      const [minBytes, maxDelayMs] = this.conditions.get(fn) ?? [0, 0];
+      await this.subscribe(fn, minBytes, maxDelayMs);
+    }
   }
 }

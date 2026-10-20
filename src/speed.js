@@ -42,7 +42,7 @@ import { SpeedRecord, defaultStore, fileStore } from './speedrecord.js';
 
 const OP_PORT_SPEED = reg.PROBE_LINK.op.port_speed;
 const STEP = reg.PROBE_LINK.enum.port_speed_step;
-const UNIT_ID_TAG = reg.CORE.tlv.describe.unit_id;
+const OP_PORT_STATE = reg.PROBE_LINK.op.port_state;
 const UART_BRIDGE = reg.CORE.enum.transport_kind.uart_bridge;
 
 /** host guide §17.3.1: the default is 500000 alone. */
@@ -193,11 +193,24 @@ export async function speedPort(hst) {
   return kind === UART_BRIDGE ? [fn, index, ''] : [null, null, `this host's transport (index ${index}) is not a UART bridge`];
 }
 
-/** The probe's unit_id (core §7.5, mandatory) - the record's key with the port. @param {import('./host.js').Host} hst */
-export async function unitId(hst) {
-  for (const [tag, v] of await core.describe(hst, 0)) if ((tag & 0x7f) === UNIT_ID_TAG && v.length) return text(v);
-  return '?';
+/** The probe's unit_id (core §7.5, mandatory; the first copy, 1-32 bytes) - the record's key with the port.
+ * @param {import('./host.js').Host} hst */
+export async function unitId(hst) { return (await core.unitId(hst)) ?? '?'; }
+
+/** oep.probe.link port_state (oep-if-link §1, §3): [baud, phase] of the port this host's link came on - phase 0 the boot
+ * speed, 1 trying, 2 committed, 3 a return waiting for a frame boundary (PORT_PHASE). null when the probe does not offer
+ * it. Always a new request: a resent port_speed answer is history, never the port's state now.
+ * @param {import('./host.js').Host} hst @param {number} fn @returns {Promise<[number, number] | null>} */
+export async function portState(hst, fn) {
+  if (!(await core.offers(hst, fn, OP_PORT_STATE))) return null;
+  const rd = new m.Reader((await hst.call(fn, OP_PORT_STATE, new Uint8Array(), { locked: false })).payload);
+  const baud = rd.u32(), phase = rd.u8();
+  rd.tail();
+  return [baud, phase];
 }
+
+/** port_state's phase (oep-if-link §3): boot, trying, committed, recovery_pending. */
+export const PORT_PHASE = reg.PROBE_LINK.enum.port_state;
 
 /** @param {unknown} e */
 const linkError = (e) => e instanceof Timeout || e instanceof cobs.CorruptFrame;

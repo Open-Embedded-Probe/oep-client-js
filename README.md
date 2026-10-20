@@ -12,28 +12,19 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 
 **A first full port, ahead of the v1 freeze: expect it to be redone as the spec settles.**
 
-**The spec this implements: oep-spec commit `c6ab5d9`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
-revision 1 alone does not fix the forms, so an implementation names the spec it implements). That is the logic capture
-changes of 2026-10-07 (66c49e7 .. dd5a886: the layout's w is any integer 1-128, a segment not kept seamless is not handed
-out and stops the track in error, and multirate - `multirate.Multirate`, `LogicCapture.decodeMultirate`), the interface
-re-check of 0991759 (0098b56 .. 2c6d18d: marks and capture segments page by serial from from_serial inclusive, console
-streams' first is u16, capture's configure contract, generations that wrap past 0xFFFFFFFF to 1 and ride on every event,
-the capture-group start answer's fixed part, step / run / transfer details, spi-target bit packing), the 2026-10-06
-simplification (one 10-byte request header, TLV len u16, closed fixed forms, the `ops` describe tag, no resume), the
-console's send queue and the reset settle wait (f0c68bf), a longer probe.config item (d34dafa), an attach joining a
-connection (59dd028) and the 2026-10-06 structure (2e5dc4c .. 9c837a9, 0304f37): the core has no name (fn 0, never
-listed), the plan, restart and link test are the interfaces `oep.probe.plan`, `oep.probe.restart` and `oep.probe.link`,
-subscribe / unsubscribe are ops 0x30 / 0x32 of the interface that sends the notifications (no heartbeat), fn 0's `clock`
-gives the probe's time (read while it handles the request; e0d9dc6, 498ae95) - and the rule review of 2026-10-07
-(7688c49 .. 0f455a0, `docs/v1-rule-review-2026-10-07.ja.md` §2 / §7) with the external review re-check and the fixes
-after it (283e5b5 .. f8bb2de): no ignored TLV (an unknown non-critical TLV is ignored without a trace, an implemented one
-is checked the same with or without bit 7), the resend table is (corr, answer), list takes `first` alone, the probe's
-internal times leave the text (attach, scan and riscv-dm's reset answer within max_op_ms), port_speed is the handshake
-(baud, step, verify_ms), probe.config without slot lock / boot_reset and one stream a bind, gpio drive a u8 level,
-interface names 1 to 48 bytes, and a host that may run again ends the session its previous run left (host guide §5) -
-and after it (c2b8007 .. 30b2b36) probe.config's wifi item with its write-only passphrase, unset's len counting the key
-alone, and TCP discovery (DNS-SD `_oep._tcp` over mDNS, transports §3), and (29902a6 .. 9118dc0) a probe with the wifi
-item answering max_frame 112 or more on every transport (`wifi_min_max_frame`) and TCP advertising as the probe's choice.
+**The spec this implements: oep-spec commit `32724e4`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
+revision 1 alone does not fix the forms, so an implementation names the spec it implements), the same as
+oep-client-python 0.0.36. Since `c6ab5d9` that brought: confirm without a flags byte; list entries without flags;
+reject reason `no_resource` (busy and accepted gone); the named extension TLV and TLV number 0 malformed; every request's
+processing bound (max_op_ms, fn 0's quick ops at most `core_quick_op_max_ms`; fn 0's describe read before
+state-changing requests); a session_id 0 request never moving the session's corr half the space; subscriptions kept per
+transport and made again after a reopen; a stale corr read past on every framing, a broken TCP closed and opened again,
+a COBS broken candidate resent at once; debug attach's pins and max_speed in the fixed part, a new connection every
+attach, connections u32, `holds`, rvswd's rest; console streams u32 and mechanisms by name; probe.config as named items
+numbered by describe (label, idle, disable, passthrough, console-passthrough, rvswd-rest, wire-hold, wifi, ipv4 and a
+probe's own), the generation and the network op; gpio without a strength selection; capture data formats 1 / 4 (multirate
+gone), trigger_opts, trigger records, stream_buffer, judge_latency_ns, the named capture-drops diagnostics, and the
+capture-group's trigger source (§4.4).
 Until the freeze the Japanese text (`.ja.md`) is the specification's working text.
 
 What is there:
@@ -138,49 +129,55 @@ What is there:
   which gives the same number back.
 - the debug waits (oep-if-debug §1, §4.3): attach, scan and riscv-dm's reset answer within max_op_ms, the argument time
   of the host's wait (`Wire.attachMs()`, `scanMs()`, `RiscvDm.resetMs()`; `core.FALLBACK_MAX_OP_MS` for a probe that
-  declares none). riscv-dm's reset answers status flags pc (`reset({ confirm })` -> `{ flags, pc }`, no method); a run
-  whose preparation failed is stopped 3 (`RunResult.notRun`); `readRegister` keeps DATA0 (`dataSaved`) and `resume` /
-  `step` / `run` write it back first (`restoreData`, debug §4); target_id scheme `dmi_7f` (`Wire.SCHEME_DMI_7F`).
-- block operations: riscv-dm / arm-adi `readBlock` / `writeBlock` are bounded by the probe's declared `max_length`
-  (`RiscvDm` / `ArmAdi` `.maxLength` bytes, `.maxWords`; oep-if-debug §4.5 / §6) - `MemAp` chunks by it, and a probe
-  with block ops that declares none throws `riscv.NoMaxLength`; nothing is derived from max_frame.
-- gpio output strength (oep-if-fixture §1.1): `Gpio.set([[ch, mode, Drive.level(1)]])` (a drive per output element,
-  a u8 level - 0xFF `Drive.default()` - sent critical; a level past drive_levels, or any drive on a probe without them,
-  is refused `Unsupported`); `driveLevels()` -> `DriveLevels` (`defaultLevel`, `ma`, `pick(drive)`, `atMost(ma)`: a
-  strength carried between probes); read gives the levels alone; the settings' `Idle({ ..., drive })` (4 bytes);
-  `config.findLine(config, slotName, 'nrst')` is probe.config §1.3's line lookup, the firmware's fixed labels as its
-  step (c) (`lineFromLabels` the same on bare data).
-- the fixtures: i2c-target has one form (`configure(address)`, every write with data one frame, reads from
-  `preloadTx` slots or 0xFF, `status()` -> `{ state, queued, rxFrames, txSlots, errors }`, `internalPullups()`;
-  stretch an optional op), spi-target has no reset, uart's `status()` is `{ baud, format }`.
-- probe.config: a slot has no lock or boot_reset (the host checks the target with connections' tid), `SlotState` is
-  `{ slot, state: connected | absent, connection, lastTryAtNs }`, a bind carries one stream (`Bind({ port, stream:
-  ['slot', n] | ['uart', fn] })`, `BindState` `{ port, flow }`), the idle item is 4 bytes; the hash is the probe's own -
-  a host compares items (`config.sameItems`), `ProbeConfig.needsSave()` and `apply(wanted, { save })` (host guide §15);
-  an unset element's len counts the key's bytes alone (`config.remove(kind, key)`).
-- Wi-Fi (probe.config §1.4, §3.3; host guide §15.1): `config.Wifi({ index, ssid, passphrase })` - passphrase null (an
-  open network), `config.KEEP` (keep the entry's: get's form, pass_len 0xFF) or 8-63 printable ASCII characters / 64
-  hex digits. The passphrase is write-only: get never returns it (decoded as `KEEP`), it is a private field (not in
+  declares none). attach names its pins in the fixed part (`pins` null: the wire's one candidate pair,
+  `candidatePairs()` from describe) and makes a new connection every time (pins a live one holds: `Unavailable` cause 1);
+  `scan()` without pairs tries the candidate pairs, in requests that fit max_frame; `holds()` lists the ports held at
+  their rest; rvswd's `idleClock` says the rest a connection uses. riscv-dm's reset answers status flags pc (`reset()` ->
+  `{ flags, pc }`, DATA0 written back first); a run whose preparation failed is stopped 3 (`RunResult.notRun`), an unknown
+  stopped byte `unknownStopped`; `readRegister` keeps DATA0 (`dataSaved`) and `resume` / `step` / `run` / `reset` write it
+  back first (`restoreData`, debug §4); `declared()` names the optional ops offered (halt and resume among them).
+- block operations: riscv-dm / arm-adi `readBlock` / `writeBlock` move at most min(max_length, what the route's
+  max_frame carries) / 4 words (oep-if-debug §4.5); a probe with block ops that declares no max_length throws
+  `riscv.NoMaxLength`. A MEM-AP on a probe without read_block / write_block is driven with raw transfer lists.
+- the fixtures: gpio's set is [channel, mode] pairs (no strength selection; the output strength is the probe's own),
+  i2c-target has one form (`configure(address)`, every write with data one frame, reads from `preloadTx` slots or 0xFF,
+  `status()` -> `{ state, queued, rxFrames, txSlots, errors }`, `internalPullups()`; stretch an optional op), spi-target
+  has no reset, uart's `status()` is `{ baud, format, configured }` (baud 0: not configured).
+- probe.config (oep-if-probe-config): items are named and numbered by the probe's describe for this boot
+  (`ProbeConfig.describe()` -> `Declared` with its `settings` and `netifs`; `wire(item)` looks the number up by name):
+  `Label`, `Idle`, `Disable`, `Passthrough` (a fixture UART's RX on a serial port while no session uses it),
+  `ConsolePassthrough` (the target's debug console the same way), `RvswdRest`, `WireHold`, `Wifi`, `Ipv4` and `Own` (a
+  probe's own reverse-DNS item, encoded by the form it declares; a secret one write-only). `get()` gives the generation
+  and the items as [name, key, data]; set / unset / save / erase / `state()` (`{ storage, savedGeneration, reason }`)
+  / `network()` (the TCP port and each netif's state, entry, reason, rssi and address); a host compares items
+  (`config.sameItems`), `needsSave()` and `apply(wanted, { save })` (host guide §15); `findLine(config, name, { profile,
+  firmware, single })` is host guide §5.3's line lookup.
+- Wi-Fi (probe.config §1.4; host guide §15.1): `config.Wifi({ entry, ssid, passphrase })` - passphrase null (an open
+  network), `config.KEEP` (keep the entry's: get's form, pass_len 0xFF) or 8-63 printable ASCII characters / 64 hex
+  digits. The passphrase is write-only: get never returns it (decoded as `KEEP`), it is a private field (not in
   `console.log`, `util.inspect` or `JSON.stringify`; `toString()` / `shown()` say set / none), a refused one's error does
-  not carry it; `sameItems` and `apply` compare a wifi item without it and send it only for an entry that changes.
-  `describe()` gives `wifiMax`, `state()` gives `wifi` (`WifiState`: state, entry, reason, rssi, ipv4; `text()`). The
+  not carry it; `sameItems` and `apply` compare a wifi item without it and send it only for an entry that changes. The
   page's Wi-Fi form takes the passphrase in a password field that is cleared once read and never filled back (empty:
   keep; "open": none).
-- capture: configure's TLVs follow core §2.3 alone (a value the probe does not handle is `Unsupported` with the tag as
-  received); the answer has no timing or rate_accuracy; describe's mode is mode max_samples max_segments.
+- capture: configure's TLVs follow core §2.3 (a value the probe does not handle is `Unsupported` with the tag as
+  received); data format 1, the logic blocks (`dataFormat`, `events` role -> D, `roles`, `blockMax`; a segment read as
+  `blocks()` or `columns()`, captureblocks.js) and 4, the test counter; `triggerOpts` (arm, rearm, when, hysteresis),
+  trigger records (`triggers()`), stream_buffer (`Config.tolerableDelayS()`), judge_latency_ns; streaming frames' segment
+  info (`Received.segments`); `read()` throws `ReadGap` for bytes the probe no longer has; status's named extensions
+  (`CaptureDrops.of(status)`, the Arduino firmware's drop diagnostics). The capture-group binds tracks started at once,
+  or with a `TriggerSource` of `Stage`s and `Cond`s (§4.4; `triggerCaps()` says what it takes).
 - the rule changes of 2026-10-02 (oep-spec `docs/v1-rule-change-proposal-2026-10-02.md`), host side: attach and scan
   wait their budgets (`attachMs`, `scanMs`); `Unsupported.supported` (confirm's range); an `x-` unit_id names no USB
   device; text from an answer is shown without control characters (`message.shown`), open's owner is cut on a
-  character (`ownerText`), a label the probe would refuse is not sent; `dump` names what core §1.2 requires and the probe did not give (`missing`); capture's mode / rate / trigger /
-  pretrigger / frontend go critical (this host's choice), a start's blocking_ms is waited out with nothing sent (then a resync on
-  length frames); `Wire.searchRetries`, `riscv.StepError` (`stepLeft`).
+  character (`ownerText`), a label the probe would refuse is not sent; `dump` names what core §1.2 requires and the
+  probe did not give (`missing`); `riscv.StepError` (`stepLeft`).
 
 The wire is oep-spec's 2026-10-06 simplification of the zero-base rewrite of 2026-10-01 (one request header with
 session_id, one TLV form, sequences without element lengths, closed fixed forms, the `ops` tag, no resume; see the
 changelog), with the 2026-10-06 structure (the nameless core, the oep.probe interfaces, notifications per interface).
 Tested against oep-client-python's virtual bench (a probe, the targets behind it and the fixture wiring, modelled after
-the real jigs: `python -m oep_client.virtual_bench_serve`) and scripted devices (348 tests, oep-spec's test
-vectors among them, sessions.json, ops.json and ops_encoding.json included); the browser transports, DFU and the page are not yet checked on
+the real jigs: `python -m oep_client.virtual_bench_serve`) and scripted devices (oep-spec's test vectors among them:
+sessions.json, ops.json, ops_encoding.json, capture_formats.json and logic_layout.json included); the browser transports, DFU and the page are not yet checked on
 hardware.
 
 Until the v1 freeze the spec may break and this package follows it at once, with the probe firmware

@@ -27,7 +27,8 @@ test('a host run again ends the session its previous run left (host guide §5)',
     assert.ok(first.kept instanceof KeptSession);
     await take(first, 30000, { owner: 'run 1', waitMs: 0 });
     const sid = /** @type {number} */ (first.session);
-    assert.equal(readFileSync(file, 'utf8'), `${sid.toString(16).padStart(8, '0')}\n`);
+    // the id, then the corr reserved past the session's newest (the next run's open goes beyond it, core §5.2)
+    assert.match(readFileSync(file, 'utf8'), new RegExp(`^${sid.toString(16).padStart(8, '0')} [0-9a-f]{4}\n$`));
     await first.link.close();                                        // killed: no end; the file keeps the id
 
     const without = await openTcp({ port: bench.port, keepSession: false });   // a host keeping nothing meets the old lock
@@ -39,7 +40,7 @@ test('a host run again ends the session its previous run left (host guide §5)',
     assert.equal(second.kept?.previous, sid);
     assert.equal(second.kept?.endedPrevious, true);
     assert.notEqual(second.session, sid);
-    assert.equal(readFileSync(file, 'utf8'), `${/** @type {number} */ (second.session).toString(16).padStart(8, '0')}\n`);
+    assert.match(readFileSync(file, 'utf8'), new RegExp(`^${/** @type {number} */ (second.session).toString(16).padStart(8, '0')} [0-9a-f]{4}\n$`));
     await second.end();
     assert.equal(readFileSync(file, 'utf8'), '');                    // ended: nothing to take back next time
     await second.link.close();

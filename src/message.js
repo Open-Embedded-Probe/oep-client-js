@@ -10,7 +10,8 @@
 // whatever the length); a host skips tags it does not know. A request may end with TLVs; tag bit 7 = critical: a probe
 // that does not implement the tag refuses the request rejected unsupported (the tag as received) when it is set and
 // ignores the TLV when it is not; a TLV the probe implements is checked the same with or without the bit (core §2.3).
-// Tags 0x00 and 0x7F are never TLV tags.
+// TLV number 0 (with or without bit 7) is never a TLV: malformed in a request, a broken TLV in an answer or a
+// notification (core §2.2). Tag 0x7F is a named extension (name_len(u8) name data) in every context.
 
 import * as reg from './registry.js';
 import { getI32, getU16, getU32, getU64, text, utf8 } from './bytes.js';
@@ -23,7 +24,8 @@ export const NO_SESSION_ID = 0;
 /** tag(u8) len(u16) (core §2.2). */
 export const TLV_HEADER = 3;
 
-export const REJECTED = reg.RESOLUTIONS.rejected, COMPLETED = reg.RESOLUTIONS.completed, ACCEPTED = reg.RESOLUTIONS.accepted;
+/** Any other resolution is a failure (core §2.4). */
+export const REJECTED = reg.RESOLUTIONS.rejected, COMPLETED = reg.RESOLUTIONS.completed;
 export const SUCCESS = reg.OUTCOMES.success, FAILED = reg.OUTCOMES.failed, PARTIAL = reg.OUTCOMES.partial;
 
 export const REJECT = reg.REJECT_REASONS;
@@ -31,8 +33,8 @@ export const REJECT = reg.REJECT_REASONS;
 export const REJECT_NAMES = Object.fromEntries(Object.entries(REJECT).map(([k, v]) => [v, k.replace(/_/g, ' ')]));
 
 export const TAG_CRITICAL = reg.TAG_CRITICAL;
-/** Never a TLV tag, in every context (core §2.2, §2.5). */
-export const TAG_RESERVED = 0x7f;
+/** A named extension: name_len(u8) name data, in every context (core §2.2). */
+export const TAG_NAMED_EXTENSION = reg.TAG_NAMED_EXTENSION;
 /** The rejected unsupported payload's first byte for a fixed-part value (core §4.3); never a TLV tag. */
 export const TAG_FIXED = reg.TAG_RESERVED_ZERO;
 /** Every fn's describe: base(u8) bitmap - the ops it offers (core §1.2, §7.4). */
@@ -43,7 +45,7 @@ export const CORE_FN = 0;
 /** fn 0's ops (core §12): confirm, list, describe, open, end, keepalive, lock_state. */
 export const OP = reg.CORE.op;
 /** subscribe / unsubscribe: reserved at these numbers in every interface's op space, ops of the interface that sends the
- * notifications (core §11.3); fn 0 sends none. */
+ * notifications (core §10.3); fn 0 sends none. */
 export const OP_SUBSCRIBE = reg.OP_SUBSCRIBE, OP_UNSUBSCRIBE = reg.OP_UNSUBSCRIBE;
 export const CONFIRM_REQUEST = utf8(reg.CONFIRM_REQUEST_MAGIC);
 export const CONFIRM_RESULT = utf8(reg.CONFIRM_RESULT_MAGIC);
@@ -108,7 +110,6 @@ export class Result {
 
   describe() {
     if (this.resolution === REJECTED) return `rejected: ${REJECT_NAMES[this.detail] ?? `reason 0x${this.detail.toString(16)}`}`;
-    if (this.resolution === ACCEPTED) return 'accepted';
     if (this.resolution !== COMPLETED) return `unknown resolution 0x${this.resolution.toString(16)}`;
     return /** @type {Record<number, string>} */ ({ [SUCCESS]: 'completed', [FAILED]: 'failed', [PARTIAL]: 'partial' })[this.detail]
       ?? `unknown outcome 0x${this.detail.toString(16)}`;
@@ -122,7 +123,7 @@ export class Result {
  * @param {number} tag @param {Uint8Array | number[]} value @param {boolean} critical */
 export function tlv(tag, value, critical = false) {
   if (value.length > 0xffff) throw new RangeError(`TLV 0x${tag.toString(16)}: value of ${value.length} bytes does not fit a u16 length`);
-  if ((tag & 0x7f) === TAG_RESERVED || (tag & 0x7f) === TAG_FIXED) throw new RangeError('tags 0x00 and 0x7F are never TLV tags (core §2.2)');
+  if ((tag & 0x7f) === TAG_FIXED) throw new RangeError('TLV number 0 is never a TLV (core §2.2)');
   const out = new Uint8Array(TLV_HEADER + value.length);
   out[0] = tag | (critical ? TAG_CRITICAL : 0);
   out[1] = value.length & 0xff; out[2] = value.length >> 8;
@@ -130,8 +131,8 @@ export function tlv(tag, value, critical = false) {
   return out;
 }
 
-/** TLVs in order (core §2.2). A truncated TLV - a header cut short, or a len past the end - throws ShortPayload (the
- * result is broken).
+/** TLVs in order (core §2.2). A truncated TLV - a header cut short, or a len past the end - throws ShortPayload, and a
+ * TLV numbered 0 throws ProtocolError (the result is broken).
  * @param {Uint8Array} data @returns {[number, Uint8Array][]} */
 export function splitTlvs(data) {
   /** @type {[number, Uint8Array][]} */
@@ -143,6 +144,7 @@ export function splitTlvs(data) {
     const n = getU16(data, pos + 1);
     pos += TLV_HEADER;
     if (pos + n > data.length) throw new ShortPayload(`TLV 0x${tag.toString(16)}: truncated value`);
+    if ((tag & 0x7f) === TAG_FIXED) throw new ProtocolError('a TLV numbered 0 (core §2.2)');
     out.push([tag, data.slice(pos, pos + n)]);
     pos += n;
   }
@@ -163,6 +165,28 @@ export class Tail {
     t.tlvs = splitTlvs(data);
     return t;
   }
+  /** The named extensions in it (core §2.2): name -> data; see namedExtensions. */
+  named() { return namedExtensions(this.tlvs); }
+}
+
+const ascii = new TextDecoder('ascii', { fatal: true });
+
+/** Named extension TLVs (core §2.2: tag 0x7F, critical bit or not; name_len(u8) name data) -> name -> data, in order,
+ * the first of a name kept (core §2.3). One that cannot be read (its name past its value, a name that is not ASCII
+ * text) is left out: whoever knows a name reads it, the rest pass it over.
+ * @param {[number, Uint8Array][]} tlvs @returns {Map<string, Uint8Array>} */
+export function namedExtensions(tlvs) {
+  /** @type {Map<string, Uint8Array>} */
+  const out = new Map();
+  for (const [tag, value] of tlvs) {
+    if ((tag & 0x7f) !== TAG_NAMED_EXTENSION || !value.length || 1 + value[0] > value.length) continue;
+    const raw = value.subarray(1, 1 + value[0]);
+    if (raw.some((b) => b > 0x7f)) continue;
+    let name;
+    try { name = ascii.decode(raw); } catch { continue; }
+    if (!out.has(name)) out.set(name, value.slice(1 + value[0]));
+  }
+  return out;
 }
 
 /** Reads a result payload's fixed part front to back; too short -> ShortPayload. */
@@ -214,4 +238,15 @@ export function serialDiff(a, b, bits = 32) {
   const m = 2 ** bits;
   const d = (((a - b) % m) + m) % m;
   return d >= m / 2 ? d - m : d;
+}
+
+/** The elements lost between the last serial read (`last`) and the first of the next page (`first`), when the core §2.6
+ * comparison holds (common §1.3 paging 3): the same stream (a capture: the same generation, one boot), a forward jump
+ * of less than a quarter of the space. null when it cannot be told - another stream, nothing read before, a jump
+ * backwards or past a quarter.
+ * @param {number | null} last @param {number} first @param {boolean} sameStream @param {number} bits */
+export function serialsLost(last, first, sameStream = true, bits = 32) {
+  if (!sameStream || last === null) return null;
+  const d = serialDiff(first, last, bits);
+  return d > 0 && d < 2 ** (bits - 2) ? d - 1 : null;
 }

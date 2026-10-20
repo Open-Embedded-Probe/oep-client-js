@@ -42,25 +42,40 @@ export async function listEntries(hst, name = '', exact = false) {
 export async function findAll(hst, name) { return (await listEntries(hst, name, true)).map((e) => e.fn); }
 
 /** fn of the first interface with exactly this name, or null when the probe lists none (cached until the probe reboots).
- * @param {import('./host.js').Host} hst @param {string} name @returns {Promise<number | null>} */
-export async function findOptional(hst, name) {
-  const fn = hst.fns.get(name);
-  if (fn !== undefined) return fn;
-  const fns = await findAll(hst, name);
-  if (!fns.length) return null;
-  hst.fns.set(name, fns[0]);
-  return fns[0];
+ * With `rev`, the first of that (name, revision) pair; offered in another revision only, it is one this host does not
+ * use (core §2.8, §7.2): null like an interface not offered.
+ * @param {import('./host.js').Host} hst @param {string} name @param {number | null} [rev] @returns {Promise<number | null>} */
+export async function findOptional(hst, name, rev = null) {
+  try {
+    return await find(hst, name, rev);
+  } catch (e) {
+    if (e instanceof UnsupportedRevision || (e instanceof OepError && e.message.startsWith('the probe does not offer'))) return null;
+    throw e;
+  }
 }
 
-/** fn of the first interface with exactly this name (cached until the probe reboots); throws when the probe lists none.
- * @param {import('./host.js').Host} hst @param {string} name */
-export async function find(hst, name) {
-  let fn = hst.fns.get(name);
+/** fn of the first interface with exactly this name - with `rev`, the first of that (name, revision) pair: a probe that
+ * offers several revisions is used through the pair the client speaks (core §7.2). Cached until the probe reboots;
+ * throws when the probe lists none (UnsupportedRevision: the name, in no revision this client speaks).
+ * @param {import('./host.js').Host} hst @param {string} name @param {number | null} [rev] */
+export async function find(hst, name, rev = null) {
+  const key = rev === null ? name : `${name}\u0000${rev}`;
+  let fn = hst.fns.get(key);
+  if (fn === undefined && rev !== null) {
+    const named = hst.fns.get(name);
+    if (named !== undefined && (hst.revisions.get(named) ?? rev) === rev) fn = named;   // the name's fn, of that revision
+  }
   if (fn === undefined) {
-    const fns = await findAll(hst, name);
-    if (!fns.length) throw new OepError(`the probe does not offer ${name}`);
+    const entries = await listEntries(hst, name, true);
+    const fns = entries.filter((e) => rev === null || e.revision === rev).map((e) => e.fn);
+    if (!fns.length) {
+      if (entries.length) {
+        throw new UnsupportedRevision(`${name} (fn ${entries[0].fn}) is revision ${entries[0].revision} on this probe; this client speaks revision ${rev} only`);
+      }
+      throw new OepError(`the probe does not offer ${name}`);
+    }
     fn = fns[0];
-    hst.fns.set(name, fn);
+    hst.fns.set(key, fn);
   }
   return fn;
 }
@@ -91,13 +106,14 @@ export async function describe(hst, fn = 0) {
     if (!more || !page.length) break;
   }
   if (fn === m.CORE_FN) {
-    const v = out.find(([tag, value]) => (tag & 0x7f) === D.max_op_ms && value.length >= 4)?.[1];
-    const why = v ? checkMaxOpMs(getU32(v)) : '';
+    const v = catalog.firstValue(out, D.max_op_ms);                   // the first copy only (core §2.3)
+    const why = v && v.length === 4 ? checkMaxOpMs(getU32(v)) : '';
     if (why) hst.notUsable(why);           // not conforming: not used (core §4.4, §7.5, C-47)
   }
-  for (const [tag, value] of out) {
-    const why = (tag & 0x7f) === m.TAG_OPS ? catalog.checkOps(value) : '';
-    if (!why) continue;
+  // the first ops copy is the one used (core §2.3); bit 7 set in an answer: an unknown tag (core §2.2)
+  const first = catalog.firstValue(out, m.TAG_OPS);
+  const why = first ? catalog.checkOps(first) : '';
+  if (why) {
     if (fn === m.CORE_FN) hst.notUsable(`describe of fn 0: ${why} (core §7.4), so the probe is not used`);
     hst.fnNotUsable(fn, `describe of fn ${fn}: ${why} (core §7.4), so that fn is not used`);
   }
@@ -110,12 +126,8 @@ export async function describe(hst, fn = 0) {
  * the probe answer).
  * @param {import('./host.js').Host} hst @param {number} fn @returns {Promise<Set<number> | null>} */
 export async function ops(hst, fn = 0) {
-  /** @type {Set<number> | null} */
-  let found = null;
-  for (const [tag, v] of await describe(hst, fn)) {
-    if ((tag & 0x7f) === m.TAG_OPS) found = new Set([...(found ?? []), ...catalog.unpackOps(v)]);
-  }
-  return found;
+  const v = catalog.firstValue(await describe(hst, fn), m.TAG_OPS);   // ops twice: the first is used (core §2.3)
+  return v ? catalog.unpackOps(v) : null;
 }
 
 /** Whether fn offers op by its ops tag (true when the describe declares no ops: unknown, the probe decides).
@@ -146,8 +158,8 @@ export const FALLBACK_MAX_OP_MS = 10000;
  * (oep-if-debug §1, §4.3). A probe that declares none (not conforming) is taken as FALLBACK_MAX_OP_MS (10000 ms).
  * @param {import('./host.js').Host} hst */
 export async function maxOpMs(hst) {
-  for (const [tag, v] of await describe(hst, 0)) if ((tag & 0x7f) === D.max_op_ms && v.length >= 4) return getU32(v);
-  return FALLBACK_MAX_OP_MS;
+  const v = catalog.firstValue(await describe(hst, 0), D.max_op_ms);   // the first copy only (core §2.3)
+  return v && v.length === 4 ? getU32(v) : FALLBACK_MAX_OP_MS;
 }
 
 /** The longest the probe takes from restart's answer until it answers confirm again on the same transport
@@ -155,17 +167,17 @@ export async function maxOpMs(hst) {
  * oep.probe.restart, or its describe declares none (a probe that does not conform).
  * @param {import('./host.js').Host} hst @returns {Promise<number | null>} */
 export async function restartMaxMs(hst) {
-  const fn = await findOptional(hst, RESTART_NAME);
+  const fn = await findOptional(hst, RESTART_NAME, reg.PROBE_RESTART.revision);
   if (fn === null) return null;
-  for (const [tag, v] of await describe(hst, fn)) if ((tag & 0x7f) === RESTART_MAX_MS && v.length >= 4) return getU32(v);
-  return null;
+  const v = catalog.firstFixed(await describe(hst, fn), RESTART_MAX_MS, 4);   // the first copy only (core §2.3)
+  return v ? getU32(v) : null;
 }
 
 /** The firmware's fixed channel labels from fn 0's describe (tag 0x46) as [channel, text], in describe order -
  * every one, two channels with the same text included (probe.config §1.3 step (c) finds none then). Text shown as core
  * §2.1 says (`m.shown`). @param {import('./host.js').Host} hst @returns {Promise<[number, string][]>} */
 export async function firmwareLabels(hst) {
-  return (await describe(hst, 0)).filter(([tag, v]) => (tag & 0x7f) === D.label && v.length >= 2)
+  return (await describe(hst, 0)).filter(([tag, v]) => tag === D.label && v.length >= 2)
     .map(([, v]) => [getU16(v), m.shown(v.slice(2))]);
 }
 
@@ -184,20 +196,42 @@ export async function probeInfo(hst) {
     maxOpMs: /** @type {number | null} */ (null), ops: /** @type {Set<number> | null} */ (null),
     /** @type {[number, Uint8Array][]} */ other: [],
   };
-  for (const [tag, v] of await describe(hst, 0)) {
-    const t = tag & 0x7f;
+  const tlvs = await describe(hst, 0);
+  // a single tag: the first copy, of its defined form (a broken one is not used, and no later copy stands in, §2.3)
+  const once = new Set([D.firmware, D.model, D.unit_id, D.chip, D.channels, D.max_op_ms, m.TAG_OPS]);
+  const seen = new Set();
+  for (const [t, v] of tlvs) {
+    if (once.has(t)) {
+      if (seen.has(t)) continue;
+      seen.add(t);
+    }
     if (t === D.firmware) info.firmware = m.shown(v);
     else if (t === D.model) info.model = m.shown(v);
-    else if (t === D.unit_id) info.unitId = m.shown(v);
+    else if (t === D.unit_id) info.unitId = unitIdValue(tlvs) ? m.shown(v) : null;
     else if (t === D.chip) info.chip = m.shown(v);
-    else if (t === D.channels) info.channels = getU16(v);
+    else if (t === D.channels) info.channels = v.length === 2 ? getU16(v) : 0;
     else if (t === D.label && v.length >= 2) info.labels.set(m.shown(v.slice(2)), getU16(v));
-    else if (t === D.transport && v.length >= 2) info.transports.push({ index: v[0], kind: v[1], usbInterface: v.length > 2 ? v[2] : 0xff });
-    else if (t === D.max_op_ms && v.length >= 4) info.maxOpMs = getU32(v);
-    else if (t === m.TAG_OPS) info.ops = new Set([...(info.ops ?? []), ...catalog.unpackOps(v)]);
-    else info.other.push([tag, v]);
+    else if (t === D.transport && v.length === 3) info.transports.push({ index: v[0], kind: v[1], usbInterface: v[2] });
+    else if (t === D.max_op_ms) info.maxOpMs = v.length === 4 ? getU32(v) : null;
+    else if (t === m.TAG_OPS) info.ops = catalog.unpackOps(v);
+    else info.other.push([t, v]);
   }
   return info;
+}
+
+/** fn 0's describe unit_id (core §7.5: text of 1 to 32 bytes) from its TLVs: the first copy only, null when absent or
+ * that copy is not 1-32 bytes (broken: not used, and no later copy stands in for it, core §2.3).
+ * @param {[number, Uint8Array][]} tlvs */
+export function unitIdValue(tlvs) {
+  const v = catalog.firstValue(tlvs, D.unit_id);
+  return v && v.length >= 1 && v.length <= reg.LIMITS.unit_id_max_bytes ? v : null;
+}
+
+/** The probe's unit_id (`unitIdValue` of fn 0's describe) as text, null when there is none usable.
+ * @param {import('./host.js').Host} hst */
+export async function unitId(hst) {
+  const v = unitIdValue(await describe(hst, m.CORE_FN));
+  return v ? m.shown(v) : null;
 }
 
 /** Take the lock as host guide §6 says: the probe's only transport a serial port this host opened exclusively ->
@@ -217,7 +251,11 @@ const PLAN_ROLES = reg.PROBE_PLAN.tlv.describe.plan_roles;
 
 /** The fn of the probe's oep.probe.plan (throws when it lists none: a probe whose interfaces have no plan role).
  * @param {import('./host.js').Host} hst */
-export function planFn(hst) { return find(hst, PLAN_NAME); }
+export async function planFn(hst) {
+  const fn = await findOptional(hst, PLAN_NAME, reg.PROBE_PLAN.revision);   // another revision only: not used (core §7.2)
+  if (fn === null) throw new OepError(`the probe does not offer ${PLAN_NAME} revision ${reg.PROBE_PLAN.revision}`);
+  return fn;
+}
 
 /** plan_apply's request: one role_assignment TLV per (fn, role, channel) (oep-if-plan §2.1), sent plain - every plan
  * probe implements it, so it is checked the same with or without bit 7 (core §2.3).
@@ -245,10 +283,10 @@ export async function planRelease(hst, fns = []) {
 /** The most role assignments the plan holds at once, every fn together (oep.probe.plan describe plan_roles, oep-if-plan
  * §1). null: no oep.probe.plan, or no limit declared. @param {import('./host.js').Host} hst @returns {Promise<number | null>} */
 export async function planRoles(hst) {
-  const fn = await findOptional(hst, PLAN_NAME);
+  const fn = await findOptional(hst, PLAN_NAME, reg.PROBE_PLAN.revision);
   if (fn === null) return null;
-  for (const [tag, v] of await describe(hst, fn)) if ((tag & 0x7f) === PLAN_ROLES && v.length >= 4) return getU32(v);
-  return null;
+  const v = catalog.firstFixed(await describe(hst, fn), PLAN_ROLES, 4);   // the first copy only (core §2.3)
+  return v ? getU32(v) : null;
 }
 
 // ---- oep.probe.restart (oep-if-restart): the probe restarts itself, an optional interface ----------------------------
@@ -258,7 +296,11 @@ const RESTART_MAX_MS = reg.PROBE_RESTART.tlv.describe.restart_max_ms;
 
 /** The fn of the probe's oep.probe.restart (throws when it lists none: restart is optional).
  * @param {import('./host.js').Host} hst */
-export function restartFn(hst) { return find(hst, RESTART_NAME); }
+export async function restartFn(hst) {
+  const fn = await findOptional(hst, RESTART_NAME, reg.PROBE_RESTART.revision);
+  if (fn === null) throw new OepError(`the probe does not offer ${RESTART_NAME} revision ${reg.PROBE_RESTART.revision}`);
+  return fn;
+}
 
 /**
  * One interface client: its fn (found by name), its revision checked against the list, and calls that throw unless
@@ -282,7 +324,7 @@ export class Interface {
    */
   static async open(hst, { fn, name, prefix } = {}) {
     const n = name ?? this.NAME;
-    const f = fn ?? await find(hst, n);
+    const f = fn ?? await find(hst, n, this.REVISION);   // the pair it speaks (core §7.2)
     if (this.REVISION !== null) {
       const rev = await revision(hst, n, f);
       if (rev !== this.REVISION) throw new UnsupportedRevision(`${n} (fn ${f}) is revision ${rev}; this client speaks ${this.REVISION}`);
@@ -331,7 +373,11 @@ export function linkSinkSize(maxFrame) { return Math.max(1, maxFrame - LINK_SINK
 
 /** The fn of the probe's oep.probe.link (throws when the probe offers none - the link test and port_speed are optional).
  * @param {import('./host.js').Host} hst */
-export function linkFn(hst) { return find(hst, LINK_NAME); }
+export async function linkFn(hst) {
+  const fn = await findOptional(hst, LINK_NAME, reg.PROBE_LINK.revision);   // another revision only: not used (core §7.2)
+  if (fn === null) throw new OepError(`the probe does not offer ${LINK_NAME} revision ${reg.PROBE_LINK.revision}`);
+  return fn;
+}
 
 /** source's request: length(u32). @param {number} size */
 export function linkSourceRequest(size) { return new Writer().u32(size).done(); }

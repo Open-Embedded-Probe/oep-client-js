@@ -14,13 +14,14 @@ import { NotOepProbe, Rejected, Timeout, TransportFailed, Unavailable, Unsupport
 import { Link, SWITCH_SETTLE_MS, IDLE_MS, KEEPALIVE_MS, OPEN_RETRY_MS, IN_USE_WINDOW_MS, RAISED_FIRST_WAIT_MS, BROKEN_RESENDS } from '../src/link.js';
 import { getU16, getU32, u32 } from '../src/bytes.js';
 import { Host } from '../src/host.js';
-import { connect } from '../src/open.js';
+import { PROBE_WAIT_MS, connect } from '../src/open.js';
 import * as cobs from '../src/cobs.js';
 import { DEFAULT_CANDIDATES, DEFAULT_CEILING, FAST_VERIFY_MS, FLOW_FRAMES, VERIFY_MS, ceiling, fastVerifyMs, leaseFor, raiseSpeed,
   resolveFlows, speedRequest, speedText } from '../src/speed.js';
 import { SpeedRecord, fileStore, localStorageStore, memoryStore } from '../src/speedrecord.js';
 import { RiscvDm, Wire } from '../src/riscv.js';
 import { linkSize, take } from '../src/core.js';
+import { packOps } from '../src/catalog.js';
 import { openTcp, tcpTransport } from '../src/node/index.js';
 import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 
@@ -130,7 +131,8 @@ test('an off probe is not supported and stays at the boot speed', { skip: !haveV
   assert.match(report.why, /does not offer port_speed/);
   assert.equal(hst.link.baud, 115200);
   // offered (the describe cache says so) but the op unknown: unknown_operation
-  hst.describes.set(LINK_FN, [[reg.DESCRIBE_COMMON.ops, Uint8Array.of(1, 0b111)]]);
+  const L = reg.PROBE_LINK.op;
+  hst.describes.set(LINK_FN, [[reg.DESCRIBE_COMMON.ops, packOps([L.source, L.sink, L.port_speed])]]);
   report = await raiseSpeed(hst, [1500000], FAST);
   assert.equal(report.supported, false);
   assert.match(report.why, /unknown_operation/);
@@ -599,18 +601,17 @@ test('broken frames on a held port: resent at once up to BROKEN_RESENDS (3) time
   assert.ok(four.took < 500);
 });
 
-test('a broken frame with no session is noise: skipped, the request resent only after its timeout', async () => {
+test('a broken frame on a port no session holds is resent at once too (transports §4: OEP frames only)', async () => {
   const { transport, writes } = brokenOnce(5);
-  const link = new Link(transport, { timeoutMs: 300 });
+  const link = new Link(transport, { timeoutMs: 2000 });
   await link.start();
   new Host(link);                                        // no session open
   const t0 = performance.now();
   const reply = await link.send(new m.Request(5, 0, m.OP.keepalive, new Uint8Array()).pack());
   assert.equal(m.Result.unpack(reply).corr, 5);
-  assert.ok(performance.now() - t0 >= 290, 'waited out the timeout');
-  assert.deepEqual(writes.map((w) => w.corr), [5, 5]);
-  assert.equal(link.stats.corrupt, 0);
-  assert.ok(link.stats.noise > 0);
+  assert.ok(performance.now() - t0 < 500, 'resent at once, not after the timeout');
+  assert.deepEqual(writes.map((w) => w.corr), [5, 5]);  // the same corr (core §5.1)
+  assert.equal(link.stats.corrupt, 1);
 });
 
 /** @param {number} ms */
@@ -739,6 +740,7 @@ test('a raised link keeps the line alive when quiet', { skip: !haveVirtualBench 
     onWrite(msg) { if (m.Request.unpack(msg).op === m.OP.keepalive) keepalives++; return true; },
   }, async (hst) => {
     await raiseSpeed(hst, [750000], FAST);
+    keepalives = 0;                                                // the raise's own requests aside
     assert.equal(await hst.link.keepAlive(), false);              // just spoke: nothing to do
     for (let i = 0; i < 3; i++) {                                  // 3.6 s in all, past the probe's idle limit
       await sleep(KEEPALIVE_MS + 200);
@@ -809,7 +811,7 @@ test('connect on a serial port gives up after about 4 s; other transports keep t
   try {
     const t1 = performance.now();
     await assert.rejects(connect({ ...other.transport, kind: 'tcp' }, { timeoutMs: 300 }), (e) => e instanceof NotOepProbe && /** @type {any} */ (e).cause instanceof Timeout);
-    assert.ok(performance.now() - t1 < 3000);                      // the confirm, its resend: no 4 s retry
+    assert.ok(performance.now() - t1 < 2 * PROBE_WAIT_MS + 1000);    // the confirm, its resend: no 4 s retry
   } finally {
     other.bench.stop();
   }

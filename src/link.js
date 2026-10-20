@@ -3,19 +3,25 @@
 // the probe's pushes and events.
 //
 // Framing follows the kind of transport. A serial port (USB CDC, USB-Serial/JTAG, a UART bridge) carries COBS + CRC
-// frames 0x00 <COBS> 0x00 and the probe's raw bytes on the same line: every span between 0x00s is a candidate, and one
-// that does not decode is noise (§3.1, §3.4). Vendor bulk, HID and TCP carry length(u16) message, with no CRC: a
-// result for no request waiting, a length that cannot be right (over max_frame), a frame that stops half way, or a
-// request with no answer in time loses the boundaries, and the link finds them again as transports §5 says (`resync`):
+// frames 0x00 <COBS> 0x00 and OEP frames only (transports §4): every span between 0x00s is a candidate, and one that
+// does not decode or fails its CRC is a broken frame - most likely the awaited answer, sent again at once. A result for
+// a corr not waited for is read past on every framing (core §10.1): it is no lost boundary. Vendor bulk, HID and TCP
+// carry length(u16) message, with no CRC: a length that cannot be right (over max_frame), a frame that stops half way,
+// or (vendor bulk, HID) a request with no answer in time loses the boundaries, and the link finds them again as
+// transports §5 says (`resync`):
 // it reads and discards until the input has been quiet for 50 ms and 250 ms have passed since this host last wrote
 // (longer than probe_frame_gap_ms: a frame left half written is then dropped by the probe's own gap), sends a confirm and waits for
 // the result with its corr (up to 3 tries; other results meanwhile are read past), then the requests still waiting go
 // once more with the same corr (§5.2; one already sent twice fails with FramingLost). A frame that stops half way is a
 // lost boundary on vendor bulk and HID only: TCP keeps its boundaries and a pause inside a frame is normal there
-// (`Transport.keepsBoundaries`, transports §5). When pushes keep the input from going quiet for
-// 1 s, the host's unsubscribe and end go out once, blind (both harmless twice); the session requests waiting then are
-// not sent again (the session ended). New requests wait for the resync. While the transport is being probed (core
-// §3.3) there is no resync: its confirms would be more than the probing rule allows.
+// (`Transport.keepsBoundaries`, transports §5); a TCP connection whose framing broke is closed and opened again first
+// (`Transport.reopen`), and a TCP request with no answer is no lost boundary - sent again as on a serial port, the
+// transport failing when that gets none either. When pushes keep the input from going quiet for 1 s, the transport is
+// closed and opened again once (transports §5); one that cannot be fails what waits (FramingLost). The session and its
+// subscriptions stay on the probe, but a subscription still sends where its subscribe came - the closed transport - so
+// the host subscribes again on the new one before its next request (`onReopen`; core §10.3). New requests wait for the
+// resync. While the transport is being probed (core §3.3) there is no resync: its confirms would be more than the
+// probing rule allows.
 //
 // A request whose answer does not come in time goes once more with the same corr: the probe keeps the lock holder's
 // recent results by corr and answers the repeat from them, so a state-changing request does not run twice (§5.2). On
@@ -66,10 +72,9 @@
 // connect) repeats its first confirm at the boot speed for OPEN_RETRY_MS (transports §4): a host that raised the speed
 // and died leaves the probe at its rate until then.
 //
-// A serial port that a session holds carries no raw bytes from the probe (transports §4): a broken candidate there is
-// a broken frame, most likely the reply the oldest request waits for, so that request goes once more at once (the
-// same corr, answered from the probe's retry table, §5.2) instead of after its timeout. Without a session it is the
-// port's raw bytes: noise, skipped.
+// A serial port carries OEP frames only (transports §4): a broken candidate there is a broken frame, most likely the
+// reply the oldest request waits for, so that request goes once more at once (the same corr, answered from the probe's
+// record, §5.1) instead of after its timeout.
 
 import * as reg from './registry.js';
 import * as cobs from './cobs.js';
@@ -91,7 +96,7 @@ export const RESYNC_WAIT_MS = STALL_MS + 50;
 const ANSWER_BURST_MAX = 6144;
 /** Length-prefixed links: the resync reads and discards until the input has been quiet this long (transports §5). */
 export const RESYNC_QUIET_MS = 50;
-/** ... and when it is still not quiet after this, sends the blind stops (unsubscribe, end). */
+/** ... and when it is still not quiet after this, closes the transport and opens it again (transports §5). */
 export const RESYNC_NOISY_MS = 1000;
 /** ... confirms (each after a quiet input) before the resync gives up. */
 export const RESYNC_TRIES = 3;
@@ -143,6 +148,8 @@ export const RAISED_WAIT_MIN_MS = 300;
  * @property {string} [path]              a serial port's OS device path (the port_speed record's key, with the unit_id)
  * @property {boolean} [keepsBoundaries]  length frames on a stream that keeps them (TCP): a pause inside a frame is
  *   read on, never taken for lost boundaries (transports §5)
+ * @property {() => Promise<void>} [reopen]  close and open the same transport again (TCP), delivering to the same
+ *   callbacks `start` was given: what a broken framing or a stream that never goes quiet needs (transports §5)
  */
 
 /** One request waiting for its answer: `resendOk` (it may go again: the link's resend on), `waited` (resends after a
@@ -230,8 +237,8 @@ export class Link {
     /** @type {Promise<void> | null} length-prefixed: the §5.1 resync under way (new requests wait for it) */ this.resyncing = null;
     this.discarding = false;                 // ... reading and discarding until the input is quiet
     /** @type {{ corr: number, done: (ok: boolean, frame?: Uint8Array) => void } | null} ... its confirm, waiting */ this.resyncWaiter = null;
-    /** @type {() => Uint8Array[]} the host's blind stops (unsubscribe every subscription, end; bound by Host) */ this.blind = () => [];
-    this.endedBlind = false;                 // the last resync sent the blind end: the session is over
+    /** @type {() => void} the transport closed and opened again (`reopen`; bound by Host: subscribe again, core §10.3) */
+    this.onReopen = () => {};
     this.probing = false;                    // the probing rule runs (open.js): no resync
     /** @type {number | null} when this host last wrote to the transport (null: never; transports §5) */ this.lastWrite = null;
     /** @type {number} min_max_frame until a confirm answer, then its max_frame (the wait's transfer time; §4.4, N-1) */
@@ -268,9 +275,10 @@ export class Link {
     let r;
     try { r = Result.unpack(frame); } catch { return; }
     const p = r.payload;
-    if (!r.succeeded || p.length < 17 || text(p.subarray(0, 4)) !== reg.CONFIRM_RESULT_MAGIC || p[4] < 1) return;
-    this.probeMaxFrame = Math.max(reg.MIN_MAX_FRAME, getU16(p, 6));
-    this.onBootId(getU32(p, 13));
+    // magic revision max_frame(u16) window(u32) max_inflight(u8) boot_id(u32) (core §7.1)
+    if (!r.succeeded || p.length < 16 || text(p.subarray(0, 4)) !== reg.CONFIRM_RESULT_MAGIC || p[4] < 1) return;
+    this.probeMaxFrame = Math.max(reg.MIN_MAX_FRAME, getU16(p, 5));
+    this.onBootId(getU32(p, 12));
   }
 
   /** @param {unknown} error */
@@ -322,11 +330,11 @@ export class Link {
       try {
         message = cobs.unframe(raw);
       } catch {
-        this.stats.noise += raw.length;     // the port's raw bytes, or a broken frame: noise, no resend
-        if (this.held()) {                  // ... unless a session holds the port: then it was a broken frame (§5.2)
-          this.count('broken');
-          this.resendNow();
-        }
+        // a serial transport carries OEP frames only (transports §4): a broken frame - most likely the reply, sent
+        // again now instead of after its wait (a repeat is answered from the probe's record, §5.1)
+        this.stats.noise += raw.length;
+        this.count('broken');
+        this.resendNow();
         continue;
       }
       this.moved(raw.length + 2);
@@ -366,9 +374,8 @@ export class Link {
         return;
       }
       const p = this.pending.get(corr);
-      if (!p) {                                 // a late answer to a request already answered, or someone else's
-        this.stats.stale++;
-        if (this.framing === 'length') this.framingLost(false);   // no CRC here: the boundaries may be off (§5.1)
+      if (!p) {                                 // a late answer, or someone else's: read past on every framing
+        this.stats.stale++;                     // (core §10.1; transports §5: no broken boundary)
         return;
       }
       this.pending.delete(corr);
@@ -388,16 +395,13 @@ export class Link {
   }
 
   /** A frame that decoded but cannot be read (C-36): on a length-framed link the boundaries are in doubt (the §5.1
-   * resync follows); on a serial port it is a broken frame like a bad CRC - the awaited answer while a session holds
-   * the port (resent at once, §5.2), noise otherwise. @param {Uint8Array} frame */
+   * resync follows); on a serial port it is a broken frame like a bad CRC - most likely the awaited answer, resent at
+   * once (core §5.1; transports §4: the port carries OEP frames only). @param {Uint8Array} frame */
   broken(frame) {
     if (this.framing === 'length') { this.framingLost(); return; }
-    if (this.held()) {
-      this.count('broken');
-      this.resendNow();
-      return;
-    }
     this.stats.noise += frame.length;
+    this.count('broken');
+    this.resendNow();
   }
 
   /** A broken frame on a held port: the oldest request still waiting goes again now with the same corr, not after its
@@ -429,6 +433,8 @@ export class Link {
 
   /** @param {Uint8Array} message */
   framed(message) {
+    // max_frame binds the host too: min_max_frame (64) until a confirm answer, then its max_frame (transports §3)
+    if (message.length > this.probeMaxFrame) throw new RangeError(`a ${message.length}-byte message is over max_frame ${this.probeMaxFrame}`);
     if (this.framing === 'cobs') return cobs.frame(message);
     if (!message.length || message.length > this.maxFrame) throw new RangeError(`message length ${message.length} outside 1..${this.maxFrame}`);
     const out = new Uint8Array(2 + message.length);
@@ -467,7 +473,7 @@ export class Link {
       this.failedTransport = '';            // the fall back confirmed the probe at the boot speed: recovered
       reply = await this.sendOnce(message, { timeoutMs: this.waitMs(expectMs, message) });   // once more at the boot speed (the probe answers a repeat from what it kept)
     }
-    if (this.baseBaud !== null && this.baud !== this.baseBaud && reverts(message, reply, this.speedFn, this.restartFn)) {
+    if (this.baseBaud !== null && this.baud !== this.baseBaud && reverts(message, reply, this.speedFn, this.restartFn, this.sessionId())) {
       await this.setBaud(this.baseBaud);    // the probe went back right after this answer (oep-if-link §3 host 2)
       if (this.speed) { this.speed.rate = this.baseBaud; this.speed.chosen = null; }
     }
@@ -498,8 +504,8 @@ export class Link {
       const arm = () => {
         p.timer = setTimeout(() => {
           this.count('lost');               // no good answer within the wait (host guide §17.3.2)
-          if (this.framing === 'length' && !this.probing) {
-            // length-prefixed: resync first (§5.1), then it goes once more (§5.2) - or, resent already, it fails
+          if (this.framing === 'length' && !this.keepsBoundaries() && !this.probing) {
+            // vendor bulk / HID: resync first (§5.1), then it goes once more (§5.2) - or, resent already, it fails
             if (!p.resendOk || p.waited !== 0) {
               this.pending.delete(corr);
               reject(missing());
@@ -549,28 +555,26 @@ export class Link {
     return run;
   }
 
-  /** transports §5: read and discard until the input is quiet for RESYNC_QUIET_MS, then a confirm (a read, safe to send)
-   * whose answer, by its corr, proves the boundaries; RESYNC_TRIES of them. Not quiet in RESYNC_NOISY_MS (pushes keep
-   * coming): the host's unsubscribe and end go out once, blind. Then the requests still waiting go once more with
-   * the same corr; none back: every one fails with FramingLost. Never rejects. */
+  /** transports §5: read and discard until the input is quiet for RESYNC_QUIET_MS, then a confirm (a read, safe to
+   * send) whose answer, by its corr, proves the boundaries; RESYNC_TRIES of them. TCP (its boundaries kept: a broken
+   * framing does not mend by quiet input) is closed and opened again first. Not quiet in RESYNC_NOISY_MS (pushes keep
+   * coming): the transport is closed and opened again, once; one that cannot be, or stays noisy, fails what waits.
+   * Nothing that changes state goes out before the confirm (core §5.1). Then the requests still waiting go once more
+   * with the same corr; none back: every one fails with FramingLost. Never rejects. */
   async resync() {
-    this.endedBlind = false;
-    let blindSent = false;
+    let reopened = false;
     try {
+      if (this.keepsBoundaries()) { await this.reopen(); reopened = true; }
       for (let i = 0; i < RESYNC_TRIES; i++) {
         this.discarding = true;
         this.buf = new Uint8Array(0);
         while (!(await this.quiet(RESYNC_QUIET_MS, RESYNC_NOISY_MS))) {
-          if (blindSent || this.closed) {
-            this.failPending(new FramingLost('resync: the input never went quiet, even after unsubscribe and end'));
+          if (reopened || this.closed || !this.transport.reopen) {
+            this.failPending(new FramingLost('resync: the input never went quiet - close the transport and open it again (transports §5)'));
             return;
           }
-          blindSent = true;
-          const stops = this.blind();
-          if (stops.length) {
-            await this.writeAll(stops);
-            this.endedBlind = true;          // the session ended: a session request sent again would meet no_session
-          }
+          await this.reopen();               // transports §5: no quiet - closed and opened again
+          reopened = true;
         }
         await this.settleBeforeConfirm();    // still discarding: 250 ms since the last write (§5.1)
         this.discarding = false;
@@ -589,6 +593,21 @@ export class Link {
       this.discarding = false;
       this.resyncWaiter = null;
     }
+  }
+
+  /** A length-framed stream that never loses a boundary (TCP, transports §2). */
+  keepsBoundaries() { return this.framing === 'length' && !!this.transport.keepsBoundaries; }
+
+  /** transports §5: the transport closed and opened again (TCP: `Transport.reopen`) - its parser on the probe starts
+   * afresh, the session and the resend record stay there (§3); the confirm that follows on it shows its boot_id. What
+   * was gathered is dropped, and the host subscribes again before its next request (`onReopen`, core §10.3). Throws when
+   * the transport cannot be opened again. */
+  async reopen() {
+    if (!this.transport.reopen) throw new FramingLost('the framing broke: close the transport and open it again (transports §5)');
+    await this.transport.reopen();
+    this.buf = new Uint8Array(0);
+    this.lastWrite = null;
+    this.onReopen();
   }
 
   /** transports §5: before a resync's confirm, and the first confirm on a length-prefixed port, longer than
@@ -644,15 +663,13 @@ export class Link {
   }
 
   /** After the resync: every request still waiting goes once more with the same corr (§5.2; the probe answers a repeat
-   * from what it kept), in the order sent. One sent twice already, and a session request after the blind end, fail. */
+   * from what it kept), in the order sent. One sent twice already fails. */
   async resendPending() {
     /** @type {Uint8Array[]} */ const again = [];
     for (const [corr, p] of [...this.pending]) {
-      const used = !p.resendOk || p.waited !== 0;
-      if (used || (this.endedBlind && sessionOf(p.message))) {
+      if (!p.resendOk || p.waited !== 0) {
         this.pending.delete(corr);
-        p.reject(new FramingLost(used ? `the frame boundaries were lost again (corr ${corr}, already sent twice)`
-          : `the resync ended the session blind (corr ${corr} not sent again)`));
+        p.reject(new FramingLost(`the frame boundaries were lost again (corr ${corr}, already sent twice)`));
         continue;
       }
       p.waited = 1;
@@ -686,7 +703,9 @@ export class Link {
    * @param {string} what @param {boolean} broken */
   transportFailed(what, broken) {
     const why = `a request and its resend got no answer (${what})`;
-    if (this.framing !== 'length') {
+    // a serial port recovers next; so does TCP, whose boundaries hold: the connection is closed and opened again, and
+    // confirmed, before anything else goes out (core §5.1). Vendor bulk / HID have just started their §5.1 resync.
+    if (this.framing !== 'length' || this.keepsBoundaries()) {
       this.failedTransport = why;
       this.failPending(new TransportFailed(`${why}: outstanding with it, its outcome is unknown`));
     }
@@ -704,9 +723,10 @@ export class Link {
   recoverTransport(tries = RESYNC_TRIES) {
     if (this.recovering) return this.recovering;
     const run = async () => {
-      if (this.framing === 'length') {
+      if (this.framing === 'length' && !this.keepsBoundaries()) {
         await this.startResync();
       } else {
+        if (this.keepsBoundaries()) await this.reopen();   // TCP: closed and opened again (core §5.1)
         let ok = false;
         for (let i = 0; i < tries && !ok && !this.closed; i++) {
           this.discarding = true;
@@ -1135,12 +1155,17 @@ function completed(message, reply, fn = CORE_FN) {
  * @param {Uint8Array} message @param {Uint8Array} reply */
 function coreCompleted(message, reply) { return completed(message, reply); }
 
-/** A completed end, a completed restart on oep.probe.restart (`restartFn`: the probe starts again at its boot speed,
- * oep-if-restart §2), or port_speed's revert on oep.probe.link (`speedFn`): the probe is back at its boot speed once this
- * answer is out (oep-if-link §3 host 2).
- * @param {Uint8Array} message @param {Uint8Array} reply @param {number | null} speedFn @param {number | null} restartFn */
-function reverts(message, reply, speedFn, restartFn = null) {
-  if (coreCompleted(message, reply) === OP.end) return true;
+/** A completed end, a successful open with force for another session id, a completed restart on oep.probe.restart
+ * (`restartFn`: the probe starts again at its boot speed, oep-if-restart §2), or port_speed's revert on oep.probe.link
+ * (`speedFn`): the probe is back at its boot speed once this answer is out (oep-if-link §3 host 2).
+ * @param {Uint8Array} message @param {Uint8Array} reply @param {number | null} speedFn @param {number | null} restartFn
+ * @param {number | null} session the session this host holds */
+function reverts(message, reply, speedFn, restartFn = null, session = null) {
+  const op = coreCompleted(message, reply);
+  if (op === OP.end) return true;
+  // a successful open with force for another session id: the lock changes hands (the same id's open keeps the speed)
+  if (op === OP.open && reply[4] === reg.OUTCOMES.success && message.length >= REQUEST_HEADER + 5
+      && message[REQUEST_HEADER + 4] && sessionOf(message) !== session) return true;
   if (completed(message, reply, restartFn) === reg.PROBE_RESTART.op.restart) return true;
   const at = REQUEST_HEADER + 4;   // baud(u32) step(u8)
   return completed(message, reply, speedFn) === reg.PROBE_LINK.op.port_speed && message.length > at

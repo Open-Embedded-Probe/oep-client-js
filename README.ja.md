@@ -12,21 +12,26 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 
 **v1 の凍結の前に、ひととおり移した版です。仕様が固まるにつれて作り直す前提です。**
 
-**実装する仕様: oep-spec の commit `c6ab5d9`**（66c49e7〜dd5a886: 2026-10-07 のロジックキャプチャの変更 ― layout の w は 1〜128 の任意の整数、連続に保てない区画は出さずにトラックをエラーで止める、multirate（`multirate.Multirate`、`LogicCapture.decodeMultirate`）。0098b56〜2c6d18d: 0991759 のインターフェースの再確認 ― marks とキャプチャの segments の通し番号のページング、console の streams の first(u16)、キャプチャの configure の契約、一周してどの出来事にも付く世代、capture-group の start の応答の固定部、step / run / transfer の細部、spi-target のビットの詰め方を含む）（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
-だけでは形が決まらないので、実装は実装する仕様を名乗る）。2026-10-06 の単純化（10 byte の要求の見出し 1 つ、TLV の len は u16、
-閉じた固定の形、describe の `ops` tag、再開なし）、コンソールの送りの列と reset の後の待ち（f0c68bf）、長い probe.config の項目
-（d34dafa）、既存の connection に加わる attach（59dd028）と、2026-10-06 の構造（2e5dc4c〜9c837a9、0304f37）: 本体は名前を
-持たない（fn 0、list に載らない）、plan と再起動と線の試験はインターフェース `oep.probe.plan`、`oep.probe.restart`、
-`oep.probe.link`、subscribe / unsubscribe は通知を送るインターフェース自身の op 0x30 / 0x32（heartbeat は無い）、fn 0 の `clock` が
-probe の時刻を返す（要求を処理する間に読む。e0d9dc6、498ae95）― に、2026-10-07 の規則の見直し（7688c49〜0f455a0、
-`docs/v1-rule-review-2026-10-07.ja.md` §2 / §7）と外部レビューの再確認とその後の直し（283e5b5〜f8bb2de）を加えたもの: ignored の
-TLV は無い（知らない非 critical の TLV は跡を残さず無視し、実装する TLV は bit 7 によらず同じに確かめる）、送り直しの表は
-(corr、応答)、list は `first` だけ、probe の内部の時間は文から消えた（attach、scan、riscv-dm の reset は max_op_ms のうちに答える）、
-port_speed は握手だけ（baud、step、verify_ms）、probe.config は slot の錠も boot_reset も無く bind はストリーム 1 本、gpio の drive は
-u8 の段、インターフェースの名前は 1〜48 byte、走り直す host は前の実行が残したセッションを終える（host ガイド §5）― に、その後
-（c2b8007〜30b2b36）の probe.config の wifi の項目（passphrase は書くだけ）、unset の len は key だけを数えること、TCP の probe の
-見つけ方（mDNS の DNS-SD `_oep._tcp`、transports §3）、（29902a6〜9118dc0）wifi の項目を持つ probe はどの経路でも max_frame 112
-以上を答えること（`wifi_min_max_frame`）、TCP の probe が自分を知らせるかは probe が選ぶことを加えたもの。
+**実装する仕様: oep-spec の commit `32724e4`**（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
+だけでは形が決まらないので、実装は実装する仕様を名乗る）。oep-client-python 0.0.36 と同じ仕様です。`c6ab5d9` からの主な変更:
+
+- confirm の答えと list の項目から flags が無くなった。
+- reject の理由に `no_resource` が入り、busy と accepted は無くなった。
+- 名前つきの拡張 TLV が入り、TLV の番号 0 は malformed になった。
+- どの要求にも処理の上限がある（max_op_ms。fn 0 の短い操作は `core_quick_op_max_ms` まで）。状態を変える要求の前に fn 0 の
+  describe を読む。
+- session_id 0 の要求で、セッションの corr を空間の半分まで動かさない。
+- 購読は経路ごとに持ち、開き直したら購読し直す。
+- 古い corr への答えはどの枠組みでも読み飛ばす。枠組みの壊れた TCP は閉じて開き直す。COBS の壊れた候補はすぐ送り直す。
+- debug: attach のピンと max_speed は固定部分に入った。attach は毎回新しい接続を作り、接続番号は u32 になった。`holds` と、
+  rvswd の休ませ方が入った。
+- console: ストリームは u32、mechanism は名前の並び。
+- probe.config: 項目は名前つきで、番号は describe が振る（label、idle、disable、passthrough、console-passthrough、rvswd-rest、
+  wire-hold、wifi、ipv4、probe 独自の項目）。世代と network の操作が入った。
+- gpio: 出力の強さの選択が無くなった。
+- capture: データ形式 1 / 4 が入った（multirate は無くなった）。trigger_opts、トリガの記録、stream_buffer、judge_latency_ns、
+  名前つきの capture-drops の診断、capture-group の出来事の元（§4.4）が入った。
+
 凍結までは日本語の文（`.ja.md`）が仕様の作業の文。
 
 入っているもの:
@@ -117,48 +122,53 @@ u8 の段、インターフェースの名前は 1〜48 byte、走り直す host
   `ConsoleIO` は多くても 1 フレームずつ書き、`accepted` の続きから送る。ストリームは接続と mechanism ごとに probe の
   もの: 閉じたものは次の open まで読め、次の open は同じ番号を返す
 - debug の待ち（oep-if-debug §1、§4.3）: attach、scan、riscv-dm の reset は max_op_ms のうちに答え、それが host の待ちの引数の時間
-  （`Wire.attachMs()`、`scanMs()`、`RiscvDm.resetMs()`。宣言の無い probe には `core.FALLBACK_MAX_OP_MS`）。riscv-dm の reset の応答は
-  status flags pc（`reset({ confirm })` は `{ flags, pc }`、method は無い）。準備が失敗した run は stopped 3（`RunResult.notRun`）。
-  `readRegister` は DATA0 を取っておき（`dataSaved`）、`resume` / `step` / `run` は先に書き戻す（`restoreData`、debug §4）。target_id の
-  scheme は `dmi_7f`（`Wire.SCHEME_DMI_7F`）
-- block の操作: riscv-dm / arm-adi の `readBlock` / `writeBlock` は probe が宣言した `max_length` で区切る（`RiscvDm` / `ArmAdi` の
-  `.maxLength` byte、`.maxWords`。oep-if-debug §4.5 / §6）。`MemAp` もそれで分け、block op を持つのに宣言しない probe は
-  `riscv.NoMaxLength`。max_frame からは何も計算しない
-- gpio の出力の強さ（oep-if-fixture §1.1）: `Gpio.set([[ch, mode, Drive.level(1)]])`（出力の要素ごとの drive。u8 の段、0xFF は
-  `Drive.default()`。critical で送る。drive_levels を越える段や drive_levels の無い probe への drive は `Unsupported`）。
-  `driveLevels()` は `DriveLevels`（`defaultLevel`、`ma`、`pick(drive)`、`atMost(ma)`: probe をまたいで強さを運ぶ）。read は段だけを
-  返す。設定の `Idle({ ..., drive })`（4 byte）。`config.findLine(config, slotName, 'nrst')` は probe.config §1.3 の
-  線の探し方で、手順 (c) に firmware の固定のラベルを使う（`lineFromLabels` は同じことを素のデータで）
-- fixture: i2c-target は 1 つの形（`configure(address)`、データのある書き込み 1 回が 1 フレーム、読み出しは `preloadTx` の置き場か
-  0xFF、`status()` は `{ state, queued, rxFrames, txSlots, errors }`、`internalPullups()`。stretch は任意の op）。spi-target に reset は
-  無い。uart の `status()` は `{ baud, format }`
-- probe.config: slot に錠も boot_reset も無い（target の確かめは host が connections の tid で）。`SlotState` は `{ slot, state:
-  connected | absent, connection, lastTryAtNs }`。bind はストリーム 1 本（`Bind({ port, stream: ['slot', n] | ['uart', fn] })`、
-  `BindState` は `{ port, flow }`）。idle の項目は 4 byte。hash は probe が作る ― host は項目を比べる（`config.sameItems`）。
-  `ProbeConfig.needsSave()` と `apply(wanted, { save })`（host ガイド §15）。unset の要素の len は key の byte 数だけを数える
-  （`config.remove(kind, key)`）
-- Wi-Fi（probe.config §1.4、§3.3、host ガイド §15.1）: `config.Wifi({ index, ssid, passphrase })` ― passphrase は null（開いた
+  （`Wire.attachMs()`、`scanMs()`、`RiscvDm.resetMs()`。宣言の無い probe には `core.FALLBACK_MAX_OP_MS`）。attach はピンを固定部分で
+  名指し（`pins` が null なら、describe から作る `candidatePairs()` の 1 組）、毎回新しい接続を作る（生きた接続が持つピンは
+  `Unavailable` cause 1）。`scan()` はペアを渡さなければ候補の組を、max_frame に収まる要求に分けて試す。`holds()` は休ませて
+  保っている口を返す。rvswd の `idleClock` は接続の休ませ方。riscv-dm の reset の応答は status flags pc（`reset()` は
+  `{ flags, pc }`。先に DATA0 を書き戻す）。準備が失敗した run は stopped 3（`RunResult.notRun`）、知らない stopped は
+  `unknownStopped`。`readRegister` は DATA0 を取っておき（`dataSaved`）、`resume` / `step` / `run` / `reset` は先に書き戻す
+  （`restoreData`、debug §4）。`declared()` は持っている任意の op を名前で返す（halt と resume も任意）
+- block の操作: riscv-dm / arm-adi の `readBlock` / `writeBlock` は、max_length と経路の max_frame が運べる分の小さいほう / 4 語
+  まで（oep-if-debug §4.5）。block op を持つのに max_length を宣言しない probe は `riscv.NoMaxLength`。read_block / write_block の
+  無い probe の MEM-AP は、生の transfer の並びで動かす
+- fixture: gpio の set は [channel, mode] の組（強さの選択は無く、出力の強さは probe が決める）。i2c-target は 1 つの形
+  （`configure(address)`、データのある書き込み 1 回が 1 フレーム、読み出しは `preloadTx` の置き場か 0xFF、`status()` は
+  `{ state, queued, rxFrames, txSlots, errors }`、`internalPullups()`。stretch は任意の op）。spi-target に reset は無い。uart の
+  `status()` は `{ baud, format, configured }`（baud 0 は設定前）
+- probe.config（oep-if-probe-config）: 項目は名前つきで、番号はこの boot の describe が振る（`ProbeConfig.describe()` は `settings`
+  と `netifs` を持つ `Declared`。`wire(item)` は名前から番号を引く）。`Label`、`Idle`、`Disable`、`Passthrough`（セッションが
+  使っていない間、fixture UART の RX をシリアルの口へ流す）、`ConsolePassthrough`（target の debug コンソールを同じように）、
+  `RvswdRest`、`WireHold`、`Wifi`、`Ipv4`、`Own`（probe 独自の逆 DNS の名前の項目。宣言された form で符号化し、secret のものは
+  書くだけ）。`get()` は世代と [name, key, data] の項目。set / unset / save / erase / `state()`（`{ storage, savedGeneration,
+  reason }`）/ `network()`（TCP の port と、netif ごとの state、entry、reason、rssi、アドレス）。host は項目を比べる
+  （`config.sameItems`）。`needsSave()` と `apply(wanted, { save })`（host ガイド §15）。`findLine(config, name, { profile,
+  firmware, single })` は host ガイド §5.3 の線の探し方
+- Wi-Fi（probe.config §1.4、host ガイド §15.1）: `config.Wifi({ entry, ssid, passphrase })` ― passphrase は null（開いた
   ネットワーク）、`config.KEEP`（その entry のものを保つ。get の形、pass_len 0xFF）、8〜63 文字の印字できる ASCII か 16 進 64 桁。
   passphrase は書くだけ: get は返さず（`KEEP` と読む）、private field に持つ（`console.log`、`util.inspect`、`JSON.stringify` に
   出ない。`toString()` / `shown()` は set / none と言う）。断ったときの error にも載せない。`sameItems` と `apply` は wifi の項目を
-  passphrase 抜きで比べ、変わる entry にだけ送る。`describe()` は `wifiMax`、`state()` は `wifi`（`WifiState`: state、entry、
-  reason、rssi、ipv4。`text()`）。ページの Wi-Fi の欄は passphrase を password の欄で受け、読んだら消し、probe から埋め戻さない
-  （空: 保つ。「開いたネットワーク」: なし）
-- キャプチャ: configure の TLV は core §2.3 だけに従う（扱わない値は受け取ったままの tag で `Unsupported`）。応答に timing と
-  rate_accuracy は無い。describe の mode は mode max_samples max_segments
+  passphrase 抜きで比べ、変わる entry にだけ送る。ページの Wi-Fi の欄は passphrase を password の欄で受け、読んだら消し、probe
+  から埋め戻さない（空: 保つ。「開いたネットワーク」: なし）
+- キャプチャ: configure の TLV は core §2.3 に従う（扱わない値は受け取ったままの tag で `Unsupported`）。データ形式 1 のロジック
+  ブロック（`dataFormat`、`events` は role → D、`roles`、`blockMax`。区画は `blocks()` か `columns()` で読む、captureblocks.js）と
+  4 の試験用カウンタ。`triggerOpts`（arm、rearm、when、hysteresis）、トリガの記録（`triggers()`）、stream_buffer
+  （`Config.tolerableDelayS()`）、judge_latency_ns。ストリームのフレームの区画の情報（`Received.segments`）。probe がもう持たない
+  バイトの `read()` は `ReadGap`。status の名前つきの拡張（`CaptureDrops.of(status)`、Arduino の firmware の落としの診断）。
+  capture-group は即時に一緒に始めるトラックを束ねるか、`Stage` と `Cond` の `TriggerSource` で束ねる（§4.4。`triggerCaps()`
+  で何を受けるかがわかる）
 - 2026-10-02 の規則の変更（oep-spec `docs/v1-rule-change-proposal-2026-10-02.ja.md`）の host の側: attach と scan は予算の分
   待つ（`attachMs`、`scanMs`）。`Unsupported.supported`（confirm の扱える範囲）。`x-` の unit_id では USB の機器を探さない。
   応答の文字列は制御文字を除いて見せ（`message.shown`）、open の owner は文字の境で切り（`ownerText`）、probe が断るラベルは
   送らない。`dump` は core §1.2 が求めるもので probe が出さなかったものを示す
-  （`missing`）。キャプチャの mode / rate / trigger / pretrigger / frontend は critical で送る（この host の選択）、start の blocking_ms の間は何も送らず
-  待つ（その後 length のフレームなら立て直し）。`Wire.searchRetries`、`riscv.StepError`（`stepLeft`）
+  （`missing`）。`riscv.StepError`（`stepLeft`）
 
 wire は oep-spec の 2026-10-01 のゼロベース見直しを 2026-10-06 に単純化した形です（session_id を持つ要求の見出し 1 つ、
 TLV の形 1 つ、要素に長さを置かない並び、閉じた固定の形、`ops` tag、再開なし。変更履歴を参照）に、2026-10-06 の構造（名前の
 無い本体、oep.probe のインターフェース、インターフェースごとの通知）を加えたもの。
 oep-client-python の仮想ベンチ（probe とその先の target、治具の配線を実際の治具に合わせて作ったもの:
-`python -m oep_client.virtual_bench_serve`）と台本のデバイスで試しています（348 件。oep-spec の試験ベクタを含み、sessions.json、
-ops.json、ops_encoding.json も）。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
+`python -m oep_client.virtual_bench_serve`）と台本のデバイスで試しています（oep-spec の試験ベクタを含み、sessions.json、
+ops.json、ops_encoding.json、capture_formats.json、logic_layout.json も）。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
 
 v1 の凍結までは仕様が壊れることがあり、この package は probe の firmware
 （[OpenEmbeddedProbe](https://github.com/Open-Embedded-Probe/oep-probe-arduino)）と

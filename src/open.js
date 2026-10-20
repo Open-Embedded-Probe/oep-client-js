@@ -8,8 +8,8 @@ import { NotOepProbe, UnitIdMismatch } from './errors.js';
 import { DEFAULT_CANDIDATES, leaseFor, raiseSpeed } from './speed.js';
 import { KeptSession } from './keptsession.js';
 
-/** The probing rule's wait for confirm's answer (transports §3, core §4.4: confirm sets no time, so 1000 ms). */
-export const PROBE_WAIT_MS = reg.TIMING.host_wait_add_ms;
+/** The probing rule's wait for confirm's answer (transports §3, core §4.4): a quick op's bound and the host's own addition. */
+export const PROBE_WAIT_MS = reg.TIMING.core_quick_op_max_ms + reg.TIMING.host_wait_add_ms;   // a confirm is a quick op (core §4.4)
 
 /**
  * The probing rule (transports §3): every transport this client opens - one it has not identified, and a project VID:PID

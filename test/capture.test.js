@@ -11,6 +11,7 @@ import { Writer, concat } from '../src/bytes.js';
 import { describe, find, planApply, planRelease, take } from '../src/core.js';
 import { Rejected, Unavailable, Unsupported } from '../src/errors.js';
 import * as m from '../src/message.js';
+import * as reg from '../src/registry.js';
 import { openTcp } from '../src/node/index.js';
 import { PYTHON, haveVirtualBench, join, startVirtualBench } from './virtual-bench.js';
 
@@ -55,14 +56,14 @@ test('the configure answer is read into actual values', () => {
 test('analog answers: signed zero and scale, skew, frontend, reference', () => {
   const scale = new Writer().u8(1).i32(-5).i32(-800).done();
   const cfg = c.parseConfig(answer([c.LAYOUT, [16, 0, 12, 2, 0, 1]], [c.SCALE, scale], [c.SKEW, [1, ...u32(54000)]],
-    [c.FRONTEND_USED, [1, 2]], [c.REFERENCE, [1, ...u32(1100), 1]], [c.BLOCKING, u32(7)]), true);
+    [c.FRONTEND_USED, [1, 2]], [c.REFERENCE, [1, ...u32(1100), 1]]), true);
   assert.deepEqual([cfg.slot, cfg.offset, cfg.bits, cfg.order], [16, 0, 12, [0, 1]]);
   assert.equal(cfg.zero.get(1), -5);
   assert.equal(cfg.scaleNv.get(1), -800);
   assert.equal(cfg.skewNs.get(1), 54000);
   assert.equal(cfg.frontend.get(1), 2);
   assert.deepEqual(cfg.reference, { source: 'internal', mv: 1100, measured: true });
-  assert.equal(cfg.blockingMs, 7);
+  assert.deepEqual([...cfg.skewNs].sort((a, b) => a[0] - b[0]), [[0, 0], [1, 54000]]);   // a role with no delay: 0 (§3.3)
 });
 
 test('three channels in four-bit samples with undefined bits', () => {
@@ -87,17 +88,21 @@ test('a segment without a trigger, and bytes after the known ones skipped', () =
   assert.equal(s.startNs, 123000n);
   assert.equal(s.generation, 3);
   assert.equal(c.SEGMENT_BYTES, 37);
-  const ev = c.parseCaptureEvent(Uint8Array.of(0x05, 3, 0, 7, 0, c.EVENT_SEGMENT, ...b));
+  const fixed = b.slice(0, c.SEGMENT_BYTES);
+  const ev = c.parseCaptureEvent(Uint8Array.of(m.ROLE_EVENT, 3, 0, 7, 0, c.EVENT_SEGMENT, ...fixed, ...m.tlv(0x41, [1])));   // a TLV after
   assert.deepEqual([ev.fn, ev.seq, ev.segment?.samples], [3, 7, 200192]);
-  const trig = c.parseCaptureEvent(Uint8Array.of(0x05, 3, 0, 8, 0, c.EVENT_TRIGGERED,
-    ...new Writer().u32(0).u32(5).u64(12345n).u32(3).u8(1).done()));   // ... generation(u32), then a later revision's byte
-  assert.deepEqual([trig.serial, trig.triggerIndex, trig.triggerNs, trig.generation, ev.generation], [0, 5, 12345n, 3, 3]);
+  // serial index record sample(u64) trigger_ns(u64) uncertainty generation (§3.4), then a TLV of a later revision
+  const trig = c.parseCaptureEvent(Uint8Array.of(m.ROLE_EVENT, 3, 0, 8, 0, c.EVENT_TRIGGERED,
+    ...new Writer().u32(0).u32(5).u32(c.NO_RECORD).u64(1005n).u64(12345n).u32(40).u32(3).done(), ...m.tlv(0x41, [1])));
+  assert.deepEqual([trig.serial, trig.triggerIndex, trig.record, trig.sample, trig.triggerNs, trig.uncertaintyNs, trig.generation, ev.generation],
+    [0, 5, null, 1005n, 12345n, 40, 3, 3]);
+  assert.throws(() => c.parseCaptureEvent(Uint8Array.of(m.ROLE_EVENT, 3, 0, 9, 0, c.EVENT_STOPPED, 0)), /too short/);
 });
 
-/** A data frame (core §11.2): role fn seq position(u64) len(u16) data [TLV generation].
+/** A data frame (core §10.2): role fn seq position(u64) len(u16) data [TLV generation].
  * @param {number} fn @param {number} seq @param {bigint} position @param {string} data @param {number | null} [generation] */
 const push = (fn, seq, position, data, generation = null) => {
-  const w = new Writer().u8(0x06).u16(fn).u16(seq).u64(position).u16(data.length).raw(new TextEncoder().encode(data));
+  const w = new Writer().u8(m.ROLE_DATA).u16(fn).u16(seq).u64(position).u16(data.length).raw(new TextEncoder().encode(data));
   if (generation !== null) w.u8(c.DATA_GENERATION).u16(4).u32(generation);
   return w.done();
 };
@@ -138,7 +143,7 @@ test('stream positions past 4 GiB follow on without a gap', async () => {
 
 test("stream does not count the fn's events as lost", async () => {
   const link = fakeLink([[push(2, 0, 0n, 'ab')], [push(2, 2, 2n, 'cd')]]);
-  link.events.push(Uint8Array.of(0x05, 2, 0, 1, 0, 1));
+  link.events.push(Uint8Array.of(m.ROLE_EVENT, 2, 0, 1, 0, c.EVENT_SEGMENT));
   const got = await offline({ link, session: null }, 2).stream({ nbytes: 4 });
   assert.equal(got.seqLost, 0);
   assert.equal(link.events.length, 1);
@@ -146,7 +151,7 @@ test("stream does not count the fn's events as lost", async () => {
 
 test('stream drops pushes of another generation (oep-if-capture §3.4)', async () => {
   const link = fakeLink([[push(2, 0, 90n, 'old', 4), push(2, 1, 0n, 'ab', 5)],
-    [Uint8Array.from([...push(2, 2, 2n, 'cd', 5), 0x55, 1, 0, 0])]]);   // an unknown TLV after it: skipped
+    [Uint8Array.from([...push(2, 2, 2n, 'cd', 5), ...m.tlv(0x55, [0])])]]);   // an unknown TLV after it: skipped
   const cap = offline({ link, session: null }, 2);
   cap.generation = 5;
   const got = await cap.stream({ nbytes: 4 });
@@ -161,10 +166,10 @@ test('read spans frames without the header leaking into the data; the generation
   /** @param {Uint8Array} p */
   const ok = (p) => {
     const rd = new m.Reader(p);
-    const g = rd.u32(), pos = Number(rd.u64()), n = rd.u32();
+    const g = rd.u32(), pos = Number(rd.u64()), n = rd.u16();          // generation position len(u16) (§3.2)
     assert.equal(g, 9);
     const data = stream.subarray(pos, pos + n);
-    return new m.Result(0, m.COMPLETED, m.SUCCESS, new Writer().u64(pos).u8(0).u32(data.length).raw(data).raw([0x41, 1, 0, 0]).done());   // a TLV after
+    return new m.Result(0, m.COMPLETED, m.SUCCESS, new Writer().u64(pos).u8(0).u16(data.length).raw(data).raw(m.tlv(0x41, [0])).done());   // a TLV after
   };
   const hst = {
     session: null,
@@ -261,13 +266,17 @@ test('a rate is the source divided by a whole number; query changes nothing', op
   assert.equal(lc.config, null);
 }));
 
-for (const [kind, role, value, index] of [[c.EDGE, 1, 0, 10], [c.EDGE, 2, 1, 16], [c.LEVEL, 3, 1, 10]]) {
+// the first rise even before 10 samples of history exist; bit 2 first falls at 8; bit 3 first becomes 1 at 8
+for (const [kind, role, value, index] of [[c.EDGE, 1, 0, 2], [c.EDGE, 2, 1, 8], [c.LEVEL, 3, 1, 8]]) {
   test(`a trigger is where the channel does it (type ${kind}, role ${role}, value ${value})`, opts, () => withBench(async ({ hst, lc }) => {
     await planApply(hst, [0, 1, 2, 3].map((r) => /** @type {[number, number, number]} */ ([lc.fn, r, 20 + r])));
-    await lc.configure({ rate: 1_000_000, samples: 64, trigger: [kind, role, value], pretrigger: 10 });
+    await lc.configure({ rate: 1_000_000, samples: 64, trigger: [kind, role, value], pretrigger: 10,
+      triggerOpts: { arm: 0, when: 1 } });                             // the first condition seen from start (§3.3)
     await lc.start();
     const [seg] = await lc.wait();
     assert.equal(seg.triggerIndex, index);
+    assert.equal(seg.samples, 64 - 10 + index);                         // short of pretrigger
+    assert.equal(seg.short, false);                                     // not stopped: no bit1 (§2.2)
   }));
 }
 
@@ -313,8 +322,9 @@ test('repeat fills its ring with the clock and goes on after release', opts, () 
   for (let i = 0; i < 200 && !next.length; i++) { await sleep(5); next = await lc.segments(3); }
   assert.equal(next.length >= 1, true);
   assert.ok(next[0].gap);                                              // it stopped: the next segment says so
-  const r = await lc.request(c.LogicCapture.READ, new Writer().u32(/** @type {number} */ (lc.generation)).u64(0).u32(64).done(), { locked: false });
-  assert.ok(r.payload[8] & 0x02);                                      // released bytes are gone (read: gap)
+  const r = await lc.request(c.LogicCapture.READ, new Writer().u32(/** @type {number} */ (lc.generation)).u64(0).u16(64).done(), { locked: false });
+  assert.ok(r.payload[8] & c.READ_GAP);                                // released bytes are gone (read: gap)
+  await assert.rejects(lc.read(0, 64), c.ReadGap);
 }));
 
 test('streaming pushes the bytes while subscribed', opts, () => withBench(async ({ hst, lc }) => {
@@ -432,7 +442,7 @@ test('analog values, scale and calibration', opts, () => withBench(async ({ hst 
   await planApply(hst, [[an.fn, 0, 16], [an.fn, 1, 17]]);
   const cfg = await an.configure({ rate: 10_000, samples: 256, frontends: { 1: 0 } });
   assert.deepEqual([cfg.slot, cfg.offset, cfg.bits, cfg.order], [16, 0, 12, [0, 1]]);
-  assert.equal(cfg.rateNum * 9, cfg.rateDen * 83_333);               // the ADC's 83.3 kHz divided
+  assert.equal(cfg.rateNum * 8, cfg.rateDen * 83_333);               // the nearest ADC divisor clock, above 10 kHz
   assert.deepEqual(cfg.frontend, new Map([[0, 3], [1, 0]]));
   const skew = Number((1_000_000_000n * BigInt(cfg.rateDen)) / (BigInt(cfg.rateNum) * 2n));
   assert.deepEqual(cfg.skewNs, new Map([[0, 0], [1, skew]]));          // one ADC, in turn
@@ -460,44 +470,40 @@ test('analog values, scale and calibration', opts, () => withBench(async ({ hst 
   assert.ok(Math.abs(ilo + 3100) <= 1 && ihi === 0);
   const cal = await an.calibration();
   assert.deepEqual(cal.factory.map((f) => f.frontend), [0, 1, 2, 3]);
-  assert.equal(cal.factory[0].scheme, 'org.example.virtual_bench.two-point');
-  assert.deepEqual(cal.vrefint, { raw: 1365, ns: seg.startNs, nominalMv: 1100 });
+  assert.equal(cal.factory[0].scheme, 'org.example.virtual-bench.two-point');
+  assert.deepEqual(cal.factory[0].raw, new Writer().u16(150).u16(3950).done());   // raw_len(u16) raw
+  assert.deepEqual([cal.vrefint?.raw, cal.vrefint?.nominalMv], [1365, 1100]);
+  assert.ok(/** @type {bigint} */ (cal.vrefint?.ns) < seg.startNs);          // reference measured before the first channel sample
 }));
 
-test('a group starts logic and analog together and marks the trigger on both', opts, () => withBench(async ({ hst, lc }) => {
+test('a group starts logic and analog together (capture §4.1): one start, each segment\'s own time', opts, () => withBench(async ({ hst, lc }) => {
   const an = await c.AnalogCapture.open(hst);
   const grp = await c.CaptureGroup.open(hst);
-  assert.equal(grp.fn, 12);
   await planApply(hst, [[lc.fn, 0, 20], [lc.fn, 1, 21], [an.fn, 0, 16]]);
-  await lc.configure({ rate: 1_000_000, samples: 10_000, trigger: [c.EDGE, 1, 0], pretrigger: 4000 });
+  await lc.configure({ rate: 1_000_000, samples: 10_000 });
   await an.configure({ rate: 10_000, samples: 100 });
+  assert.deepEqual(await grp.status(), { state: 0, startNs: null, generation: 0, trigger: null });   // nothing bound, never started
+  await grp.bind([lc, an]);
+  await grp.bind([lc, an]);                                            // the same list: nothing changes
+  await assert.rejects(an.start(), (e) => e instanceof Unavailable && e.cause === 'bound_in_group');   // the group starts it
   await grp.subscribe();
-  await grp.bind([lc, an], lc);
-  await assert.rejects(an.start(), Rejected);                          // bound: the group starts it
-  const { startNs } = await grp.start([lc, an]);
+  const startNs = await grp.start([lc, an]);
   assert.ok(lc.armedMs !== null && an.armedMs === lc.armedMs);
-  assert.deepEqual([...grp.generations], [[lc.fn, 1], [an.fn, 1]]);       // the group's start names each track's generation
-  assert.deepEqual([lc.generation, an.generation, grp.generation], [1, 1, 1]);   // the group's own generation (§4.1)
+  assert.deepEqual([...grp.generations], [[lc.fn, 1], [an.fn, 1]]);    // the group's start names each track's generation
+  assert.deepEqual([lc.generation, an.generation, grp.generation], [1, 1, 1]);
   const st = await grp.wait();
-  assert.equal(st.generation, 1);
-  assert.deepEqual([st.startNs, st.triggerFn], [startNs, lc.fn]);
+  assert.deepEqual([st.startNs, st.generation], [startNs, 1]);
   const [ls] = await lc.segments();
   const [as] = await an.segments();
-  assert.deepEqual([ls.generation, as.generation], [1, 1]);
-  assert.equal((await lc.readSegment(ls)).length, lc.cfg.bytes);
   assert.equal(ls.startNs - startNs, 0n);
   assert.equal(as.startNs - startNs, 5000n);                           // the analog starts 5 us later
-  assert.equal(ls.triggerIndex, 4002);
-  assert.equal(st.triggerNs, startNs + 4_002_000n);
-  const expect = Math.round((Number(/** @type {bigint} */ (st.triggerNs) - as.startNs) * an.cfg.rate) / 1e9);
-  assert.equal(as.triggerIndex, expect);
-  assert.equal(expect, 37);
-  const trig = await grp.nextEvent([c.GROUP_EVENT_TRIGGERED], 2000);
-  assert.deepEqual([trig?.triggerFn, trig?.triggerNs, trig?.generation], [lc.fn, st.triggerNs, 1]);
+  assert.deepEqual([ls.triggerIndex, as.triggerIndex, ls.samples, as.samples], [null, null, 10_000, 100]);
+  assert.equal((await lc.readSegment(ls)).length, lc.cfg.bytes);
   const stopped = await grp.nextEvent([c.GROUP_EVENT_STOPPED], 2000);
   assert.deepEqual([stopped?.reason, stopped?.generation], [c.STOPPED_REASON.complete, 1]);
   await grp.bind([]);
   await an.start();                                                    // unbound: its own again
+  assert.equal(an.generation, 2);
 }));
 
 test('a group refuses what it cannot bind', opts, () => withBench(async ({ hst, lc }) => {
@@ -506,16 +512,19 @@ test('a group refuses what it cannot bind', opts, () => withBench(async ({ hst, 
   await planApply(hst, [[lc.fn, 0, 20], [an.fn, 0, 16], [an.fn, 1, 17]]);
   await lc.configure({ rate: 1_000_000, samples: 100 });
   await an.configure({ rate: 10_000, samples: 100, mode: c.REPEAT });
-  await assert.rejects(grp.bind([lc, an]), Rejected);                  // the modes differ
+  await assert.rejects(grp.bind([lc, an]), (e) => e instanceof Unavailable && e.cause === 'wrong_state');   // the modes differ
+  await assert.rejects(grp.bind([lc, lc]), (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);   // the same fn twice
   const stranger = /** @type {c.LogicCapture} */ (offline(hst, 3));
   await assert.rejects(grp.bind([lc, stranger]), (e) => e instanceof Unsupported && e.tag === null && e.fn === 3);   // not in tracks: 0x00 + TLV fn
   await an.configure({ rate: 41_666, samples: 100 });                  // 2 channels x 41.6 kHz = the ADC's budget
   await grp.bind([lc, an]);
   assert.ok(an.cfg.rate * 2 <= 83_333);
-  await assert.rejects(lc.configure({ rate: 1_000_000, samples: 100 }), Rejected);   // bound
+  await assert.rejects(lc.configure({ rate: 1_000_000, samples: 100 }), (e) => e instanceof Unavailable && e.cause === 'bound_in_group');
+  await assert.rejects(lc.start(), (e) => e instanceof Unavailable && e.cause === 'bound_in_group');
   await grp.bind([]);
   await lc.configure({ rate: 1_000_000, samples: 100, trigger: [c.EDGE, 0, 0] });
-  await assert.rejects(grp.bind([lc, an], an), Rejected);              // only the trigger track may have a trigger
+  // a group starts at once: immediate tracks only (refused here, before sending, when this host gave it a pretrigger)
+  await assert.rejects(grp.bind([lc, an]), (e) => e instanceof Unavailable && e.cause === 'wrong_state' && e.fn === lc.fn);
 }));
 
 test('what the probe cannot do is refused unsupported, naming the tag', opts, () => withBench(async ({ hst, lc }) => {
@@ -543,19 +552,26 @@ test('configure: a value the probe does not handle is unsupported with the tag a
   const r = await hst.request(lc.fn, c.LogicCapture.CONFIGURE, concat(m.tlv(c.MODE, [c.ONE_SHOT]), m.tlv(c.RATE, u32(1_000_000)),
     m.tlv(c.SAMPLES, u32(100)), m.tlv(0x7e, [1])));                                                // an unknown non-critical TLV: skipped silently
   const tags = new Set(m.splitTlvs(r.payload).map(([t]) => t));
-  assert.ok(tags.has(c.ACTUAL_RATE) && ![0x54, 0x5a, 0x7f].some((t) => tags.has(t)));   // no timing, rate_accuracy, ignored
+  assert.ok(tags.has(c.ACTUAL_RATE));
+  // only what the spec defines for the answer
+  assert.ok([...tags].every((t) => Object.values(reg.FIXTURE_LOGIC.tlv.configure_answer).includes(t)));
 }));
 
 test('describe: mode is mode max_samples max_segments; no background, budgets or ring (capture §2, §4)', opts, () => withBench(async ({ hst, lc }) => {
   const an = await c.AnalogCapture.open(hst);
   const grp = await c.CaptureGroup.open(hst);
-  for (const fn of [lc.fn, an.fn]) {
+  const D = reg.FIXTURE_LOGIC.tlv.describe;
+  for (const [fn, table] of /** @type {[number, Record<string, number>][]} */ ([[lc.fn, D], [an.fn, reg.FIXTURE_ANALOG.tlv.describe]])) {
     const d = await describe(hst, fn);
-    const modes = d.filter(([t]) => (t & 0x7f) === 0x40).map(([, v]) => v);
+    const modes = d.filter(([t]) => t === D.mode).map(([, v]) => v);
     assert.ok(modes.length && modes.every((v) => v.length === 9));
-    assert.ok(!d.some(([t]) => [0x42, 0x43, 0x47, 0x48, 0x49].includes(t & 0x7f)));
+    assert.deepEqual(new Set(modes.map((v) => v[0])), new Set([c.ONE_SHOT, c.REPEAT, c.STREAMING]));
+    // only what the spec defines
+    assert.ok(d.every(([t]) => /** @type {number[]} */ (Object.values(reg.DESCRIBE_COMMON)).includes(t) || Object.values(table).includes(t)));
   }
-  assert.deepEqual((await describe(hst, grp.fn)).map(([t]) => t & 0x7f).filter((t) => t >= 0x40), [0x40]);   // tracks only
+  const G = reg.FIXTURE_CAPTURE_GROUP.tlv.describe;
+  const tags = new Set((await describe(hst, grp.fn)).map(([t]) => t).filter((t) => t >= 0x40));
+  assert.deepEqual(tags, new Set([G.tracks, G.trigger_caps]));        // tracks, trigger_caps (§4.4)
 }));
 
 test('events of an earlier start are passed over (capture §3.4)', opts, () => withBench(async ({ hst, lc }) => {
@@ -580,7 +596,6 @@ test('the configure contract is kept before sending (capture §3.3)', async () =
     await assert.rejects(lc.configure({ rate: 1_000_000, ...o }), (e) => e instanceof RangeError && words.test(e.message));
   }
   assert.equal(sent.length, 0);
-  assert.deepEqual([c.nextGeneration(0), c.nextGeneration(0xffffffff), c.nextGeneration(41)], [1, 1, 42]);
 });
 
 test('the group start answer\'s fixed part, the group\'s generation in status (capture §4.1)', opts, () => withBench(async ({ hst, lc }) => {
@@ -591,6 +606,7 @@ test('the group start answer\'s fixed part, the group\'s generation in status (c
   await an.configure({ rate: 10_000, samples: 100 });
   await grp.bind([an, lc]);                                            // bind order: analog first
   await grp.start([lc, an]);
+  await grp.wait();
   await grp.start([lc, an]);
   assert.deepEqual([grp.generation, [...grp.generations]], [2, [[an.fn, 2], [lc.fn, 2]]]);
   assert.equal((await grp.status()).generation, 2);
@@ -639,35 +655,7 @@ test('data dropped inside a segment: not handed out, the track stops in error (c
   }
 });
 
-test('multirate: configure, capture and decode against the virtual bench (capture §5)', opts, () => withBench(async ({ hst, lc }) => {
-  const mr = await import('../src/multirate.js');
-  await planApply(hst, [0, 1, 2, 3].map((k) => /** @type {[number, number, number]} */ ([lc.fn, k, 20 + k])));
-  const decl = await lc.multirateDeclared();
-  assert.ok(decl && decl.acceptsD(1) && decl.acceptsPolicy(mr.EDGE_LATCH));   // d 1 sample: always (dd5a886)
-  const specs = [new mr.Multirate(0, mr.ANY_ACTIVE, 8, 1), new mr.Multirate(2, mr.EDGE_LATCH, 4, 1), new mr.Multirate(3, mr.SAMPLE, 4, 3)];
-  const cfg = await lc.configure({ rate: 1_000_000, samples: 100, multirate: specs });
-  assert.deepEqual([cfg.block, cfg.samples, cfg.positions], [32, 128, [0]]);   // rounded up to L; role 1 is D = 1
-  await lc.start();
-  const [seg] = await lc.wait();
-  const data = await lc.readSegment(seg);
-  assert.equal(data.length, 4 * /** @type {any} */ (cfg.multirateLayout()).blockBytes());
-  const got = lc.decodeMultirate(data, seg.samples);
-  const levels = (/** @type {number} */ role) => Array.from({ length: 128 }, (_, i) => (i >> role) & 1);
-  assert.deepEqual(got.d1, [levels(1)]);
-  for (const s of specs) assert.deepEqual(got.reduced.get(s.role), s.values(levels(s.role)));
-  await assert.rejects(lc.configure({ rate: 1_000_000, samples: 64, multirate: [new mr.Multirate(0, mr.ANY_ACTIVE, 0, 0)] }), RangeError);
-  await assert.rejects(lc.configure({ rate: 1_000_000, samples: 64, multirate: [new mr.Multirate(9, mr.SAMPLE, 4, 0)] }), Unavailable);
-  const an = await c.AnalogCapture.open(hst);
-  await assert.rejects(an.configure({ rate: 10_000, samples: 64, multirate: [new mr.Multirate(0, mr.SAMPLE, 2, 0)] }), /declares no multirate/);
-}));
-
-test('c6ab5d9: a broken multirate declaration is not used; dropFrom across a gap; a track with its own pretrigger is not bound', async () => {
-  const mr = await import('../src/multirate.js');
-  for (const raw of [[6, 2, 128, 1], [7, 1, 128, 0], [7, 8, 4, 0], [7, 2, 128, 2]]) {
-    const v = new Writer().u32(raw[0]).u32(raw[1]).u32(raw[2]).u8(raw[3]).done();
-    assert.equal(mr.Declared.unpack(v).broken, true, String(raw));
-  }
-  assert.equal(mr.Declared.unpack(new Writer().u32(7).u32(2).u32(128).u8(1).done()).broken, false);
+test('dropFrom across a gap; a track with a trigger of its own is not bound without a trigger source (capture §2.2, §4.1)', async () => {
   const got = new c.Received();
   got.start = 100n;
   got.append(Uint8Array.from({ length: 10 }, (_, i) => i));
@@ -676,9 +664,7 @@ test('c6ab5d9: a broken multirate declaration is not used; dropFrom across a gap
   assert.deepEqual([[...got.data], got.droppedAfterError, got.reached], [[0, 1, 2, 3, 4, 5], 4, 112n]);
   const grp = new c.CaptureGroup(/** @type {any} */ ({ call: () => { throw new Error('sent'); } }), 12, c.CaptureGroup.NAME);
   const a = new c.LogicCapture(/** @type {any} */ ({}), 7, c.LogicCapture.NAME), b = new c.LogicCapture(/** @type {any} */ ({}), 11, c.LogicCapture.NAME);
-  a.config = Object.assign(new c.Config(), { pretrigger: 1000, rateNum: 20_000_000, rateDen: 1 });
-  b.config = Object.assign(new c.Config(), { pretrigger: 5, rateNum: 48_000, rateDen: 1 });
-  await assert.rejects(grp.bind([a, b], a), /trigger_track's alone/);
-  b.config.pretrigger = 0;
-  assert.equal(c.CaptureGroup.pretriggerOf(b, a), 3);                  // ceil(1000 x 48000 / 20 MHz) = ceil(2.4) (§4.1)
+  a.config = Object.assign(new c.Config(), { pretrigger: 1000 });
+  b.config = new c.Config();
+  await assert.rejects(grp.bind([a, b]), /a trigger of its own/);
 });

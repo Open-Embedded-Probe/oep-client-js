@@ -7,6 +7,9 @@ import { Writer, getU16, getU32 } from '../src/bytes.js';
 import * as m from '../src/message.js';
 import { AdiError, ArmAdi, CortexM, MemAp, NoMaxLength, SwdWire, transferReads } from '../src/arm.js';
 import { RiscvDm } from '../src/riscv.js';
+import * as reg from '../src/registry.js';
+
+const SWD_FLAGS = reg.WIRE_SWD.enum.attach_flags;
 import { ScriptedHost, handlers, ok } from './scripted.js';
 
 const w = () => new Writer();
@@ -19,9 +22,9 @@ class FakeAdi {
 
   /** @param {Uint8Array} p @returns {[number, number, Uint8Array]} */
   transfer(p) {
-    const n = getU16(p, 2);
+    const n = getU16(p, 4);                                              // after connection(u32)
     const out = w();
-    let at = 4, done = 0;
+    let at = 6, done = 0;
     while (at < p.length) {
       const req = p[at++];
       const ap = req & 1, read = (req >> 1) & 1, a = ((req >> 2) & 3) << 2;
@@ -47,7 +50,7 @@ class FakeAdi {
 
   /** @param {Uint8Array} p @returns {[number, number, Uint8Array]} */
   readBlock(p) {
-    const address = getU32(p, 2), count = getU16(p, 6);
+    const address = getU32(p, 4), count = getU16(p, 8);
     assert.equal(this.select, 0x2D00);                                   // TAR / DRW bank selected
     const out = w().u16(count).u8(0);
     for (let i = 0; i < count; i++) out.u32(this.mem.get(address + 4 * i) ?? address + 4 * i);
@@ -56,9 +59,9 @@ class FakeAdi {
 
   /** @param {Uint8Array} p @returns {[number, number, Uint8Array]} */
   writeBlock(p) {
-    const address = getU32(p, 2), count = getU16(p, 6);
-    assert.equal(p.length, 8 + 4 * count);
-    for (let i = 0; i < count; i++) this.mem.set(address + 4 * i, getU32(p, 8 + 4 * i));
+    const address = getU32(p, 4), count = getU16(p, 8);
+    assert.equal(p.length, 10 + 4 * count);
+    for (let i = 0; i < count; i++) this.mem.set(address + 4 * i, getU32(p, 10 + 4 * i));
     return ok(w().u16(count).u8(0).done());
   }
 }
@@ -69,22 +72,27 @@ function bench(maxLength = 1000) {
   const hst = new ScriptedHost(handlers([
     [5, ArmAdi.TRANSFER, (p) => fake.transfer(p)], [5, ArmAdi.READ_BLOCK, (p) => fake.readBlock(p)],
     [5, ArmAdi.WRITE_BLOCK, (p) => fake.writeBlock(p)],
-    [4, SwdWire.ATTACH, (p) => { assert.equal(p[0], 0); return ok(w().u16(1).u32(0x4c013477).u8(4).u32(2_000_000).done()); }],   // method 0; dormant_woken = bit2
+    [4, SwdWire.ATTACH, (p) => {                                         // method 0 (run): swd has no halting attach
+      assert.equal(p[0], SwdWire.RUN);
+      return ok(w().u32(1).u32(0x4c013477).u8(SWD_FLAGS.dormant_woken).u32(2_000_000).done());
+    }],
   ]), 1024, maxLength);
   return { fake, hst };
 }
 
-test('swd attach decodes DPIDR and dormant; targetsel and max_speed go critical', async () => {
+test('swd attach decodes DPIDR and dormant; the pins and max_speed in the fixed part, targetsel and reset critical (debug §5)', async () => {
   const { hst } = bench();
   const wire = await SwdWire.open(hst);
-  assert.deepEqual(await wire.attach(), { conn: 1, dpidr: 0x4c013477, dormant: true });
-  assert.deepEqual([...hst.log[hst.log.length - 1][2]], [0, 0x81, 4, 0, ...w().u32(1_000_000).done()]);   // max_speed is required: the default
-  await wire.attach({ targetsel: 0x01002927, maxSpeed: 2_000_000, reset: [7, 20] });
-  assert.deepEqual([...hst.log[hst.log.length - 1][2]],
-    [0, 0x81, 4, 0, ...w().u32(2_000_000).done(), 0x85, 4, 0, 7, 0, 20, 0, 0x82, 4, 0, ...w().u32(0x01002927).done()]);
+  const pins = /** @type {[number, number]} */ ([1, 2]);
+  const fixed = (/** @type {number} */ hz) => [...w().u8(SwdWire.RUN).u16(pins[0]).u16(pins[1]).u32(hz).done()];
+  assert.deepEqual(await wire.attach({ pins }), { conn: 1, dpidr: 0x4c013477, dormant: true });
+  assert.deepEqual([...hst.log[hst.log.length - 1][2]], fixed(SwdWire.DEFAULT_MAX_SPEED));   // none declared: the default
+  await wire.attach({ pins, targetsel: 0x01002927, maxSpeed: 2_000_000, reset: [7, 20] });
+  assert.deepEqual([...hst.log[hst.log.length - 1][2]], [...fixed(2_000_000), ...m.tlv(SwdWire.TAG_RESET, w().u16(7).u16(20).done(), true),
+    ...m.tlv(SwdWire.TAG_TARGETSEL, w().u32(0x01002927).done(), true)]);
   assert.equal(wire.speedHz, 2_000_000);
-  assert.equal(wire.flags, 4);
-  assert.ok(!wire.existing);
+  assert.equal(wire.flags, SWD_FLAGS.dormant_woken);
+  assert.equal(wire.targetId, null);
 });
 
 test('ap read uses the ADIv6 SELECT and the posted value; SELECT is cached', async () => {
@@ -112,7 +120,7 @@ test('the MEM-AP sets CSW from the caller and chunks blocks by the declared max_
   assert.equal(fake.csw, ((((0x43800052 & ~0x37) | 0x12)) & ~(1 << 30)) >>> 0);
   const words = await mem.readBlock(0x1000, 500);
   assert.deepEqual(words, Array.from({ length: 500 }, (_, i) => 0x1000 + 4 * i));
-  const blocks = hst.log.filter(([, op]) => op === ArmAdi.READ_BLOCK).map(([, , p]) => getU16(p, 6));
+  const blocks = hst.log.filter(([, op]) => op === ArmAdi.READ_BLOCK).map(([, , p]) => getU16(p, 8));   // after connection(u32) address
   assert.deepEqual(blocks, [250, 250]);                                   // the declared max_length 1000 / 4 words
   assert.equal(adi.maxLength, 1000);
   assert.equal(adi.maxWords, 250);
@@ -124,11 +132,11 @@ test('the MEM-AP sets CSW from the caller and chunks blocks by the declared max_
   assert.equal(await mem.read32(0x20000000), 0xdeadbeef);
   await mem.writeMany([[0x20000004, 7]]);
   const last = hst.log[hst.log.length - 1][2];
-  assert.equal(getU16(last, 2), 3);                                       // TAR, DRW, RDBUFF
+  assert.equal(getU16(last, 4), 3);                                       // TAR, DRW, RDBUFF (after connection(u32))
 });
 
 test('the block length comes from the declared max_length only; a probe that declares none is an error, named', async () => {
-  // oep-if-debug §4.5 / §6: the host takes max_length from describe and never computes it from max_frame
+  // oep-if-debug §4.5 / §6: the count is at most min(max_length, what the route's max_frame carries) / 4
   let { hst } = bench(96);
   let adi = await ArmAdi.on(hst, 1, { adiv6: true });
   assert.equal(adi.maxLength, 96);

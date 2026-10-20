@@ -44,12 +44,11 @@ function scriptedTransport(answer, kind = 'vendor') {
 }
 
 test('probing: a silent device gets one confirm and its resend, then is closed', async () => {
-  assert.equal(PROBE_WAIT_MS, 1000);
   const t = scriptedTransport(() => null);
   const started = performance.now();
-  await assert.rejects(connect(/** @type {any} */ (t), { timeoutMs: 10000 }), NotOepProbe);
+  await assert.rejects(connect(/** @type {any} */ (t), { timeoutMs: 20000 }), NotOepProbe);
   const took = performance.now() - started;
-  assert.ok(took >= 1900 && took < 4000, `waited ${took} ms (2 x 1000 ms, not the 10 s timeout)`);
+  assert.ok(took >= 2 * PROBE_WAIT_MS - 100 && took < 2 * PROBE_WAIT_MS + 2000, `waited ${took} ms (2 x ${PROBE_WAIT_MS} ms, not the 20 s timeout)`);
   assert.equal(t.sent.length, 2);
   assert.deepEqual(t.sent.map((msg) => msg[5]), [OP.confirm, OP.confirm]);
   assert.deepEqual([...t.sent[0]], [...t.sent[1]]);             // the resend: the same corr

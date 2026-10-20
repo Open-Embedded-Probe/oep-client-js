@@ -23,7 +23,7 @@ export {
   OepError, ProtocolError, ShortPayload, Rejected, Failed, NotV1, Timeout, TransportFailed, NotUsable, FnNotUsable, NotRestarted, FramingLost, InUse,
   NotOepProbe, UnitIdMismatch,
   Locked, NoSession,
-  Busy, NoConnection, Unsupported, Unavailable,
+  NoResource, Unsupported, Unavailable,
 } from './errors.js';
 
 export * as registry from './registry.js';
@@ -38,7 +38,6 @@ export * as dump from './dump.js';
 export * as config from './config.js';
 export * as riscv from './riscv.js';
 export * as arm from './arm.js';
-export * as multirate from './multirate.js';
 export * as targetConsole from './console.js';   // oep.target.console (not the global console)
 export * as fixture from './fixture.js';
 export * as capture from './capture.js';

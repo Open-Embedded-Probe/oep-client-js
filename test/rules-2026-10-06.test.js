@@ -23,8 +23,9 @@ import { openTcp } from '../src/node/index.js';
 import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 
 /** @param {{ maxFrame?: number, window?: number, inflight?: number, bootId?: number }} [o] */
+/** confirm's answer: magic revision max_frame window max_inflight boot_id (core §7.1) */
 function confirmPayload({ maxFrame = 1024, window = 65536, inflight = 4, bootId = 0x11 } = {}) {
-  return new Writer().raw(m.CONFIRM_RESULT).u8(1).u8(0).u16(maxFrame).u32(window).u8(inflight).u32(bootId).done();
+  return new Writer().raw(m.CONFIRM_RESULT).u8(1).u16(maxFrame).u32(window).u8(inflight).u32(bootId).done();
 }
 /** @param {number} corr @param {Uint8Array} [payload] */
 const result = (corr, payload = new Uint8Array()) => new m.Result(corr, m.COMPLETED, m.SUCCESS, payload).pack();
@@ -190,7 +191,8 @@ test('C-19: open answers lease_ms boot_id; a changed boot_id drops the names onc
   epoch = hst.epoch;
   state.bootId = 0x22;                                            // a reboot: counted once, the names listed again
   await hst.open(3000);
-  assert.deepEqual([hst.epoch, hst.fns.size, hst.describes.size], [epoch + 1, 0, 0]);
+  // the names listed again; fn 0's describe read again for the new boot's max_op_ms (core §4.4), nothing else kept
+  assert.deepEqual([hst.epoch, hst.fns.size, [...hst.describes.keys()]], [epoch + 1, 0, [m.CORE_FN]]);
   epoch = hst.epoch;
   await hst.end();
   assert.deepEqual([hst.epoch, hst.session], [epoch + 1, null]);  // end releases everything (core §9)
@@ -293,19 +295,17 @@ test('C-38: on a length link the resend\'s silence fails it too, after the resyn
   assert.equal(hst.link.failedTransport, '');                    // resynced already: nothing to recover
 });
 
-// ---- PC-9: the last page's storage -----------------------------------------------------------------------------------
+// ---- probe.config §3: the storage's state is one answer ------------------------------------------------------------
 
-test('PC-9: state keeps the last page\'s storage', async () => {
+test('probe.config state: storage_state saved_generation reason, one answer (probe.config §2, §3)', async () => {
   const cfg = new config.ProbeConfig(/** @type {any} */ (null), 9, config.ProbeConfig.NAME);
-  const slot = new Writer().u8(0).u8(1).u16(0xffff).u64(0xffffffffffffffffn).done();   // slot state connection last_try_at_ns (12 bytes, §3.3)
-  const pages = [
-    new Writer().u8(1).u8(0).u32(0).u8(0).u8(1).raw(slot).u8(0).done(),          // more: storage none
-    new Writer().u8(0).u8(1).u32(0x1234).u8(0).u8(1).raw(slot).u8(0).done(),     // saved in between
-  ];
+  const S = reg.PROBE_CONFIG.enum.storage_state, R = reg.PROBE_CONFIG.enum.storage_unreadable;
+  const answers = [new Writer().u8(S.applied).u32(0x1234).u8(R.none).done(), new Writer().u8(S.partial).u32(0).u8(R.item).done()];
   let i = 0;
-  cfg.call = /** @type {any} */ (async () => ({ payload: pages[i++] }));
-  const st = await cfg.state();
-  assert.deepEqual([i, st.storage, st.savedHash, st.slots.length], [2, 'applied', 0x1234, 2]);
+  cfg.call = /** @type {any} */ (async () => ({ payload: answers[i++] }));
+  assert.deepEqual(await cfg.state(), { storage: 'applied', savedGeneration: 0x1234, reason: null });
+  assert.deepEqual(await cfg.state(), { storage: 'partial', savedGeneration: 0, reason: 'item' });
+  assert.equal(i, 2);
 });
 
 // ---- C-21: the optional ops are used when declared -------------------------------------------------------------------
@@ -315,7 +315,7 @@ test('C-21: riscv-dm says which optional ops the probe offers (its ops tag)', { 
   const wire = await Wire.open(hst, { name: 'oep.wire.swio' });
   const { conn } = await wire.attach({ halt: true });
   const dm = await RiscvDm.on(hst, conn);
-  assert.deepEqual([...(await dm.declared())].sort(), ['block', 'reset', 'run']);
+  assert.deepEqual([...(await dm.declared())].sort(), ['block', 'halt', 'reset', 'resume', 'run']);   // halt / resume optional too (debug §4)
   await assert.rejects(dm.step(), (e) => e instanceof Rejected && e.reason === m.REJECT.unknown_operation);
   assert.equal(await dm.offers(RiscvDm.STEP), false);
   await assert.rejects(core.require(hst, dm.fn, RiscvDm.STEP),   // the same Rejected, nothing sent

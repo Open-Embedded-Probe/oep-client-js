@@ -6,11 +6,12 @@
 // the host.
 
 import * as reg from './registry.js';
-import { Writer, concat, getU16 } from './bytes.js';
+import { Writer, concat, getU32 } from './bytes.js';
 import * as m from './message.js';
 import { OepError, Timeout } from './errors.js';
 import { Interface } from './core.js';
-import { ATTACH_FLAGS, NoMaxLength, OK, TargetError, WireBase, blockWords, ran } from './riscv.js';
+import { ATTACH_FLAGS, NoMaxLength, OK, READ_BLOCK_OVERHEAD, TargetError, WRITE_BLOCK_OVERHEAD, WireBase, blockWords, ran,
+  routeWords, targetIdOf } from './riscv.js';
 
 export { ATTACH_FLAGS, NoMaxLength, OK, TargetError, WireBase, check, declaredMaxLength, ran, statusName } from './riscv.js';
 
@@ -28,29 +29,28 @@ const hex32 = (v) => `0x${(v >>> 0).toString(16).padStart(8, '0')}`;
 export class SwdWire extends WireBase {
   static NAME = 'oep.wire.swd';
   static TAG_TARGETSEL = SWD.tlv.attach.targetsel;
+  static TAG_SCAN_TARGETSEL = SWD.tlv.scan.targetsel;
+  static TAG_TARGET_ID = SWD.tlv.attach_answer.target_id;
   static RUN = SWD.enum.attach_method.run;
 
   speedHz = 0;
-  existing = false;
-  /** @type {number | null} the last attach's failed speed-search tries (null: not said) */ searchRetries = null;
+  /** @type {[number, Uint8Array] | null} (scheme, value) the last attach read, or null */ targetId = null;
 
   /**
-   * -> { conn, dpidr, dormant: woke from dormant }. The request is method 0 (swd has no halting attach) and TLVs:
-   * maxSpeed (required, critical; null: the wire's declared max_clock_hz), targetsel (multidrop, critical), pins,
-   * reset = [channel, holdMs] (critical). this.existing: the wire was attached already (its connection returned).
-   * this.flags: the attach_flags byte.
+   * -> { conn, dpidr, dormant: woke from dormant }. The request is method 0 (swd has no halting attach), swdio, swclk,
+   * max_speed (null: the wire's declared max_clock_hz) and TLVs: targetsel (multidrop, critical), reset = [channel,
+   * holdMs] (critical) (§5). Pins a live connection holds are refused, whatever the targetsel (unavailable cause 1):
+   * detach first. this.flags: the attach_flags byte.
    * @param {{ targetsel?: number | null, maxSpeed?: number | null, pins?: [number, number] | null, reset?: [number, number] | null }} [opts]
    */
   async attach({ targetsel = null, maxSpeed = null, pins = null, reset = null } = {}) {
-    let body = concat([SwdWire.RUN], this.speedTlv(await this.speedOrDefault(maxSpeed)), this.pinsTlv(pins), this.resetTlv(reset));
+    let body = concat(await this.attachFixed(SwdWire.RUN, pins, maxSpeed), this.resetTlv(reset));
     if (targetsel != null) body = concat(body, m.tlv(SwdWire.TAG_TARGETSEL, new Writer().u32(targetsel).done(), true));
     const rd = new m.Reader((await this.call(SwdWire.ATTACH, body, { expectMs: await this.attachMs(reset) })).payload);
-    const conn = rd.u16(), dpidr = rd.u32();
+    const conn = rd.u32(), dpidr = rd.u32();
     this.flags = rd.u8();
     this.speedHz = rd.u32();
-    this.existing = !!(this.flags & ATTACH_FLAGS.existing);
-    const tries = rd.tail().get(SWD.tlv.attach_answer.search_retries);   // oep-if-debug §1 (optional)
-    this.searchRetries = tries && tries.length >= 2 ? tries[0] | (tries[1] << 8) : null;
+    this.targetId = targetIdOf(rd.tail().get(SwdWire.TAG_TARGET_ID));   // a broken one is not used (core §2.3)
     return { conn, dpidr, dormant: !!(this.flags & SWD.enum.attach_flags.dormant_woken) };
   }
 }
@@ -85,21 +85,25 @@ export class ArmAdi extends Interface {
   adiv6 = false;
   /** @type {number | null} the SELECT value last written (null: unknown) */ selected = null;
   /** the raw ACK of the last transfer */ lastAck = 0;
-  /** @type {number | null} bytes one block operation may move (describe max_length; never computed from max_frame) */
+  /** @type {number | null} bytes one block operation may move (describe max_length: the function's limit) */
   maxLength = null;
-  /** @type {number | null} words (u32) one block operation may move: maxLength / 4 */
+  /** @type {number | null} words (u32) one block operation either way may move on the route (§4.5) */
   maxWords = null;
 
   /** @param {import('./host.js').Host} hst @param {number} conn
    * @param {{ adiv6?: boolean, fn?: number, name?: string }} [opts] */
   static async on(hst, conn, { adiv6 = false, fn, name } = {}) {
-    const adi = /** @type {ArmAdi} */ (await ArmAdi.open(hst, { fn, name, prefix: new Writer().u16(conn).done() }));
+    const adi = /** @type {ArmAdi} */ (await ArmAdi.open(hst, { fn, name, prefix: new Writer().u32(conn).done() }));
     adi.adiv6 = adiv6;
     await adi.blockWords().catch((e) => { if (!(e instanceof NoMaxLength)) throw e; });   // undeclared: null until a block op needs it
     return adi;
   }
 
-  get conn() { return getU16(this.prefix); }
+  get conn() { return getU32(this.prefix); }
+
+  /** Whether the probe offers read_block / write_block (optional, a pair: §6); a describe without an ops tag: tried
+   * (the probe answers). */
+  async hasBlocks() { return (await this.offers(ArmAdi.READ_BLOCK)) && (await this.offers(ArmAdi.WRITE_BLOCK)); }
 
   /** The words one read_block / write_block may move, from the probe's declared max_length (NoMaxLength when none). */
   blockWords() { return blockWords(this); }
@@ -182,25 +186,74 @@ export class ArmAdi extends Interface {
 /** One MEM-AP (ADIv5 APSEL or ADIv6 base address) with 32-bit, auto-incrementing access. Build with
  * `await MemAp.open(adi, ap, { cswClear })`. */
 export class MemAp {
-  /** @param {ArmAdi} adi @param {number} ap @param {number} chunk words per block operation */
-  constructor(adi, ap, chunk) {
-    this.adi = adi; this.ap = ap; this.chunk = chunk;
+  /** @param {ArmAdi} adi @param {number} ap @param {number} chunk words per write (block op or raw list)
+   * @param {number} [readChunk] words per read @param {boolean} [blocks] the probe offers read_block / write_block */
+  constructor(adi, ap, chunk, readChunk = chunk, blocks = true) {
+    this.adi = adi; this.ap = ap; this.chunk = chunk; this.readChunk = readChunk; this.blocks = blocks;
     this.base = adi.adiv6 ? 0xD00 : 0x00;   // CSW, TAR, DRW at base + 0x0 / 0x4 / 0xC
   }
 
   /**
    * Set CSW to 32 bits, AddrInc single. cswSet / cswClear: target-specific CSW bits (protection, security). The
    * RP2350's AHB-APs come up non-secure (CSW bit 30), and its SRAM then faults: pass cswClear: 1 << 30 there
-   * (2026-09-24).
+   * (2026-09-24). A probe with transfer only (no read_block / write_block, §6) is driven with raw transfer lists.
    * @param {ArmAdi} adi @param {number} ap @param {{ cswSet?: number, cswClear?: number }} [opts]
    */
   static async open(adi, ap, { cswSet = 0, cswClear = 0 } = {}) {
-    // words per block operation: the probe's declared max_length (oep-if-debug §6), never computed from max_frame
-    const mem = new MemAp(adi, ap, await adi.blockWords());
+    let mem;
+    if (await adi.hasBlocks()) {
+      // words per block operation: min(max_length, max_frame - 8 / - 20) / 4 for read / write (§6, §4.5)
+      await adi.blockWords();
+      mem = new MemAp(adi, ap, await routeWords(adi, WRITE_BLOCK_OVERHEAD), await routeWords(adi, READ_BLOCK_OVERHEAD), true);
+    } else {
+      // transfer only (§6: the host sets TAR and collects the posted reads with raw transfers). A read list - TAR write,
+      // k DRW reads, RDBUFF - asks 22 + k bytes and answers 11 + 4 (k + 1); a write list - TAR write, k DRW writes,
+      // RDBUFF - asks 22 + 5 k (header 10, connection 4, n 2).
+      let frame = reg.MIN_MAX_FRAME;
+      try { frame = (await adi.host.confirmed()).maxFrame; } catch { /* the smallest */ }
+      mem = new MemAp(adi, ap, Math.max(1, Math.floor((frame - 22) / 5)), Math.max(1, Math.min(frame - 22, Math.floor((frame - 15) / 4))), false);
+    }
     const csw = await adi.apRead(ap, mem.base);
     await adi.apWrite(ap, mem.base, ((((csw & ~0x37) | 0x12) | cswSet) & ~cswClear) >>> 0);
     await adi.apSelect(ap, mem.base);   // the bank the block operations assume
     return mem;
+  }
+
+  /** [offset, address, n] per raw transfer list: at most `chunk` words, never across the 1 KB that TAR's
+   * auto-increment is guaranteed within (ADI). @param {number} address @param {number} words @param {number} chunk */
+  static spans(address, words, chunk) {
+    /** @type {[number, number, number][]} */
+    const out = [];
+    for (let off = 0; off < words;) {
+      const at = address + 4 * off;
+      const n = Math.min(chunk, words - off, (0x400 - (at & 0x3ff)) / 4);
+      out.push([off, at, n]);
+      off += n;
+    }
+    return out;
+  }
+
+  /** @param {number} address @param {number} words */
+  async rawRead(address, words) {
+    /** @type {number[]} */
+    const out = [];
+    for (const [, at, n] of MemAp.spans(address, words, this.readChunk)) {
+      await this.adi.apSelect(this.ap, this.base);
+      const steps = concat(ArmAdi.req(true, false, this.base + 0x4, at), ...Array(n).fill(ArmAdi.req(true, true, this.base + 0xC)),
+        ArmAdi.req(false, true, DP_RDBUFF));
+      out.push(...(await this.adi.transfer(steps)).slice(1));   // the first DRW read returns the stale posted value
+    }
+    return out;
+  }
+
+  /** @param {number} address @param {number[]} values */
+  async rawWrite(address, values) {
+    for (const [off, at, n] of MemAp.spans(address, values.length, this.chunk)) {
+      await this.adi.apSelect(this.ap, this.base);
+      const steps = concat(ArmAdi.req(true, false, this.base + 0x4, at),
+        ...values.slice(off, off + n).map((v) => ArmAdi.req(true, false, this.base + 0xC, v)), ArmAdi.req(false, true, DP_RDBUFF));
+      await this.adi.transfer(steps);   // RDBUFF: the last write has landed
+    }
   }
 
   /** Scattered single-word writes in one transfer list (TAR, DRW per word, RDBUFF at the end so the last one has
@@ -214,11 +267,12 @@ export class MemAp {
 
   /** @param {number} address @param {number} words */
   async readBlock(address, words) {
+    if (!this.blocks) return this.rawRead(address, words);
     /** @type {number[]} */
     const out = [];
-    for (let off = 0; off < words; off += this.chunk) {
+    for (let off = 0; off < words; off += this.readChunk) {
       await this.adi.apSelect(this.ap, this.base);
-      const n = Math.min(this.chunk, words - off);
+      const n = Math.min(this.readChunk, words - off);
       const r = await this.adi.request(ArmAdi.READ_BLOCK, new Writer().u32(address + off * 4).u16(n).done());
       const rd = ran(r);
       const done = rd.u16(), status = rd.u8();
@@ -234,6 +288,7 @@ export class MemAp {
 
   /** @param {number} address @param {number[]} values */
   async writeBlock(address, values) {
+    if (!this.blocks) { await this.rawWrite(address, values); return; }
     for (let off = 0; off < values.length; off += this.chunk) {
       await this.adi.apSelect(this.ap, this.base);
       const part = values.slice(off, off + this.chunk);

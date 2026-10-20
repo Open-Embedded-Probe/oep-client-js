@@ -1,16 +1,18 @@
 // @ts-check
 // oep.fixture.gpio / uart / i2c-target / spi-target and the I2C decoder: request shapes against a scripted link, and
 // the gpio / uart flows against the virtual bench.
+import * as reg from '../src/registry.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Writer, concat, fromHex, text, utf8 } from '../src/bytes.js';
-import { planApply, planRelease } from '../src/core.js';
+import { describe, planApply, planRelease } from '../src/core.js';
 import { decodeI2c } from '../src/decode.js';
 import { Rejected, Unavailable, Unsupported } from '../src/errors.js';
 import { FixtureUart, FixtureUartIO, Gpio, GpioUnavailable, I2cTarget, SpiTarget } from '../src/fixture.js';
 import { PositionStream } from '../src/console.js';
 import { Host } from '../src/host.js';
 import * as m from '../src/message.js';
+import { COMMON, decodeDescription } from '../src/catalog.js';
 import { openTcp } from '../src/node/index.js';
 import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 
@@ -37,8 +39,9 @@ function scripted(handlers, maxFrame = 1024) {
     },
   };
   const hst = new Host(/** @type {any} */ (link));
-  hst.limits = { revision: 1, flags: 0, maxFrame, window: 4096, maxInflight: 4, bootId: 1, transport: 0, tail: new m.Tail() };
+  hst.limits = { revision: 1, maxFrame, window: 4096, maxInflight: 4, bootId: 1, transport: 0, tail: new m.Tail() };
   hst.revision = 1;
+  hst.describes.set(m.CORE_FN, []);   // fn 0's describe read already (core §4.4: max_op_ms first), nothing declared
   for (const [name, fn] of /** @type {[string, number][]} */ ([[FixtureUart.NAME, UART], [I2cTarget.NAME, I2C], [SpiTarget.NAME, SPI]])) {
     hst.fns.set(name, fn);
     hst.revisions.set(fn, 1);
@@ -90,15 +93,17 @@ test('i2c-target and spi-target declarations from describe', async () => {
   const { hst } = scripted({});
   /** @type {(tag: number, v: Uint8Array) => [number, Uint8Array]} */
   const tlv = (tag, v) => [tag, v];
-  hst.describes.set(I2C, [tlv(0x03, new Writer().u16(128).done()), tlv(0x02, new Writer().u32(1_000_000).done()),
-    tlv(0x06, new Writer().u32(0b100).done()), tlv(0x40, Uint8Array.of(8)), tlv(0x41, new Writer().u32(100_000).done())]);
-  hst.describes.set(SPI, [tlv(0x03, new Writer().u16(64).done()), tlv(0x40, Uint8Array.of(4))]);
+  const PULLUPS = reg.FIXTURE_I2C_TARGET.enum.features.internal_pullups;
+  hst.describes.set(I2C, [tlv(COMMON.max_length, new Writer().u16(128).done()), tlv(COMMON.max_clock_hz, new Writer().u32(1_000_000).done()),
+    tlv(COMMON.features, new Writer().u32(PULLUPS).done()), tlv(I2cTarget.TAG_QUEUE_DEPTH, Uint8Array.of(8)),
+    tlv(I2cTarget.TAG_MAX_STRETCH_US, new Writer().u32(100_000).done())]);
+  hst.describes.set(SPI, [tlv(COMMON.max_length, new Writer().u16(64).done()), tlv(SpiTarget.TAG_QUEUE_DEPTH, Uint8Array.of(4))]);
   const t = await I2cTarget.open(hst);
-  assert.deepEqual(await t.declarations(), { maxLength: 128, maxClockHz: 1_000_000, features: 0b100, queueDepth: 8, maxStretchUs: 100_000, internalPullups: true });
-  assert.equal(await t.internalPullups(), true);                 // features bit2 (fixture §3)
+  assert.deepEqual(await t.declarations(), { maxLength: 128, maxClockHz: 1_000_000, features: PULLUPS, queueDepth: 8, maxStretchUs: 100_000, internalPullups: true });
+  assert.equal(await t.internalPullups(), true);                 // features internal_pullups (fixture §3)
   const s = await SpiTarget.open(hst);
   assert.deepEqual(await s.declarations(), { maxLength: 64, maxClockHz: null, features: 0, queueDepth: 4, csSetupNs: 0 });   // cs_setup_ns not declared: 0
-  hst.describes.set(I2C, [tlv(0x06, new Writer().u32(0b01).done())]);
+  hst.describes.set(I2C, [tlv(COMMON.features, new Writer().u32(0).done())]);
   assert.deepEqual([(await t.declarations()).maxStretchUs, await t.internalPullups()], [null, false]);
 });
 
@@ -165,7 +170,8 @@ test('gpio set is a list in order, only planned channels', { skip: !haveVirtualB
     assert.deepEqual(await g.read([23, 5]), [1, 1]);
     const raw = await hst.request(g.fn, Gpio.READ, Uint8Array.of(2, 23, 0, 5, 0), { locked: false });
     assert.deepEqual([...raw.payload], [2, 1, 1]);                           // n(u8) n x level, no drive TLV (fixture §1)
-    await assert.rejects(g.set([[5, 8]]), (e) => e instanceof Unsupported && e.tag === null && e.channel === 5 && e.index === 0);   // a mode a later revision may define (core §2.5)
+    await assert.rejects(g.set([[5, 8]]), (e) => e instanceof Unsupported && e.tag === null && e.channel === 5
+      && e.first(reg.FIXTURE_GPIO.tlv.unsupported_payload.index)?.[0] === 0);   // a mode a later revision may define (core §2.5)
     const e = await g.set([[5, Gpio.OUTPUT_LOW], [40, Gpio.OUTPUT_LOW]]).then(() => null, (x) => x);
     assert.ok(e instanceof GpioUnavailable && e instanceof Unavailable);
     assert.deepEqual(e.channels, [40]);
@@ -193,12 +199,12 @@ test('uart configure with a format, reads that do not consume, write, marks', { 
     const io = await FixtureUartIO.open(hst);
     await planApply(hst, [[io.uart.fn, 1, 20], [io.uart.fn, 2, 21]]);
     assert.equal(await io.configure(115200, FixtureUart.formatByte(8, 'E', 2)), Math.floor(80_000_000 / Math.floor(80_000_000 / 115200)));
-    assert.deepEqual(log.at(-2)?.[2].slice(4), Uint8Array.of(0x81, 1, 0, 0b010100));   // format: a critical TLV
+    assert.deepEqual(log.at(-2)?.[2].slice(4), m.tlv(FixtureUart.TAG_FORMAT, [0b010100], true));   // format: a critical TLV
     assert.deepEqual(await io.read(), new Uint8Array());
-    await assert.rejects(io.uart.configure(9600, 0x01), (e) => e instanceof Unsupported && e.tag === 0x81);   // 7N1: defined, not declared
-    await assert.rejects(io.uart.configure(9600, 0x80), (e) => e instanceof Unsupported && e.tag === 0x81);   // a reserved format bit (core §2.5, C-02): the tag
+    await assert.rejects(io.uart.configure(9600, FixtureUart.formatByte(7, 'N', 1)), (e) => e instanceof Unsupported && e.tag === (FixtureUart.TAG_FORMAT | m.TAG_CRITICAL));   // 7N1: defined, not declared
+    await assert.rejects(io.uart.configure(9600, 0x80), (e) => e instanceof Unsupported && e.tag === (FixtureUart.TAG_FORMAT | m.TAG_CRITICAL));   // a reserved format bit (core §2.5, C-02): the tag
     await assert.rejects(io.uart.configure(50_000_000), (e) => e instanceof Unsupported && e.tag === null);   // more than 5 % off
-    assert.deepEqual(await io.uart.status(), { baud: io.baud, format: 0b010100 });   // baud and format (fixture §2)
+    assert.deepEqual(await io.uart.status(), { baud: io.baud, format: 0b010100, configured: true });   // baud and format (fixture §2)
     assert.ok((await io.uart.write(utf8('abc'))) > 0);
     await io.uart.mark(7);
     assert.equal((await io.uart.marks()).at(-1)?.detail, 7);
@@ -210,14 +216,19 @@ test('uart configure with a format, reads that do not consume, write, marks', { 
   }
 });
 
-test('uart from a saved plan: RX from the configure on, TX, 64-byte frames', { skip: !haveVirtualBench }, async () => {
-  const bench = await startVirtualBench(['--profile', 'esp32-v003', '--uart-plan', '--uart-rx', 'rx %d\\n', '--every', '10']);
+test('uart on a 64-byte-frame probe: RX from the configure on, TX split to fit (fixture §2)', { skip: !haveVirtualBench }, async () => {
+  const bench = await startVirtualBench(['--profile', 'esp32-v003', '--uart-rx', 'rx %d\\n', '--every', '10']);
   const hst = await openTcp({ port: bench.port });
   try {
     await hst.open(3000);
     const log = tap(hst);
     const uart = await FixtureUartIO.open(hst);
-    assert.ok(await uart.configure(115200) > 0);               // the saved plan: configure works
+    // the plan is the session's (oep-if-plan): RX and TX on the first channel each role allows
+    const roles = reg.FIXTURE_UART.enum.role, fn = uart.uart.fn;
+    const d = decodeDescription(await describe(hst, fn));
+    const first = (/** @type {number} */ role) => /** @type {number[]} */ (d.roles.get(role))[0];
+    await planApply(hst, [[fn, roles.rx, first(roles.rx)], [fn, roles.tx, first(roles.tx)]]);
+    assert.ok(await uart.configure(115200) > 0);
     assert.ok(await uart.configure(9600) > 0);                 // and again, while it runs
     const line = text(await uart.readUntil('\n', { timeoutMs: 2000 }));
     assert.match(line, /^rx \d+\n$/);                          // the RX side, from the configure on
@@ -244,9 +255,11 @@ test('the uart stream is the plan\'s and its position never goes back (fixture �
     const uart = await FixtureUart.open(hst);
     await assert.rejects(uart.configure(115200), (e) => e instanceof Unavailable && e.cause === 'wrong_state');   // no plan: no stream
     await assert.rejects(uart.read(), Unavailable);
-    assert.deepEqual(await uart.status(), { baud: 115200, format: 0 });
-    await planApply(hst, [[uart.fn, 1, 20]]);                              // RX only: the stream is there, 115200 8N1 by default
-    assert.deepEqual(await uart.status(), { baud: 115200, format: 0 });
+    await assert.rejects(uart.status(), Unavailable);                      // no plan: nothing to show (fixture §2)
+    await planApply(hst, [[uart.fn, 1, 20]]);                              // RX only: the stream is there, not configured
+    assert.deepEqual(await uart.status(), { baud: 0, format: 0, configured: false });
+    await uart.configure(115200);
+    assert.equal((await uart.status()).configured, true);
     await uart.mark(1);
     const before = (await uart.read(PositionStream.FROM_NOW, 0, 0)).start;
     await planRelease(hst, [uart.fn]);

@@ -1,6 +1,61 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) **Follow oep-spec c6ab5d9 .. 32724e4, as oep-client-python 0.0.36.** Registry and test/vectors synced (multirate.json
+  gone; capture_formats.json, core_*.json, interface_*.json added); README names 32724e4.
+  - Core: confirm without flags; list entries without flags; reject `no_resource` (`NoResource`; `Busy` / `NoConnection`
+    gone); the named extension TLV (`Tail.named()`), TLV number 0 malformed; a request's processing bound (max_op_ms, fn
+    0's quick ops at most `core_quick_op_max_ms`), fn 0's describe read before state-changing requests and again after a
+    reboot; a session_id 0 request never moves the session's corr half the space; subscriptions made again after a
+    reopen; `find(host, name, revision)` by the (name, revision) pair; the first copy of a single tag, of its defined
+    length (core §2.3); `core.unitId`.
+  - Link: a stale corr is read past on every framing; a TCP whose framing broke is closed and opened again
+    (`tcpTransport().reopen`), an input that does not go quiet reopens instead of the blind unsubscribe / end; a COBS
+    broken candidate is resent at once whether or not a session holds the port. The probing wait is a quick op's bound
+    plus the host's addition (2000 ms). The kept session file holds the id and a reserved corr.
+  - Debug: attach's pins and max_speed in the fixed part, a new connection every attach (u32), `candidatePairs()`,
+    `holds()`, rvswd's `idleClock`, `targetIdOf`; scan without pairs tries the candidate pairs in requests that fit
+    max_frame (255 pairs did not at max_frame 1024; oep-client-python fixed too); block counts bounded by the route's
+    max_frame too; `reset()` without confirm, DATA0 written back first; `declared()` names halt / resume; a MEM-AP on a
+    probe without block ops by raw transfers; swd's targetsel per connection.
+  - Console: streams u32, mechanisms by name (`mechanisms()`, `mechanismNumber()`), the new mark kinds.
+  - Fixtures: gpio without a strength selection (`Drive`, `DriveLevels`, `driveLevels()` gone); uart's own op numbers,
+    `status().configured`; target declarations of their exact length.
+  - probe.config rewritten: named items numbered by describe (`Label`, `Idle` of 3 bytes, `Disable`, `Passthrough`,
+    `ConsolePassthrough`, `RvswdRest`, `WireHold`, `Wifi` keyed by entry, `Ipv4`, `Own`), the generation, `state()` in one
+    answer, `network()`; `findLine(config, name, { profile, firmware, single })` by host guide §5.3 (slots and binds,
+    plan / uart items gone).
+  - Capture: data formats 1 (captureblocks.js: `readLogicBlocks`, `segmentColumns`) and 4; multirate.js gone;
+    `triggerOpts`, `triggers()`, stream_buffer, judge_latency_ns, segment_info on streaming frames, `ReadGap`, status's
+    named extensions and `CaptureDrops`; start answers the generation alone (no blocking_ms); the capture-group's
+    `TriggerSource` / `Stage` / `Cond`, `triggerCaps()`, the status trigger and the group's triggered event.
+  - interfaces.js names every tag, role and feature bit from the registry; the page's settings forms follow probe.config.
+- (JA) **oep-spec c6ab5d9〜32724e4 に、oep-client-python 0.0.36 と同じく合わせた。** registry と test/vectors を同期した
+  （multirate.json を外し、capture_formats.json、core_*.json、interface_*.json を足した）。README は 32724e4 を名乗る。
+  - 核: confirm と list の項目に flags が無い。reject の `no_resource`（`NoResource`。`Busy` / `NoConnection` は無い）。名前つきの拡張
+    TLV（`Tail.named()`）、TLV の番号 0 は malformed。要求の処理の上限（max_op_ms、fn 0 の短い操作は `core_quick_op_max_ms` まで）、
+    状態を変える要求の前と再起動の後に fn 0 の describe を読む。session_id 0 の要求でセッションの corr を空間の半分まで動かさない。
+    開き直したら購読し直す。`find(host, name, revision)` は (名前, revision) の組で引く。重ならないタグは最初の 1 つを、決まった長さの
+    ときだけ使う（core §2.3）。`core.unitId`。
+  - リンク: 古い corr への答えはどの枠組みでも読み飛ばす。枠組みの壊れた TCP は閉じて開き直す（`tcpTransport().reopen`）。静かに
+    ならない入力は、目隠しの unsubscribe / end ではなく開き直す。COBS の壊れた候補は、セッションが口を持つかによらずすぐ送り直す。
+    probing の待ちは、短い操作の上限と host の追加の待ち（2000 ms）。保持しているセッションのファイルは id と予約した corr を持つ。
+  - debug: attach のピンと max_speed は固定部分。attach は毎回新しい接続（u32）。`candidatePairs()`、`holds()`、rvswd の
+    `idleClock`、`targetIdOf`。ペアを渡さない scan は候補の組を、max_frame に収まる要求に分けて試す（max_frame 1024 で 255 組は
+    収まらなかった。oep-client-python も直した）。ブロックの語数は経路の max_frame でも抑える。`reset()` に confirm は無く、
+    先に DATA0 を書き戻す。`declared()` は halt / resume も名指す。block op の無い probe の MEM-AP は生の transfer で動かす。swd の
+    targetsel を接続ごとに読む。
+  - コンソール: ストリームは u32、mechanism は名前（`mechanisms()`、`mechanismNumber()`）、新しい出来事の種類。
+  - fixture: gpio に強さの選択は無い（`Drive`、`DriveLevels`、`driveLevels()` を外した）。uart は自分の op 番号、
+    `status().configured`。target の宣言は決まった長さのものだけ使う。
+  - probe.config を書き直した: describe が番号を振る名前つきの項目（`Label`、3 byte の `Idle`、`Disable`、`Passthrough`、
+    `ConsolePassthrough`、`RvswdRest`、`WireHold`、entry をキーにする `Wifi`、`Ipv4`、`Own`）、世代、1 回で答える `state()`、
+    `network()`。`findLine(config, name, { profile, firmware, single })` は host ガイド §5.3 のとおり（slot と bind、plan / uart の項目は無い）。
+  - キャプチャ: データ形式 1（captureblocks.js: `readLogicBlocks`、`segmentColumns`）と 4。multirate.js を外した。`triggerOpts`、
+    `triggers()`、stream_buffer、judge_latency_ns、ストリームのフレームの segment_info、`ReadGap`、status の名前つきの拡張と
+    `CaptureDrops`。start は世代だけを答える（blocking_ms は無い）。capture-group の `TriggerSource` / `Stage` / `Cond`、
+    `triggerCaps()`、status の trigger、組の triggered の出来事。
+  - interfaces.js はタグ・役割・機能のビットをすべてレジストリから名前で引く。ページの設定の欄は probe.config に合わせた。
 - (EN) **Follow oep-spec d801f02 .. c6ab5d9 (capture: the probe's and the clients' questions).** Registry and vectors synced;
   README names c6ab5d9. configure sends the §3.3 table's TLVs and trigger_track without the critical bit, only multirate
   critical; rate / samples / segments of 0 and a type 0 trigger's role and value (sent 0) are handled before sending;

@@ -5,12 +5,15 @@
 // A probe keeps a session when its transport closes (transports §3): a page reloaded, a script killed, a lost line
 // leaves its lock and what it held until the lease runs out. So a host keeps the id of the session it has open, per
 // probe, keyed by the probe's unit_id (fn 0's describe, core §7.5), and the next run, before its first open, opens that
-// id and ends it at once - releasing what the previous run held - then opens as usual. An open with the id of the
-// session holding the lock is taken as a resend of its open (core §6.2: nothing released), so the end that follows is
-// a new request of that session.
+// id and ends it at once - releasing what the previous run held - then opens as usual. The holder's open again keeps the
+// session (core §6.2), and the end that follows is a new request of it. Both must carry corrs ahead of every one the
+// previous run sent, and less than half the space ahead (core §4.1, §5.1): so the place keeps, with the id, a corr
+// reserved ahead of what the run has used, renewed a block of RESERVE corrs at a time, and the next run goes on after
+// it. A place without that corr (or none) ends nothing.
 //
 // Where the id is kept is the store's business:
-//   - `fileKeptStore(dir)` (Node): `<dir>/<unit_id>.session`, the id as 8 hex digits, empty when no session is open -
+//   - `fileKeptStore(dir)` (Node): `<dir>/<unit_id>.session`, the id and the reserved corr as hex (`ssssssss cccc`),
+//     empty when no session is open -
 //     the same file and shape as oep-client-python's. The directory is $OEP_SESSION_DIR, else $XDG_RUNTIME_DIR/oep-client,
 //     else the user's cache directory (%LOCALAPPDATA%\oep-client\sessions on Windows, $XDG_CACHE_HOME or ~/.cache
 //     /oep-client/sessions elsewhere). While a host keeps the file it holds `<unit_id>.session.lock` (its process id,
@@ -33,6 +36,11 @@ export const STORAGE_PREFIX = 'oep-client.session.';
 const UNIT_ID_TAG = reg.CORE.tlv.describe.unit_id;
 /** core §7.5's unit_id grammar: safe as a file name and a key. */
 const SAFE = /^[a-z0-9-]{1,32}$/;
+/** Corrs reserved at a time: far below half the space (core §5.1). */
+export const RESERVE = 1024;
+
+/** The corr `n` after `corr` in the cycle that never uses 0 (core §4.1). @param {number} corr @param {number} n */
+export const ahead = (corr, n) => ((corr - 1 + n) % 0xffff) + 1;
 
 /**
  * One probe's kept id, claimed: `read` gives what the last run left ('' when nothing), `write` keeps text, `release`
@@ -200,14 +208,17 @@ export class KeptSession {
     /** @type {KeptClaim | null} */ this.claim = null;
     this.done = false;
     /** @type {number | null} */ this.previous = null;
+    /** @type {number | null} the corr the run before reserved (null: not known) */ this.previousCorr = null;
     this.endedPrevious = false;
+    /** @type {number | null} */ this.sid = null;
+    /** @type {number | null} every corr this run sends stays behind this one */ this.reserved = null;
     this.whyNot = '';
   }
 
   /** The probe's unit_id from fn 0's describe (null: none). @param {import('./host.js').Host} hst */
   static async unitId(hst) {
     const core = await import('./core.js');
-    const v = (await core.describe(hst, m.CORE_FN)).find(([tag]) => (tag & 0x7f) === UNIT_ID_TAG)?.[1];
+    const v = (await core.describe(hst, m.CORE_FN)).find(([tag]) => tag === UNIT_ID_TAG)?.[1];
     return v && v.length ? text(v) : null;
   }
 
@@ -231,10 +242,13 @@ export class KeptSession {
       this.whyNot = `cannot keep it: ${e instanceof Error ? e.message : e}`;
       return;
     }
-    const t = (await this.claim.read()).trim();
-    const id = /^[0-9a-f]{1,8}$/i.test(t) ? Number.parseInt(t, 16) : 0;
+    const t = (await this.claim.read()).trim().split(/\s+/);
+    const id = /^[0-9a-f]{1,8}$/i.test(t[0] ?? '') ? Number.parseInt(t[0], 16) : 0;
     this.previous = id || null;
-    if (this.previous !== null && this.previous !== hst.session) this.endedPrevious = await hst.endPrevious(this.previous, owner);
+    this.previousCorr = /^[0-9a-f]{1,4}$/i.test(t[1] ?? '') ? Number.parseInt(t[1], 16) : null;
+    if (this.previous !== null && this.previous !== hst.session && this.previousCorr) {
+      this.endedPrevious = await hst.endPrevious(this.previous, owner, { corr: this.previousCorr });
+    }
   }
 
   /** @param {string} t */
@@ -243,11 +257,30 @@ export class KeptSession {
     try { await this.claim.write(t); } catch { /* a cache: nothing kept */ }
   }
 
-  /** The session `sid` is open: kept for the next run. @param {number} sid */
-  opened(sid) { return this.write(`${(sid >>> 0).toString(16).padStart(8, '0')}\n`); }
+  /** The session `sid` opened with `corr`: keep its id and reserve the corrs after it. @param {number} sid @param {number} corr */
+  opened(sid, corr) {
+    this.sid = sid;
+    return this.reserve(corr);
+  }
+
+  /** A request goes out with `corr`: once it nears the reservation, reserve the next block. @param {number} corr */
+  sent(corr) {
+    if (this.sid === null || this.reserved === null) return undefined;
+    const d = (this.reserved - corr + 0x10000) % 0x10000;
+    return d > 0 && d < 0x8000 ? undefined : this.reserve(corr);
+  }
+
+  /** @param {number} corr */
+  reserve(corr) {
+    this.reserved = ahead(corr, RESERVE);
+    return this.write(`${(/** @type {number} */ (this.sid) >>> 0).toString(16).padStart(8, '0')} ${this.reserved.toString(16).padStart(4, '0')}\n`);
+  }
 
   /** The session ended: nothing to take back next time. */
-  ended() { return this.write(''); }
+  ended() {
+    this.sid = this.reserved = null;
+    return this.write('');
+  }
 
   /** Let the place go (the id stays in it for the next run when a session is still open); the next open claims again. */
   async release() {

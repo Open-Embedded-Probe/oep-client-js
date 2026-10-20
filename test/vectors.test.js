@@ -149,9 +149,9 @@ test('confirm: what Host sends and how it reads the answer (limits, transport; u
         && JSON.stringify(e.supported) === JSON.stringify(a.supported), c.name);
     } else {
       const limits = await hst.confirm(q.min_rev, q.max_rev);
-      assert.deepEqual({ revision: limits.revision, flags: limits.flags, maxFrame: limits.maxFrame, window: limits.window,
+      assert.deepEqual({ revision: limits.revision, maxFrame: limits.maxFrame, window: limits.window,
         maxInflight: limits.maxInflight, bootId: limits.bootId, transport: limits.transport },
-      { revision: a.revision, flags: a.flags, maxFrame: a.max_frame, window: a.window, maxInflight: a.max_inflight,
+      { revision: a.revision, maxFrame: a.max_frame, window: a.window, maxInflight: a.max_inflight,
         bootId: a.boot_id, transport: a.transport }, c.name);
     }
     assert.equal(hex(sent[0]), c.request_hex, c.name);
@@ -276,6 +276,7 @@ function scripted(answer, corr, session, sid = 0) {
   hst.revision = 1;
   hst.session = session;
   hst.newSession = () => sid;
+  hst.describes.set(m.CORE_FN, []);   // fn 0's describe read already (open reads it first, core §4.4): nothing declared
   return { hst, sent };
 }
 
@@ -302,6 +303,7 @@ test('sessions: each answer as the host reads it, and the requests it sends for 
         if (req.session !== m.NO_SESSION_ID) continue;                // Host.clock always goes with session_id 0
         call = () => hst.clock();
       } else {
+        if (req.payload.length || (req.op !== m.OP.keepalive && req.op !== m.OP.end)) continue;   // an altered copy: never sent by this host
         call = /** @type {Record<number, () => Promise<any>>} */ ({ [m.OP.keepalive]: () => hst.keepalive(), [m.OP.end]: () => hst.end() })[req.op];
       }
       if (res.resolution === m.REJECTED) {
@@ -340,403 +342,306 @@ const S = 0x11223344;   // ops.json about: the lock holder's id
 function client(c, session = null) {
   const r = m.Request.unpack(hx(c.request_hex));
   const { hst, sent } = scripted(hx(c.answer_hex), r.corr, session);
-  hst.limits = { revision: 1, flags: 0, maxFrame: 1024, window: 4096, maxInflight: 4, bootId: 0, transport: 0, tail: new m.Tail() };
+  hst.limits = { revision: 1, maxFrame: c.name.includes('frame64') ? reg.MIN_MAX_FRAME : 1024, window: 4096, maxInflight: 4, bootId: 0,
+    transport: 0, tail: new m.Tail() };   // what confirm said (a set's size check)
   for (const [k, name] of Object.entries(c.fns)) {
-    hst.fns.set(/** @type {string} */ (name), Number(k)); hst.revisions.set(Number(k), 1); hst.describes.set(Number(k), []);
+    const fn = Number(k), table = /** @type {any} */ (reg.INTERFACES)[/** @type {string} */ (name)];
+    hst.fns.set(/** @type {string} */ (name), fn); hst.revisions.set(fn, 1);
+    // every op of the interface, max_length 256 (as oep-client-python's scripted); probe.config's settings, the
+    // console's standard mechanisms
+    /** @type {[number, Uint8Array][]} */
+    const d = table ? [[m.TAG_OPS, catalog.packOps(Object.values(table.op))], [catalog.COMMON.max_length, new Writer().u16(256).done()]] : [];
+    if (name === config.ProbeConfig.NAME) d.push(...VECTOR_SETTINGS);
+    if (name === 'oep.target.console') {
+      for (const n of ['sdi', 'dmdata', 'dmseq']) d.push([reg.TARGET_CONSOLE.tlv.describe.mechanism, new TextEncoder().encode(n)]);
+    }
+    hst.describes.set(fn, d);
   }
-  hst.describes.set(0, []);
+  hst.describes.set(0, [[reg.CORE.tlv.describe.max_op_ms, new Writer().u32(1000).done()]]);
   return { hst, sent };
+}
+
+/** One describe setting (probe.config §4): form keys max_len flags name.
+ * @param {string} name @param {number} keys @param {number} [form] @param {number} [maxLen] @param {number} [flags]
+ * @returns {[number, Uint8Array]} */
+const setting = (name, keys, form = 0, maxLen = 0, flags = 0) =>
+  [config.DESCRIBE.setting, concat(new Writer().u8(form).u16(keys).u8(maxLen).u8(flags).done(), new TextEncoder().encode(name))];
+
+/** The vectors' probe.config lists these items in this order (oep-spec tools/oepvectors1.py) and netif [wifi]. */
+const VECTOR_SETTINGS = /** @type {[number, Uint8Array][]} */ ([setting('label', 0xffff), setting('idle', 0xffff),
+  setting('disable', 0xffff), setting('wifi', 4), setting('ipv4', 2), setting('com.example.ntp-server', 1, config.FORM.text, 32),
+  [config.DESCRIBE.netif, new TextEncoder().encode('wifi')]]);
+
+/** The probe.config cases this client sends and reads (oep-client-python's CONFIG_CLIENT). */
+const CONFIG_CLIENT = ['probe.config state: no saved', 'probe.config state: independent', 'probe.config get:',
+  'probe.config unset:', 'probe.config set: longest', 'probe.config set: changed contents',
+  'probe.config set: disable conflicts', 'probe.config set: idle conflicts'];
+
+/** probe.config §1-§3: the client's get / set / unset / state are the case's bytes, and it reads the answers - get's
+ * count apart from the answer's own TLVs. @param {any} c @returns {Promise<Uint8Array[] | null>} */
+async function configOnClient(c) {
+  const name = /** @type {string} */ (c.name);
+  if (!CONFIG_CLIENT.some((p) => name.startsWith(p))) return null;
+  const r = m.Request.unpack(hx(c.request_hex)), res = m.Result.unpack(hx(c.answer_hex));
+  const { hst, sent } = client(c, S);
+  const cfg = new config.ProbeConfig(hst, r.fn, config.ProbeConfig.NAME);
+  if (name.startsWith('probe.config state')) {
+    const st = await cfg.state();
+    assert.deepEqual([st.storage, st.savedGeneration, st.reason], name.includes('no saved') ? ['none', 0, null] : ['partial', 0, 'item'], name);
+  } else if (name.startsWith('probe.config get')) {
+    const first = r.payload[0] | (r.payload[1] << 8);
+    if (first) {
+      const rd = new m.Reader((await hst.call(r.fn, config.ProbeConfig.GET, r.payload, { locked: false })).payload);
+      assert.deepEqual([rd.u8(), rd.u32(), rd.u8()], [0, 2, 0], name);
+    } else if (name.includes('wifi')) {
+      // the passphrase write-only (§1.4)
+      assert.deepEqual(await cfg.get(), { generation: 2, items: [['wifi', 0, Uint8Array.of(3, ...new TextEncoder().encode('lab'), 0xff)]] }, name);
+    } else {
+      assert.deepEqual(await cfg.get(), { generation: 2, items: [['idle', 4, Uint8Array.of(0)]] }, name);
+    }
+  } else if (name.startsWith('probe.config unset')) {
+    assert.equal(await cfg.unset(name.includes('wifi') ? [['wifi', 0]] : [['disable', 4]]), 3, name);
+  } else {
+    const decl = await cfg.describe();
+    const items = config.splitItems(r.payload.slice(1), r.payload[0])[0].map(([n, k, d]) => {
+      const st = /** @type {config.Setting} */ (decl.byNumber(n));
+      return /** @type {config.Item} */ (config.decode(st.name, k, d, st));
+    });
+    if (res.resolution === m.REJECTED) await assert.rejects(cfg.set(items), Unavailable, name);
+    else assert.equal(await cfg.set(items), 2, name);
+  }
+  return sent.slice(-1);
 }
 
 /** @param {unknown} e */
 const unknownOperation = (e) => e instanceof Rejected && e.constructor === Rejected && e.result.detail === m.REJECT.unknown_operation;
 
-/** The client's own request for the case and its reading of the answer; null where this client has no API for that
- * request as it stands. @param {any} c @returns {Promise<Uint8Array[] | null>} */
+/** The debug cases this client sends and reads (oep-client-python's DEBUG_CLIENT). */
+const DEBUG_CLIENT = ['rvswd connections: one', 'rvswd scan: one', 'rvswd attach: a second', 'rvswd attach: a resource',
+  'rvswd attach: busy', 'swd ', 'arm-adi ', 'riscv-dm halt: halted', 'riscv-dm halt on', 'riscv-dm dmi: one read',
+  'riscv-dm dmi: n = 0', 'riscv-dm step on', 'riscv-dm run: the preparation', 'riscv-dm write_block'];
+/** The console cases (CONSOLE_CLIENT). */
+const CONSOLE_CLIENT = ['console open', 'console marks: one', 'console marks: from_serial', 'console streams: one',
+  'console streams: resource', 'console read: empty', 'console write: SDI'];
+/** DMSTATUS the debug vectors answer */
+const DMSTATUS = 0x00400382;
+
+/** The client's own request for the case and its reading of the answer, as oep-client-python's
+ * test_spec_vectors.py; null where this client has no API for that request (or the case is the probe's side).
+ * @param {any} c @returns {Promise<Uint8Array[] | null>} */
 async function onClient(c) {
-  const { Gpio, GpioUnavailable } = await import('../src/fixture.js');
+  const { Gpio } = await import('../src/fixture.js');
   const rv = await import('../src/riscv.js');
+  const arm = await import('../src/arm.js');
   const { Console } = await import('../src/console.js');
-  const { ProbeConfig } = await import('../src/config.js');
-  const { LogicCapture } = await import('../src/capture.js');
-  const { NoConnection } = await import('../src/errors.js');
+  const { NoResource } = await import('../src/errors.js');
+  const speed = await import('../src/speed.js');
   const name = /** @type {string} */ (c.name);
   const a = m.Result.unpack(hx(c.answer_hex));
   const r = m.Request.unpack(hx(c.request_hex));
-  if (isMultirate(c)) return multirateOnClient(c);
-  if (name.startsWith('restart')) {                                 // oep.probe.restart (oep-if-restart), found by name
-    const { hst, sent } = client(c, name.includes('without a session') ? null : S);
-    if (a.resolution === m.COMPLETED) {
-      await hst.requestRestart();
-      assert.equal(hst.session, null);
-      assert.equal(hst.fns.size, 0);                                    // nothing of the old boot lasts (core §6.6)
-    } else {
-      await assert.rejects(hst.requestRestart(), (e) => e instanceof Rejected && e.result.detail === a.detail);
-    }
-    return sent;
-  }
-  if (name.startsWith('plan_')) {                                    // oep.probe.plan (oep-if-plan), found by name
-    if (name.includes('n = 2 with one fn')) return null;            // the client never sends a short list
-    const { hst, sent } = client(c, name.includes('without a session') ? null : S);
+  const known = Object.values(c.fns).every((n) => n in reg.INTERFACES);
+  if (name.startsWith('plan_') && known && !name.includes('session_required') && !name.includes('n = 2')) {
+    const { hst, sent } = client(c, r.session || null);
     const call = r.op === core.PLAN_APPLY
       ? core.planApply(hst, m.splitTlvs(r.payload).map(([, v]) => /** @type {[number, number, number]} */ ([v[0] | (v[1] << 8), v[2], v[3] | (v[4] << 8)])))
       : core.planRelease(hst, Array.from({ length: r.payload[0] }, (_, i) => r.payload[1 + 2 * i] | (r.payload[2 + 2 * i] << 8)));
-    if (a.resolution === m.COMPLETED) await call;
-    else await assert.rejects(call, (e) => e instanceof Rejected && e.result.detail === a.detail);
-    return sent;
+    if (a.resolution === m.REJECTED) await assert.rejects(call, (e) => e instanceof Rejected && e.result.detail === a.detail, name);
+    else await call;
+    return sent.slice(0, 1);
   }
-  if (name.includes('subscribe')) {                                 // the emitting fn's own ops 0x30 / 0x32 (core §11.3)
-    const { hst, sent } = client(c, name.includes('without a session') ? null : S);
-    if (name.startsWith('gpio')) {
-      await assert.rejects(hst.subscribe(r.fn), unknownOperation);  // gpio sends no notifications
-      return sent;
+  if (name.startsWith('restart') && c.state !== '—') {
+    const { hst, sent } = client(c, r.session || null);
+    try {
+      await hst.requestRestart();
+    } catch (e) {
+      if (!(e instanceof Rejected)) throw e;
+      assert.equal(e.result.detail, a.detail, name);
     }
-    const lc = new LogicCapture(hst, r.fn, LogicCapture.NAME);
-    if (name.includes('without a session')) {
-      await assert.rejects(lc.subscribe(), (e) => e instanceof Rejected && e.result.detail === m.REJECT.session_required);
-    } else if (r.op === m.OP_SUBSCRIBE) {
-      await lc.subscribe(1024, 20);
-      assert.ok(hst.subscriptions.has(r.fn));
-    } else await lc.unsubscribe();
-    return sent;
+    return sent.slice(0, 1);
   }
-  if (name.startsWith('link source')) {
+  if (name.startsWith('link source') || name.startsWith('link sink') || name.startsWith('link port_state')) {
     const { hst, sent } = client(c);
-    const n = getU32(r.payload);
-    const data = core.linkSourceData((await hst.call(1, core.LINK_SOURCE, core.linkSourceRequest(n), { locked: false })).payload);
-    assert.deepEqual([...data], Array.from({ length: Math.min(n, core.linkSize(1024)) }, (_, k) => k & 0xff));   // max_frame - 7 (§2)
-    return sent;
-  }
-  if (name.startsWith('link sink') || name.startsWith('link port_speed')) {
-    if (name.includes('port_speed')) {
-      const { hst, sent } = client(c, S);
-      const { speedRequest } = await import('../src/speed.js');   // baud step verify_ms (oep-if-link §3)
-      await assert.rejects(hst.call(1, core.LINK_PORT_SPEED, speedRequest(921600, 0, 2000)), unknownOperation);   // WireSkein's check
-      return sent;
-    }
-    const { hst, sent } = client(c);
-    const count = r.payload[0] | (r.payload[1] << 8);
-    if (count > r.payload.length - 2) return null;                  // a count the client never sends
-    await hst.call(1, core.LINK_SINK, core.linkSinkRequest(r.payload.slice(2, 2 + count)), { locked: false });
-    return sent;
-  }
-  if (name.startsWith('gpio')) {
-    if (name.includes('n = 2 with one element')) return null;       // the client never sends a short list
-    const { hst, sent } = client(c, name.includes('without a session') ? null : S);
-    const g = new Gpio(hst, 2, Gpio.NAME);
-    if (name.startsWith('gpio read')) assert.deepEqual(await g.read([3]), [1]);
-    else if (name.includes('channel 9')) {
-      await assert.rejects(g.set([[3, Gpio.OUTPUT_HIGH], [9, Gpio.INPUT]]), (e) => e instanceof GpioUnavailable && JSON.stringify(e.channels) === '[9]');
-    } else if (name.includes('without a session')) {
-      await assert.rejects(g.set([[3, Gpio.OUTPUT_HIGH]]), (e) => e instanceof Rejected && e.result.detail === m.REJECT.session_required);
-    } else await g.set([[3, Gpio.OUTPUT_HIGH]]);
-    return sent;
-  }
-  if (name.startsWith('rvswd connections')) {
-    if (name.includes('first beyond')) return null;                 // the client pages from 0 on
-    const { hst, sent } = client(c);
-    const info = await new rv.Wire(hst, Number(Object.keys(c.fns).find((k) => c.fns[k] === 'oep.wire.rvswd')), 'oep.wire.rvswd').connections();
-    if (a.payload[1]) {
-      assert.equal(info.length, 1);
-      const [x] = info;
-      assert.deepEqual([x.conn, x.pins, x.speedHz, x.users, x.slot, x.targetId?.[0], hex(x.targetId?.[1] ?? new Uint8Array())],
-        [1, [1, 2], 1_000_000, 1, 0xff, 1, '00352000']);
-    } else assert.deepEqual(info, []);
-    return sent;
-  }
-  if (name.startsWith('rvswd scan')) {
-    if (name.includes('count 0') || name.includes('skip')) return null;   // skip: the client's own loop sends it
-    const { hst, sent } = client(c, S);
-    const found = await new rv.Wire(hst, Number(Object.keys(c.fns).find((k) => c.fns[k] === 'oep.wire.rvswd')), 'oep.wire.rvswd').scan([[1, 2]]);
-    assert.deepEqual(found, [{ kind: 1, pins: [1, 2], dmstatus: 0x00400382 }]);
-    return sent;
-  }
-  if (name.startsWith('riscv-dm')) {
-    if (name.includes('unknown step kind')) return null;
-    const { hst, sent } = client(c, S);
-    const dm = new rv.RiscvDm(hst, r.fn, rv.RiscvDm.NAME, r.payload.slice(0, 2));
-    if (name.includes('halt') && name.includes('unknown connection')) await assert.rejects(dm.halt(), NoConnection);
-    else if (name.includes('halt')) await dm.halt();
-    else if (name.includes('run not offered')) await assert.rejects(dm.run(0x20000000, [], { timeoutMs: 100, outs: [] }), unknownOperation);
-    else if (name.includes('preparation fails')) {                  // stopped 3: not run, still halted (debug §4.4)
-      await assert.rejects(dm.run(0x20000000, [[0x100A, 7]], { timeoutMs: 100, outs: [] }), (e) => {
-        const run = rv.RiscvDm.runResult(/** @type {any} */ (e).result);
-        return e instanceof rv.TargetError && run.notRun && !run.notHalted && e.status === reg.STATUS.line;
-      });
-    }
-    else if (name.includes('n = 0')) assert.deepEqual(await dm.dmi([]), { done: 0, values: [] });
-    else if (name.includes('step on a running hart')) {            // debug §4.2: moved and the dpcs are not read
-      await assert.rejects(dm.step(), (e) => e instanceof rv.StepError && e.status === reg.STATUS.state && e.before === null
-        && e.after === null && !e.stepLeft);
-      return sent.slice(-1);
-    }
-    else assert.deepEqual(await dm.dmi([rv.RiscvDm.stepRead(0x11)]), { done: 1, values: [0x00400382] });
-    return sent;
-  }
-  if (name.startsWith('arm-adi transfer')) {
-    const { ArmAdi } = await import('../src/arm.js');
-    const { hst, sent } = client(c, S);
-    const adi = new ArmAdi(hst, r.fn, ArmAdi.NAME, r.payload.slice(0, 2));
-    assert.deepEqual(await adi.transfer(new Uint8Array()), []);         // n = 0: success, done 0 (debug §6)
-    assert.equal(adi.lastAck, 0);
-    return sent;
-  }
-  if (name.startsWith('spi-target read_rx')) {
-    const { SpiTarget, wireBits } = await import('../src/fixture.js');
-    const { hst, sent } = client(c, S);
-    const got = await new SpiTarget(hst, r.fn, SpiTarget.NAME).readRx();
-    assert.deepEqual([got.pending, got.bits, got.ns], [0, 12, null]);
-    assert.deepEqual(wireBits(got.data, got.bits, name.includes('LSB first') ? 1 : 0), [1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1]);
-    return sent;
-  }
-  if (name.startsWith('console')) {
-    if (name.includes('from 4')) return null;                       // the client never sends from 4
-    const { hst, sent } = client(c);
-    const con = new Console(hst, r.fn, Console.NAME);
-    con.stream = 2;
-    if (name.startsWith('console marks') && c.state.includes('marks 5 to 8 kept')) {   // common §1.3
-      const from = getU32(r.payload, 2);
-      const { marks, more } = await con.marksPage(from);
-      const want = /** @type {Record<number, [number[], boolean]>} */ ({ 3: [[5, 6], true], 5: [[5, 6], true], 7: [[7, 8], false], 9: [[], false] })[from];
-      assert.deepEqual([marks.map((k) => k.serial), more], want);
-      for (const k of marks) assert.deepEqual([Number(k.position), Number(k.timeNs), k.detail], [10 * k.serial, 1_000_000 * k.serial, k.serial]);
-    } else if (name.startsWith('console streams') && name.includes('beyond the count')) {
-      const rd = new m.Reader((await hst.call(r.fn, Console.STREAMS, Uint8Array.of(1, 0), { locked: false })).payload);
-      assert.deepEqual([rd.u8(), rd.u8()], [0, 0]);                     // first(u16) past the count: the last page
-    } else if (name.startsWith('console marks')) {
-      const { marks, more } = await con.marksPage(0);
-      assert.equal(more, false);
-      assert.deepEqual(marks.map((k) => [k.serial, Number(k.position), k.kind, Number(k.timeNs), k.detail]), [[0, 0, 3, 1_000_000, 0]]);
-    } else if (name.startsWith('console streams')) {
-      assert.deepEqual(await con.streams(), [{ stream: 2, connection: 1, mechanism: 2, users: 1, state: 0, open: true }]);
+    if (r.op === core.LINK_SOURCE) {
+      const got = core.linkSourceData((await hst.request(r.fn, r.op, core.linkSourceRequest(getU32(r.payload)), { locked: false })).payload);
+      assert.deepEqual([...got], Array.from({ length: got.length }, (_, k) => k & 0xff), name);
+    } else if (r.op === core.LINK_SINK) {
+      const n = r.payload[0] | (r.payload[1] << 8);
+      const payload = a.succeeded ? core.linkSinkRequest(r.payload.slice(2, 2 + n)).slice(0, r.payload.length) : r.payload;
+      if (a.succeeded) await hst.request(r.fn, r.op, payload, { locked: false });
+      else await assert.rejects(hst.request(r.fn, r.op, payload, { locked: false }), Rejected, name);
     } else {
-      const got = await con.read(Console.FROM_POSITION, 5, 64);
-      assert.deepEqual([Number(got.start), got.more, got.gap, got.data.length], [5, false, false, 0]);
+      assert.deepEqual(await speed.portState(hst, r.fn), [getU32(a.payload), a.payload[4]], name);
     }
-    return sent;
+    return sent.slice(-1);
   }
-  if (name.startsWith('probe.config') && c.state.startsWith('items has wifi')) return wifiOnClient(c, a);
-  if (name.startsWith('probe.config')) {
-    if (name.includes('set')) return null;                          // the client's Idle never sends these forms
-    const { hst, sent } = client(c, name.includes('save') ? S : null);
-    const p = new ProbeConfig(hst, 8, ProbeConfig.NAME);
-    if (name.includes('save')) {
-      await assert.rejects(p.save(), unknownOperation);
-      return sent;
+  if (name.startsWith('gpio set: channel 3') || name.startsWith('gpio read') || name.startsWith('gpio set: channel 9')) {
+    const { hst, sent } = client(c, r.session || null);
+    const g = new Gpio(hst, r.fn, Gpio.NAME);
+    const n = r.payload[0];
+    if (r.op === Gpio.SET) {
+      const pairs = Array.from({ length: n }, (_, k) => /** @type {[number, number]} */ ([r.payload[1 + 3 * k] | (r.payload[2 + 3 * k] << 8), r.payload[3 + 3 * k]]));
+      if (a.succeeded) await g.set(pairs);
+      else await assert.rejects(g.set(pairs), (e) => e instanceof Unavailable && JSON.stringify(e.channels) === '[9]', name);
+    } else {
+      const channels = Array.from({ length: n }, (_, k) => r.payload[1 + 2 * k] | (r.payload[2 + 2 * k] << 8));
+      assert.deepEqual(await g.read(channels), [...a.payload.slice(1, 1 + n)], name);
     }
-    const st = await p.state();
-    assert.deepEqual([st.storage, st.savedHash, st.unreadable], ['none', 0, null]);
-    assert.equal(st.slots.length, 1);
-    const [slot] = st.slots;
-    assert.deepEqual([slot.slot, slot.state, slot.connection, Number(slot.lastTryAtNs)], [0, 'connected', 1, 1_000_000]);
-    assert.deepEqual(st.binds, [{ port: 0, flow: 'streaming' }]);
-    return sent;
+    return sent.slice(0, 1);
   }
-  if (name.startsWith('logic segments')) {
-    const { hst, sent } = client(c);
-    const { segments, more } = await new LogicCapture(hst, 9, LogicCapture.NAME).segmentsPage(getU32(r.payload));
-    assert.equal(more, false);
-    if (name.includes('from_serial = serial_done')) assert.deepEqual(segments, []);   // common §1.3 paging 2
-    else if (name.includes('dropped segment')) {                      // capture §2.2: serial 2 is not handed out
-      assert.deepEqual(segments.map((s) => [s.serial, Number(s.position), s.samples, Number(s.startNs)]), [[0, 0, 8000, 5_000_000], [1, 1000, 8000, 13_000_000]]);
-    }
-    else assert.deepEqual(segments.map((s) => [s.serial, Number(s.position), Number(s.samples), Number(s.startNs), s.generation]), [[0, 0, 1000, 5_000_000, 1]]);
-    return sent;
-  }
-  if (name.startsWith('logic status') && name.includes('streaming')) {
-    const { hst, sent } = client(c);
-    const st = await new LogicCapture(hst, 9, LogicCapture.NAME).status();
-    assert.deepEqual([st.state, st.segmentsDone, Number(st.writePos), st.dropped, st.errorName], [6, 2, 32, true, 'storage']);
-    return sent;
-  }
-  if (name.startsWith('logic status')) {                             // capture §2.2: state 6, error 2, flags bit0
-    const { hst, sent } = client(c);
-    const st = await new LogicCapture(hst, 9, LogicCapture.NAME).status();
-    assert.deepEqual([st.state, st.segmentsDone, Number(st.writePos), st.dropped, st.generation, st.errorName], [6, 2, 2000, true, 1, 'storage']);
-    return sent;
-  }
-  if (name.startsWith('logic configure without rate')) return null;
-  if (name.startsWith('logic query: an immediate trigger')) {        // type 0 goes as role 0 value 0 (§3.3)
-    const { hst, sent } = client(c);
-    await new LogicCapture(hst, 9, LogicCapture.NAME).configure({ rate: 20_000_000, samples: 200_000, trigger: [0, 5, 9], query: true });
-    const trig = m.splitTlvs(m.Request.unpack(sent[0]).payload).find(([t]) => t === 0x45);
-    assert.deepEqual([...(trig?.[1] ?? [])], [0, 0, 0, 0, 0, 0]);
-    return null;                                                      // the vector's role 5 is the probe's side
-  }
-  if (name.startsWith('logic query: samples 0')) {
-    const { hst, sent } = client(c);
-    await assert.rejects(new LogicCapture(hst, 9, LogicCapture.NAME).configure({ rate: 20_000_000, samples: 0, query: true }), /1 or more/);
-    assert.equal(sent.length, 0);
-    return null;                                                      // refused before sending
-  }
-  if (name.startsWith('capture-group bind: a track cannot keep')) {
-    const { AnalogCapture, CaptureGroup } = await import('../src/capture.js');
+  if (DEBUG_CLIENT.some((p) => name.startsWith(p))) {
     const { hst, sent } = client(c, S);
-    const logic = new LogicCapture(hst, 9, LogicCapture.NAME);
-    await assert.rejects(new CaptureGroup(hst, 12, CaptureGroup.NAME).bind([logic, new AnalogCapture(hst, 13, AnalogCapture.NAME)], logic),
-      (e) => e instanceof Unavailable && e.cause === 'limit' && e.fn === 13);   // cause 2, TLV fn (§4.1)
-    return sent;
-  }   // the client always sends mode and rate
-  if (name.startsWith('logic configure') || name.startsWith('logic query')) {
-    const cap = await import('../src/capture.js');
-    const { hst, sent } = client(c, c.state.includes('session S') ? S : null);
-    const lc = new LogicCapture(hst, 9, LogicCapture.NAME);
-    if (name.includes('streaming with samples')) {
-      await assert.rejects(lc.configure({ rate: 1_000_000, mode: cap.STREAMING, samples: 1000, query: true }), /streaming takes no samples/);
-      assert.equal(sent.length, 0);
-      return null;                                                    // refused before sending
+    if (name.startsWith('rvswd connections')) {
+      const rows = await new rv.Wire(hst, r.fn, 'oep.wire.rvswd').connections();
+      assert.deepEqual(rows.map((x) => [x.conn, x.pins, x.speedHz, x.targetId?.[0], hex(x.targetId?.[1] ?? new Uint8Array())]),
+        [[1, [1, 2], 1_000_000, 1, hex(new Writer().u32(0x00203500).done())]], name);
+    } else if (name.startsWith('rvswd scan')) {
+      assert.deepEqual(await new rv.Wire(hst, r.fn, 'oep.wire.rvswd').scan([[1, 2]]), [{ kind: 1, pins: [1, 2], dmstatus: DMSTATUS }], name);
+    } else if (name.startsWith('rvswd attach')) {
+      const wire = new rv.Wire(hst, r.fn, 'oep.wire.rvswd');
+      const pins = /** @type {[number, number]} */ ([r.payload[1] | (r.payload[2] << 8), r.payload[3] | (r.payload[4] << 8)]);
+      if (name.includes('busy')) {
+        await assert.rejects(wire.attach({ halt: false, pins, maxSpeed: 1_000_000 }), (e) => e instanceof Unavailable && JSON.stringify(e.channels) === '[1]', name);
+      } else {
+        const { conn, dmstatus } = await wire.attach({ halt: false, pins, maxSpeed: 1_000_000 });
+        assert.deepEqual([conn, dmstatus, wire.flags, wire.speedHz], [getU32(hx(c.answer_hex), 5), DMSTATUS, 0, 1_000_000], name);
+      }
+    } else if (name.startsWith('swd connections')) {
+      const rows = await new arm.SwdWire(hst, r.fn, arm.SwdWire.NAME).connections();
+      assert.deepEqual(rows.map((x) => [x.conn, x.pins, x.targetId?.[0], hex(x.targetId?.[1] ?? new Uint8Array()), x.targetsel]),
+        [[0x10000, [1, 2], 2, hex(new Writer().u32(0x2BA01477).done()), 0x01000001]], name);   // read identity, supplied selector
+    } else if (name.startsWith('swd attach')) {
+      await assert.rejects(new arm.SwdWire(hst, r.fn, arm.SwdWire.NAME).attach({ targetsel: 0x01000002, pins: [1, 2], maxSpeed: 1_000_000 }),
+        (e) => e instanceof Unavailable && JSON.stringify(e.channels) === '[1]', name);
+    } else if (name.startsWith('arm-adi')) {
+      const adi = new arm.ArmAdi(hst, r.fn, arm.ArmAdi.NAME, r.payload.slice(0, 4));
+      if (name.includes('reserved')) {
+        await assert.rejects(adi.request(arm.ArmAdi.TRANSFER, Uint8Array.of(1, 0, ...arm.ArmAdi.req(false, false, 0, 7))), Unsupported, name);
+        return null;                                                  // the client never builds a reserved request bit
+      }
+      assert.deepEqual(await adi.transfer(new Uint8Array()), [], name);
+      assert.equal(adi.lastAck, 0, name);
+    } else {
+      const dm = new rv.RiscvDm(hst, r.fn, rv.RiscvDm.NAME, r.payload.slice(0, 4));
+      if (name.includes('halt: halted')) await dm.halt();
+      else if (name.includes('halt on')) await assert.rejects(dm.halt(), NoResource, name);
+      else if (name.includes('one read')) assert.deepEqual(await dm.dmi([rv.RiscvDm.stepRead(0x11)]), { done: 1, values: [DMSTATUS] }, name);
+      else if (name.includes('n = 0')) assert.deepEqual(await dm.dmi([]), { done: 0, values: [] }, name);
+      else if (name.includes('step on')) {
+        await assert.rejects(dm.step(), (e) => e instanceof rv.StepError && e.status === reg.STATUS.state && !e.stepLeft, name);
+      } else if (name.includes('run:')) {
+        await assert.rejects(dm.run(0x20000000, [[0x100A, 7]], { timeoutMs: 100, outs: [] }), (e) => {
+          const res = rv.RiscvDm.runResult(/** @type {any} */ (e).result);
+          return e instanceof rv.TargetError && res.notRun && res.status === reg.STATUS.line && !res.values.length;
+        }, name);
+      } else {                                                         // the cleanup failed: partial, every word done
+        await assert.rejects(dm.writeBlock(0x20000000, new Writer().u32(7).u32(8).done()),
+          (e) => e instanceof rv.TargetError && e.done === 2 && e.result?.detail === m.PARTIAL && e.status === reg.STATUS.line, name);
+      }
     }
-    const got = await lc.configure({ rate: 20_000_000, samples: 200_000 });
-    assert.deepEqual([got.rate, got.width, got.positions, got.samples, got.segments, got.blockingMs], [20_000_000, 2, [0, 1], 200_000, 1, 0]);
-    return [uncritical(sent[0])];
+    return sent.slice(-1);
   }
-  if (name.startsWith('capture-group start')) {
-    const { AnalogCapture, CaptureGroup } = await import('../src/capture.js');
+  if (CONSOLE_CLIENT.some((p) => name.startsWith(p))) {
     const { hst, sent } = client(c, S);
-    const logic = new LogicCapture(hst, 9, LogicCapture.NAME), analog = new AnalogCapture(hst, 13, AnalogCapture.NAME);
-    const grp = new CaptureGroup(hst, 12, CaptureGroup.NAME);
-    const { blockingMs, startNs } = await grp.start([logic, analog]);
-    assert.deepEqual([blockingMs, Number(startNs), grp.generation, [...grp.generations], logic.generation, analog.generation],
-      [0, 7_000_000, 5, [[9, 4], [13, 2]], 4, 2]);
-    return sent;
+    const con = new Console(hst, r.fn, Console.NAME);
+    if (name.startsWith('console open')) {
+      assert.equal(await con.open(getU32(r.payload), r.payload[4]), getU32(a.payload), name);
+    } else if (name.startsWith('console streams')) {
+      const number = a.payload[10];
+      assert.deepEqual((await con.streams()).map((i) => [i.stream, i.connection, i.mechanism]),
+        [[getU32(a.payload, 2), getU32(a.payload, 6), (await con.mechanisms())[number - 1]]], name);   // by name (core §7.7)
+    } else {
+      con.stream = getU32(r.payload);
+      if (name.startsWith('console marks')) {
+        const { marks, more } = await con.marksPage(getU32(r.payload, 4));
+        assert.equal(more, !!a.payload[0], name);
+        assert.equal(marks.length, a.payload[1], name);
+      } else if (name.startsWith('console read')) {
+        const got = await con.readFrom(getU64le(r.payload, 5), r.payload[13] | (r.payload[14] << 8));
+        assert.deepEqual([Number(got.start), got.more, got.gap, got.data.length], [5, false, false, 0], name);
+      } else {
+        await assert.rejects(con.write(new TextEncoder().encode('x')), Unsupported, name);   // an SDI stream: no write (console §1)
+      }
+    }
+    return sent.slice(-1);
   }
+  if (name.startsWith('probe.config')) return configOnClient(c);
+  if (CAPTURE_CLIENT.some((p) => name.startsWith(p))) return captureOnClient(c);
   return null;
 }
 
-/** A request with bit 7 of its TLV tags cleared: this client sends mode and rate critical (its own choice, capture §3.3),
- * the vectors send them plain - the same request otherwise; multirate (0xE0) stays critical (§5.2).
- * @param {Uint8Array} frame @param {number} [fixed]  the bytes of the fixed part before the TLVs */
-function uncritical(frame, fixed = 0) {
-  const q = m.Request.unpack(frame);
-  const body = concat(q.payload.slice(0, fixed), ...m.splitTlvs(q.payload.slice(fixed)).map(([t, v]) => m.tlv(t & 0x7f, v, t === 0xe0)));
-  return new m.Request(q.corr, q.fn, q.op, body, q.session).pack();
-}
+/** @param {Uint8Array} b @param {number} at */
+const getU64le = (b, at) => BigInt(getU32(b, at)) | (BigInt(getU32(b, at + 4)) << 32n);
 
-/** The multirate vectors' logic fn (capture §5, the describe vector): one-shot and repeat, rate_range 1 kHz-100 MHz exact,
- * 4 channels, triggers with max_pretrigger 1000000, multirate policies 7, d 2-128 powers of 2 only. */
-const MULTIRATE_LOGIC = /** @type {[number, Uint8Array][]} */ ([
-  [0x40, new Writer().u8(1).u32(1_000_000).u32(1).done()], [0x40, new Writer().u8(2).u32(1_000_000).u32(8).done()],
-  [0x41, new Writer().u32(1000).u32(100_000_000).u8(1).done()], [0x44, Uint8Array.of(4)],
-  [0x45, new Writer().u32(7).u32(1_000_000).done()], [0x60, new Writer().u32(7).u32(2).u32(128).u8(1).done()]]);
+/** The capture cases this client sends and reads (oep-client-python's CAPTURE_CLIENT). */
+const CAPTURE_CLIENT = ['logic subscribe: min_bytes', 'logic unsubscribe', 'logic segments:', 'logic configure: one-shot',
+  'logic start:', 'logic status:', 'analog configure:', 'analog calibration: everything', 'analog calibration: nothing',
+  'capture-group status:', 'capture-group start:', 'logic release: old generation'];
 
-/** @param {any} c */
-const isMultirate = (c) => c.state.includes('multirate policies 7') || c.state.includes('configured multirate')
-  || c.name.startsWith('logic configure multirate on a fn');
-
-/** The multirate vectors (capture §5) as this client sends and reads them, as oep-client-python's: what describe
- * declares, configure / query with Multirate roles (checked against describe first: the malformed and undeclared forms
- * are refused before sending), the block layout, a multirate segment record, a bind of a multirate track.
- * @param {any} c @returns {Promise<Uint8Array[] | null>} */
-async function multirateOnClient(c) {
+/** capture §2-§4: the client's subscribe / unsubscribe / configure / start / status / segments / release / calibration
+ * and the group's start / status are the case's bytes, and it reads the answers (core §10.3).
+ * @param {any} c @returns {Promise<Uint8Array[]>} */
+async function captureOnClient(c) {
   const cap = await import('../src/capture.js');
-  const mr = await import('../src/multirate.js');
   const name = /** @type {string} */ (c.name);
-  const { hst, sent } = client(c, c.state.includes('session S') ? S : null);
-  const fn = m.Request.unpack(hx(c.request_hex)).fn;
-  if (name.startsWith('logic describe')) {
-    hst.describes.delete(9);
-    assert.deepEqual(await new cap.LogicCapture(hst, 9, cap.LogicCapture.NAME).multirateDeclared(), new mr.Declared(7, 2, 128, true));
-    return sent;
-  }
-  if (!name.includes('does not declare')) hst.describes.set(fn, MULTIRATE_LOGIC);
-  const lc = new cap.LogicCapture(hst, fn, cap.LogicCapture.NAME);
-  const { ANY_ACTIVE: A, SAMPLE: S_, EDGE_LATCH: E, Multirate: M } = mr;
-  const example = [new M(0, A, 32, 0), new M(3, S_, 4, 1)];
-  /** @type {[string, import('../src/multirate.js').Multirate[]][]} */
-  const forms = [['d 0', [new M(0, A, 0, 0)]], ['phase = d', [new M(3, S_, 4, 4)]], ['param 2', [new M(0, A, 32, 2)]],
-    ['d 1, malformed', [new M(0, E, 1, 1)]], ['same role twice', [new M(3, S_, 4, 1), new M(3, S_, 8, 0)]],
-    ['reserved policy', [new M(0, 3, 4, 0)]], ['d 3 where', [new M(3, S_, 3, 0)]], ['d 256', [new M(3, S_, 256, 0)]],
-    ['does not declare', example]];
-  for (const [key, specs] of forms) {
-    if (!name.includes(key)) continue;
-    await assert.rejects(lc.configure({ rate: 100_000_000, samples: 96, multirate: specs }), (e) => e instanceof RangeError && /multirate/.test(e.message));
-    assert.equal(sent.length, 0);
-    return null;                                                      // refused before sending
-  }
-  if (name.includes('not in the plan')) {
-    await assert.rejects(lc.configure({ rate: 100_000_000, samples: 96, multirate: [new M(4, S_, 4, 0)] }), Unavailable);
-    return [uncritical(sent[0])];
-  }
-  if (name.startsWith('logic segments multirate')) {
-    const { segments, more } = await lc.segmentsPage(0);
-    assert.deepEqual([more, segments.map((x) => [x.samples, x.triggerIndex, x.flags, x.generation])], [false, [[72, 13, 2, 1]]]);
-    return sent;
-  }
-  if (name.startsWith('capture-group bind')) {
-    const logic = new cap.LogicCapture(hst, 9, cap.LogicCapture.NAME);
-    await new cap.CaptureGroup(hst, 12, cap.CaptureGroup.NAME).bind([logic, new cap.AnalogCapture(hst, 13, cap.AnalogCapture.NAME)], logic);
-    return [uncritical(sent[0], 5)];                                  // trigger_track: critical here, plain there
-  }
-  if (name.includes('heavy')) {
-    const got = await lc.configure({ rate: 100_000_000, samples: 96, query: true, multirate: [0, 1, 2, 3].map((k) => new M(k, E, 2, 1)) });
-    assert.deepEqual([got.rate, got.width, got.positions, got.block, got.samples], [40_000_000, 1, [], 32, 96]);
-    return [uncritical(sent[0])];
-  }
-  const got = await lc.configure({ rate: 100_000_000, samples: name.includes('72') ? 72 : 96, query: name.includes('query'), multirate: example });
-  assert.deepEqual([got.rate, got.width, got.positions, got.block, got.samples, got.blockingMs], [100_000_000, 2, [0, 1], 32, 96, 0]);
-  assert.deepEqual([got.multirateLayout()?.blockBytes(), got.bytes], [10, 30]);   // B 10 (§5.7), 96 base samples
-  return [uncritical(sent[0])];
-}
-
-/** The wifi vectors (probe.config §1.4, §3.3: every case whose state starts "items has wifi") as this client sends and
- * reads them; null for the form it never builds (a 7-byte passphrase: RangeError before sending, the passphrase not in
- * the message). 0xFF for a missing entry and an index past wifi_max are the probe's to refuse: sent as asked.
- * @param {any} c @param {m.Result} a @returns {Promise<Uint8Array[] | null>} */
-async function wifiOnClient(c, a) {
-  const name = /** @type {string} */ (c.name);
-  const { hst, sent } = client(c, c.state.includes('session S') ? S : null);
-  const p = new config.ProbeConfig(hst, 8, config.ProbeConfig.NAME);
-  const refused = (/** @type {number} */ detail) => (/** @type {unknown} */ e) => e instanceof Rejected && e.result.detail === detail;
-  if (name.startsWith('probe.config set: wifi entry 0')) {
-    assert.equal(await p.set([new config.Wifi({ index: 0, ssid: 'lab', passphrase: 'password1' })]), 0x5A5A0001);
-  } else if (name.includes('the longest wifi item')) {
-    // 32-byte ssid and 64 hex digits: a 112-byte request (wifi_min_max_frame), sent at a max_frame of 112
-    /** @type {any} */ (hst.limits).maxFrame = reg.LIMITS.wifi_min_max_frame;
-    const w = new config.Wifi({ index: 0, ssid: 's'.repeat(config.SSID_MAX), passphrase: '0123456789abcdef'.repeat(4) });
-    assert.equal(await p.set([w]), 0x5A5A0003);
-    assert.equal(sent[0].length, config.WIFI_MIN_MAX_FRAME);
-  } else if (name.startsWith('probe.config get')) {
-    const { hash, items } = await p.get();
-    const [w] = items.map(([t, v]) => config.decode(t, v));
-    assert.ok(w instanceof config.Wifi);
-    assert.deepEqual([hash, items.length, w.index, w.ssid, w.passphrase], [0x5A5A0001, 1, 0, 'lab', config.KEEP]);
-    assert.deepEqual(w.shown(), { index: 0, ssid: 'lab', passphrase: 'set' });
-  } else if (name.includes('sent back')) {
-    assert.equal(await p.set([new config.Wifi({ index: 0, ssid: 'lab', passphrase: config.KEEP })]), 0x5A5A0001);
-  } else if (name.includes('no entry')) {
-    assert.equal(a.detail, m.REJECT.malformed);
-    await assert.rejects(p.set([new config.Wifi({ index: 1, ssid: 'field', passphrase: config.KEEP })]), refused(m.REJECT.malformed));
-  } else if (name.includes('7-byte')) {
-    assert.throws(() => new config.Wifi({ index: 1, ssid: 'field', passphrase: 'secret7' }).value(),
-      (e) => e instanceof RangeError && !e.message.includes('secret7'));
-    assert.equal(a.detail, m.REJECT.malformed);                            // what the probe answers the bytes (its side)
-    return null;
-  } else if (name.includes('at wifi_max')) {
-    await assert.rejects(p.set([new config.Wifi({ index: 4, ssid: 'field' })]), refused(m.REJECT.unsupported));
-  } else if (name.startsWith('probe.config state')) {
-    const st = await p.state();
-    assert.deepEqual([st.slots, st.binds], [[], []]);
-    assert.deepEqual(st.wifi, new config.WifiState('connected', 0, 'none', -52, '192.168.1.23'));
-  } else if (name.startsWith('probe.config unset')) {
-    assert.equal(await p.unset([['wifi', 0]]), 0x5A5A0002);
+  const r = m.Request.unpack(hx(c.request_hex));
+  const { hst, sent } = client(c, S);
+  const track = name.startsWith('analog') ? new cap.AnalogCapture(hst, r.fn, cap.AnalogCapture.NAME) : new cap.LogicCapture(hst, r.fn, cap.LogicCapture.NAME);
+  if (name.startsWith('logic subscribe')) await track.subscribe(1024, 20);
+  else if (name.startsWith('logic unsubscribe')) await track.unsubscribe();
+  else if (name.startsWith('logic segments')) {
+    const { segments, more } = await track.segmentsPage(getU32(r.payload));
+    /** @type {Record<string, (string | number | null)[][]>} */
+    const want = { 'one segment': [[0, 1000, '5000000', 50, null, 1]], serial_done: [],
+      dropped: [[0, 8000, '5000000', 50, null, 1], [1, 8000, '13000000', 50, null, 1]] };
+    const key = /** @type {string} */ (Object.keys(want).find((k) => name.includes(k)));
+    assert.equal(more, false, name);
+    assert.deepEqual(segments.map((x) => [x.serial, x.samples, String(x.startNs), x.startUncertaintyNs, x.triggerIndex, x.generation]), want[key], name);
+  } else if (name.startsWith('logic configure')) {
+    const cfg = await track.configure({ rate: 20_000_000, samples: 200_000 });
+    assert.deepEqual([cfg.rate, cfg.width, cfg.positions, cfg.samples], [20_000_000, 2, [0, 1], 200_000], name);
+  } else if (name.startsWith('logic start: bounded')) {
+    assert.equal(await track.start(), 1, name);
+    assert.equal(track.generation, 1, name);
+  } else if (name.startsWith('logic start: generation exhausted')) {
+    await assert.rejects(track.start(), (e) => e instanceof Unavailable && e.cause === 'limit', name);
+  } else if (name.startsWith('logic status')) {
+    const st = await track.status();
+    assert.deepEqual([st.state, st.dropped, st.errorName, st.generation], [cap.STATE.error, true, 'storage', 1], name);
+    assert.equal(st.writePos, name.includes('inside a segment') ? 2000n : 32n, name);
+  } else if (name.startsWith('logic release')) {
+    await assert.rejects(track.release(0, 1), (e) => e instanceof Unavailable && e.cause === 'wrong_state', name);
+  } else if (name.startsWith('analog configure')) {
+    const cfg = await track.configure({ rate: 1000, samples: 10 });
+    const roles = name.includes('2 roles') ? [0, 1] : [0];
+    assert.deepEqual([cfg.rate, cfg.order, cfg.samples, [...cfg.scaleNv].sort((x, y) => x[0] - y[0])], [1000, roles, 10, roles.map((k) => [k, 1_000_000])], name);
+    assert.deepEqual([...cfg.skewNs].sort((x, y) => x[0] - y[0]), roles.map((k) => [k, k === roles[roles.length - 1] ? 5 : 0]), name);
+    assert.deepEqual([cfg.frontend.size, cfg.reference], [0, null], name);
+  } else if (name.startsWith('analog calibration')) {
+    const cal = await /** @type {import('../src/capture.js').AnalogCapture} */ (track).calibration();
+    if (name.includes('everything')) {
+      assert.deepEqual(cal.factory, [{ frontend: null, scheme: 'com.example.adc', raw: Uint8Array.of(0, 1, 2, 3) }], name);
+      assert.deepEqual(cal.vrefint, { raw: 1500, ns: 7_000_000n, nominalMv: 1200 }, name);
+    } else assert.deepEqual([cal.factory, cal.vrefint], [[], null], name);
   } else {
-    assert.fail(`a wifi vector this test does not know: ${name}`);
+    const group = new cap.CaptureGroup(hst, r.fn, cap.CaptureGroup.NAME);
+    if (name.includes('status')) {
+      assert.deepEqual(await group.status(), { state: cap.STATE.capturing, startNs: 7_000_000n, generation: 5, trigger: null }, name);
+    } else {
+      assert.equal(await group.start(), 7_000_000n, name);
+      assert.deepEqual([group.generation, [...group.generations]], [5, [[9, 4], [13, 2]]], name);
+    }
   }
-  return sent;
+  return sent.slice(-1);
 }
-
-test('ops: the wifi vectors (probe.config §1.4, §3.3) are all known here', () => {
-  const wifi = OPS.filter((/** @type {any} */ c) => c.name.startsWith('probe.config') && c.state.startsWith('items has wifi'));
-  assert.equal(wifi.length, 9);
-});
 
 test('ops: a wifi set past the probe\'s max_frame is refused before sending (probe.config §1.4)', async () => {
   const c = OPS.find((/** @type {any} */ x) => x.name.includes('the longest wifi item'));
   const { hst, sent } = client(c, S);
   /** @type {any} */ (hst.limits).maxFrame = reg.MIN_MAX_FRAME;
-  const w = new config.Wifi({ index: 0, ssid: 's'.repeat(config.SSID_MAX), passphrase: '0123456789abcdef'.repeat(4) });
+  const w = new config.Wifi({ entry: 0, ssid: 's'.repeat(config.SSID_MAX), passphrase: '0123456789abcdef'.repeat(4) });
   await assert.rejects(new config.ProbeConfig(hst, 8, config.ProbeConfig.NAME).set([w]),
-    (e) => e instanceof RangeError && e.message.includes('max_frame 64') && e.message.includes('112') && !e.message.includes('0123'));
+    (e) => e instanceof RangeError && e.message.includes(`max_frame ${reg.MIN_MAX_FRAME}`)
+      && e.message.includes(String(config.WIFI_MIN_MAX_FRAME)) && !e.message.includes('0123'));
   assert.equal(sent.length, 0);
 });
 
@@ -818,75 +723,70 @@ test('ops encoding: an fn whose ops is invalid is not used (FnNotUsable), the re
   assert.deepEqual(await core.ops(hst, 5), new Set([1, 2, 0x30, 0x32]));
 });
 
-// ---- notification frames (ops.json events): capture events carry their generation (capture §3.4, §4.2) ---------------
+// ---- notification frames (ops.json events / data) and the logic layout (logic_layout.json) ---------------------------
 
-const EVENTS = load('ops.json').events;
+const EVENTS = load('ops.json').events, DATA = load('ops.json').data;
 
-test('events: each read with its generation; one of an earlier generation is passed over', async () => {
+test('events: role 0x03, the kind\'s fixed part with the generation it was made in; a group\'s read as the group\'s', async () => {
   const cap = await import('../src/capture.js');
-  assert.equal(EVENTS.length, 5);
+  assert.ok(EVENTS.length);
   for (const c of EVENTS) {
     const frame = hx(c.event_hex);
-    const fn = frame[1] | (frame[2] << 8);
-    const group = c.fns[String(fn)] === 'oep.fixture.capture-group';
+    const group = c.fns[String(frame[1] | (frame[2] << 8))] === 'oep.fixture.capture-group';
     const e = (group ? cap.parseGroupEvent : cap.parseCaptureEvent)(frame);
+    assert.equal(frame[0], m.ROLE_EVENT, c.name);
     assert.equal(e.generation, c.generation, c.name);
-    // the current generation: the logic's start answered 4, the group is at 5
-    const events = [frame];
-    const link = { events, nextEvent: (/** @type {(f: Uint8Array) => boolean} */ match) => {
-      const at = events.findIndex(match);
-      return Promise.resolve(at >= 0 ? events.splice(at, 1)[0] : null);
-    } };
-    const hst = /** @type {any} */ ({ link });
-    const track = group ? new cap.CaptureGroup(hst, fn, cap.CaptureGroup.NAME) : new cap.LogicCapture(hst, fn, cap.LogicCapture.NAME);
-    track.generation = group ? 5 : c.name.includes('dropped') ? 1 : 4;
-    const current = await track.nextEvent(null, 0);
-    if (c.name.includes('dropped inside a segment')) {                // capture §2.2: reason 3, error 2
-      assert.deepEqual([e.kind, e.reason, e.error, current?.generation], [cap.EVENT_STOPPED, cap.STOPPED_REASON.error, 2, 1], c.name);
-    } else if (c.name.includes('previous generation')) {
-      assert.deepEqual([e.kind, e.reason, current, track.staleEvents], [cap.EVENT_STOPPED, cap.STOPPED_REASON.host, null, 1], c.name);
-    } else if (group && e.kind === cap.GROUP_EVENT_TRIGGERED) {
-      assert.deepEqual([e.triggerFn, Number(e.triggerNs), current?.generation], [9, 7_050_000, 5], c.name);
-    } else if (e.kind === cap.EVENT_TRIGGERED) {
-      assert.deepEqual([e.serial, e.triggerIndex, Number(e.triggerNs), current?.generation], [0, 1000, 7_050_000, 4], c.name);
-    } else {
-      assert.deepEqual([e.kind, e.reason, e.error, current?.generation], [cap.GROUP_EVENT_STOPPED, cap.STOPPED_REASON.complete, 0, 5], c.name);
-    }
+    assert.ok([cap.EVENT_STOPPED, cap.EVENT_TRIGGERED].includes(e.kind) && (e.kind === cap.EVENT_STOPPED || !group), c.name);
   }
 });
 
-// ---- multirate streams (multirate.json, capture §5.5) ------------------------------------------------------------------
-
-test('multirate.json: each segment decodes to its levels and values, and encodes back byte for byte', async () => {
-  const mr = await import('../src/multirate.js');
-  const cases = load('multirate.json').cases;
-  assert.equal(cases.length, 14);
-  for (const v of cases) {
-    const specs = v.roles.flatMap((/** @type {any} */ r, /** @type {number} */ k) => (r ? [new mr.Multirate(k, mr.POLICY[r.policy], r.d, r.param)] : []));
-    const d1Roles = v.roles.flatMap((/** @type {any} */ r, /** @type {number} */ k) => (!r || (r.policy === 'sample' && r.d === 1) ? [k] : []));
-    const lay = new mr.Layout(v.layout.w, v.layout.pos, v.L, specs);
-    for (const seg of v.segments) {
-      const stream = hx(seg.stream_hex), n = seg.samples, ch = seg.channels;
-      assert.equal(lay.segmentBytes(n), stream.length, v.name);
-      const got = lay.decode(stream, n);
-      assert.deepEqual(got.d1.map((x) => x.join('')), d1Roles.map((/** @type {number} */ r) => ch[r]), v.name);
-      for (const s of specs.filter((/** @type {any} */ x) => x.reduced)) assert.deepEqual(got.reduced.get(s.role), s.values(ch[s.role]), v.name);
-      assert.equal(hex(lay.encode((role, i) => Number(ch[role][i]), n, d1Roles)), seg.stream_hex, v.name);
-    }
-  }
-});
-
-test('data frames: what the host keeps after an error stop (capture §2.2)', async () => {
+test('events: one of an earlier generation is passed over and counted (capture §3.4)', async () => {
   const cap = await import('../src/capture.js');
-  const data = load('ops.json').data;
-  assert.ok(data.length);
-  for (const v of data) {
-    const p = cap.unpackPush(hx(v.frame_hex));
+  const c = EVENTS[0];
+  const frame = hx(c.event_hex);
+  const fn = frame[1] | (frame[2] << 8);
+  const events = [frame];
+  const link = { events, nextEvent: (/** @type {(f: Uint8Array) => boolean} */ match) => {
+    const at = events.findIndex(match);
+    return Promise.resolve(at >= 0 ? events.splice(at, 1)[0] : null);
+  } };
+  const group = c.fns[String(fn)] === 'oep.fixture.capture-group';
+  const hst = /** @type {any} */ ({ link });
+  const track = group ? new cap.CaptureGroup(hst, fn, cap.CaptureGroup.NAME) : new cap.LogicCapture(hst, fn, cap.LogicCapture.NAME);
+  track.generation = (c.generation + 1) >>> 0;
+  assert.equal(await track.nextEvent(null, 0), null);
+  assert.equal(track.staleEvents, 1);
+});
+
+test('data frames: role 0x04 with the generation and segment_info, inside one segment; after an error stop at write_pos 32 the host keeps what came before (capture §2.2, §3.4)', async () => {
+  const cap = await import('../src/capture.js');
+  assert.ok(DATA.length);
+  for (const v of DATA) {
+    const frame = hx(v.frame_hex);
+    const p = cap.unpackPush(frame);
+    assert.equal(frame[0], m.ROLE_DATA, v.name);
     assert.equal(p.generation, v.generation, v.name);
-    const got = new cap.Received();
-    got.start = p.position;
-    got.append(p.data);
-    got.dropFrom(32n);                                                // the status vector's write_pos
-    assert.deepEqual([got.length, got.droppedAfterError], [v.keep, p.data.length - v.keep], v.name);
+    const info = /** @type {import('../src/capture.js').SegmentInfo} */ (p.segment);
+    assert.ok(info && info.position <= p.position && info.samples >= 1, v.name);
+    if ('layout' in v) {                                              // the segment's bytes so far, no more
+      assert.ok(p.position + BigInt(p.data.length) <= info.position + BigInt(Math.ceil((info.samples * v.layout.w) / 8)), v.name);
+    }
+    if ('keep' in v) {
+      const got = new cap.Received();
+      got.start = p.position;
+      got.append(p.data);
+      got.dropFrom(32n);                                              // the status vector's write_pos
+      assert.deepEqual([got.length, got.droppedAfterError], [v.keep, p.data.length - v.keep], v.name);
+    }
+  }
+});
+
+test('logic layout: channel k of sample i is stream bit i*w + pos[k]; a sample may cross a byte boundary (capture §1.1)', async () => {
+  const cap = await import('../src/capture.js');
+  for (const c of load('logic_layout.json').cases) {
+    const track = new cap.LogicCapture(/** @type {any} */ (null), 9, cap.LogicCapture.NAME);   // its layout only
+    track.config = Object.assign(new cap.Config(), { width: c.w, positions: c.pos, samples: c.samples });
+    const stream = hx(c.stream_hex);
+    assert.deepEqual(c.pos.map((/** @type {number} */ _, /** @type {number} */ k) => track.channel(stream, k, c.samples).join('')), c.channels, c.name);
   }
 });

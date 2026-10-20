@@ -1,16 +1,21 @@
 // @ts-check
-// The resync of length-prefixed frames (transports §5) on a scripted transport: a stray result, an impossible length,
-// a frame that stops half way and a missing answer make the link discard until quiet, confirm, and send the waiting
-// requests once more with the same corr; pushes that never stop get the blind unsubscribe and end; no resync while
-// probing; the link's own confirms ask for 1..1 (core §7.1). Mirrors oep-client-python's tests/test_link_host.py.
+// The resync of length-prefixed frames (transports §5) on a scripted transport: an impossible length, a frame that stops
+// half way and a missing answer make the link discard until quiet, confirm, and send the waiting requests once more
+// with the same corr; a result for a corr no request waits for is only read past; pushes that never stop make the link
+// open the transport again (no unsubscribe or end sent blind); no resync while probing; the link's own confirms ask for
+// the revisions the client handles (core §7.1). Mirrors oep-client-python's tests/test_link_host.py.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as m from '../src/message.js';
-import { FramingLost } from '../src/errors.js';
+import { Writer } from '../src/bytes.js';
+import { FramingLost, TransportFailed } from '../src/errors.js';
 import { Link } from '../src/link.js';
 import { Host, MAX_REVISION, MIN_REVISION } from '../src/host.js';
 
-const CONFIRM_V1 = Uint8Array.from([0x4f, 0x45, 0x50, 0x21, 1, 0, 0x00, 0x04, 0, 0, 1, 0, 4, 0x11, 0, 0, 0]);   // OEP! rev 1 ... boot_id
+/** confirm's answer: magic revision max_frame window max_inflight boot_id (core §7.1) */
+const CONFIRM_V1 = new Writer().raw(m.CONFIRM_RESULT).u8(1).u16(1024).u32(65536).u8(4).u32(0x11).done();
+/** a length past max_frame: the boundaries are lost (transports §5) */
+const BROKEN = new Writer().u16(5000).raw(new TextEncoder().encode('garbage')).done();
 
 /** @param {Uint8Array} msg */
 const frame = (msg) => Uint8Array.from([msg.length & 0xff, msg.length >> 8, ...msg]);
@@ -60,7 +65,7 @@ async function linkOn(t, timeoutMs = 300) {
   return link;
 }
 
-test('a result for no request waiting resyncs; the read goes once more with the same corr', async () => {
+test('a result for a corr no request waits for is read past: no resync (transports §5)', async () => {
   const { t, sent } = scripted();
   const link = await linkOn(t);
   let first = true;
@@ -71,24 +76,26 @@ test('a result for no request waiting resyncs; the read goes once more with the 
   };
   const reply = m.Result.unpack(await link.send(new m.Request(7, 0, m.OP.lock_state, new Uint8Array()).pack()));
   assert.equal(reply.corr, 7);
-  assert.deepEqual(ops(sent), [m.OP.lock_state, m.OP.confirm, m.OP.lock_state]);
-  assert.equal(sent[0].corr, 7);
-  assert.equal(sent[2].corr, 7);
+  assert.deepEqual(ops(sent), [m.OP.lock_state]);
   assert.ok(link.stats.stale >= 1);
-  assert.equal(link.stats.resyncs, 1);
-  assert.equal(link.stats.retries, 1);
+  assert.equal(link.stats.resyncs, 0);
 });
 
-test('a state-changing request goes once more with the same corr after the resync (the probe answers from its table)', async () => {
+test('a state-changing request goes once more with the same corr after a lost boundary\'s resync (the probe answers from its table)', async () => {
   const { t, sent } = scripted();
   const link = await linkOn(t);
-  t.inject(frame(result(99)));                                    // a stray result before the request
-  await sleep(5);
+  let first = true;
+  const respond = t.respond;
+  t.respond = (req) => {
+    if (first) { first = false; t.inject(BROKEN); return null; }   // a lost boundary instead of the answer
+    return respond(req);
+  };
   const reply = m.Result.unpack(await link.send(new m.Request(7, 1, 0x01, Uint8Array.of(0x78), 0x1234).pack()));
   assert.equal(reply.corr, 7);
+  assert.deepEqual(ops(sent), [0x01, m.OP.confirm, 0x01]);
+  assert.deepEqual([sent[0].corr, sent[2].corr], [7, 7]);           // the same corr both times
   assert.equal(link.stats.resyncs, 1);
-  // the stray came before the request: the resync ran first and the request waited for it
-  assert.deepEqual(ops(sent), [m.OP.confirm, 0x01]);
+  assert.equal(link.stats.retries, 1);
 });
 
 test('an impossible length resyncs', async () => {
@@ -157,52 +164,57 @@ test('pipelined requests: all still waiting go once more, in order, after one re
   assert.deepEqual(sent.map((r) => [r.op, r.corr]), [[2, 10], [2, 11], [2, 12], [m.OP.confirm, sent[3].corr], [2, 10], [2, 11], [2, 12]]);
 });
 
-test('a request sent twice already fails with FramingLost when the boundaries go again', async () => {
-  const { t } = scripted();
+test('a request sent twice already fails when the boundaries go again: never a third time (core §5.2)', async () => {
+  const { t, sent } = scripted();
   const link = await linkOn(t);
   const respond = t.respond;
-  t.respond = (req) => (req.op === m.OP.confirm ? respond(req) : [result(0x4242)]);   // always a stray, never ours
-  await assert.rejects(link.send(new m.Request(5, 0, m.OP.lock_state, new Uint8Array()).pack()), FramingLost);
-  assert.equal(link.stats.resyncs, 2);
+  t.respond = (req) => {
+    if (req.op === m.OP.confirm) return respond(req);
+    t.inject(BROKEN);                                              // never ours: the boundaries lost every time
+    return null;
+  };
+  // FramingLost when the second loss is seen as such, TransportFailed when the resync's discard took it and the wait ran out
+  await assert.rejects(link.send(new m.Request(5, 0, m.OP.lock_state, new Uint8Array()).pack()),
+    (e) => e instanceof FramingLost || e instanceof TransportFailed);
+  assert.equal(sent.filter((r) => r.op === m.OP.lock_state).length, 2);
 });
 
 test('no confirm back in 3 tries: the requests waiting fail with FramingLost', async () => {
   const { t, sent } = scripted();
   const link = await linkOn(t, 80);
-  t.respond = (req) => (req.corr === 1 ? [result(77)] : null);   // a stray, then silence
+  t.respond = () => null;                                        // silence: the timeout starts the resync
   await assert.rejects(link.send(new m.Request(1, 0, m.OP.lock_state, new Uint8Array()).pack()), /no confirm came back in 3 tries/);
   assert.deepEqual(ops(sent), [m.OP.lock_state, m.OP.confirm, m.OP.confirm, m.OP.confirm]);
 });
 
-test('pushes that never stop are stopped blind with unsubscribe and end; the session request is not sent again', async () => {
+test('pushes that never stop make the link open the transport again; no unsubscribe or end goes out blind (transports §5)', async () => {
   const { t, sent } = scripted();
   const link = await linkOn(t);
   const hst = new Host(link);
   hst.session = 0xabcd;
   hst.revision = 1;
   hst.subscriptions.add(5);
-  const push = frame(Uint8Array.from([0x06, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ...new Uint8Array(32).fill(0x78)]));
-  let noisy = true;
+  const push = frame(new Writer().u8(m.ROLE_DATA).u16(5).u16(0).u64(0).u16(32).raw(new Uint8Array(32).fill(0x78)).done());
+  let noisy = true, reopenedAt = -1;
+  /** @type {any} */ (t).reopen = async () => { noisy = false; reopenedAt = sent.length; };   // a fresh connection: quiet
   const noise = setInterval(() => { if (noisy) t.inject(push); }, 5);
+  let first = true;
   const respond = t.respond;
   t.respond = (req) => {
-    if (req.op === m.OP.end) noisy = false;                    // the lock ends, the subscription with it
-    if (req.fn === 5 && req.op === 0x01) return [result(50)];  // a stray result starts the resync
+    if (first) { first = false; t.inject(BROKEN); return null; }   // a lost boundary starts the resync
     return respond(req);
   };
   try {
-    await assert.rejects(link.send(new m.Request(hst.nextCorr(), 5, 0x01, new Uint8Array(), 0xabcd).pack()), FramingLost);
+    const reply = m.Result.unpack(await link.send(new m.Request(hst.nextCorr(), 5, 0x01, new Uint8Array(), 0xabcd).pack()));
+    assert.equal(reply.corr, sent[0].corr);
   } finally {
     clearInterval(noise);
   }
-  // a loaded machine may stall the noise timer past the 50 ms quiet: a confirm may then go before the blind stops
-  const stops = sent.slice(1).filter((r) => !(r.fn === 0 && r.op === m.OP.confirm));
-  assert.deepEqual(stops.map((r) => [r.fn, r.op, r.payload.length]), [[5, m.OP_UNSUBSCRIBE, 0], [0, m.OP.end, 0]]);   // fn 5's own unsubscribe (core §11.3)
-  assert.equal(ops(sent).at(-1), m.OP.confirm);                  // the resync's confirm after the stops
-  assert.equal(sent.filter((r) => r.fn === 5 && r.op === 0x01).length, 1);   // the session request is not sent again
-  assert.ok(stops.every((r) => r.session === 0xabcd));
-  assert.equal(hst.subscriptions.size, 0);
-  assert.equal(link.endedBlind, true);
+  assert.ok(reopenedAt >= 1, 'opened again');
+  assert.deepEqual(sent.slice(0, reopenedAt).map((r) => [r.fn, r.op]), [[5, 0x01]]);   // nothing more on the noisy one
+  assert.deepEqual(ops(sent.slice(reopenedAt)), [m.OP.confirm, 0x01]);   // confirmed, then the request sent again
+  assert.ok(!sent.some((r) => r.op === m.OP_UNSUBSCRIBE || (r.fn === 0 && r.op === m.OP.end)));
+  assert.deepEqual([[...hst.subscriptions], hst.session], [[5], 0xabcd]);   // the session stays the host's
 });
 
 test('while probing (transports §3) a stray result does not resync: nothing but the confirm goes out', async () => {
@@ -222,7 +234,7 @@ test('while probing (transports §3) a stray result does not resync: nothing but
 test("the link's own confirms ask for the revisions the client handles (core §7.1), not 0..0xFF", async () => {
   const { t, sent } = scripted();
   const link = await linkOn(t);
-  t.inject(frame(result(99)));                                   // a resync: its confirm
+  t.inject(BROKEN);                                              // a lost boundary: the resync's confirm
   await sleep(5);
   await link.send(new m.Request(2, 0, m.OP.lock_state, new Uint8Array()).pack());
   assert.equal(await link.confirmRaw(200), true);                // confirmRaw

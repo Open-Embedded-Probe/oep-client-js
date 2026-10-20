@@ -2,7 +2,7 @@
 // OEP Probe Tool: connect to a probe from the browser, show what it declares, set up its settings, try simple
 // operations, update its firmware (docs/design.md §4). Everything goes through oep-client-js.
 import {
-  VERSION, config, core, dump, fixture, openWebHid, openWebSerial, openWebUsb, parseFirmwareManifest, pickFirmware,
+  VERSION, bytes, config, core, dump, fixture, targetConsole, openWebHid, openWebSerial, openWebUsb, parseFirmwareManifest, pickFirmware,
   requestDfuDevice, dfuUpdate, verifyFirmware, Rejected, Unavailable, raiseSpeed, speedText,
 } from './oep-client.js';
 
@@ -15,11 +15,15 @@ const WORDS = {
     takeLock: 'Take the lock (to change things)', notConnected: 'Not connected.',
     tabDescribe: 'Probe', tabSettings: 'Settings', tabTools: 'Tools', tabFirmware: 'Firmware',
     describeRun: 'Read everything it declares', saveJson: 'Save as JSON', read: 'Read', saveToProbe: 'Save in the probe',
-    erase: 'Erase the saved', addItem: 'Add or change', slot: 'Slot', bind: 'Bind', label: 'Label', idle: 'Idle state',
+    erase: 'Erase the saved', addItem: 'Add or change', label: 'Label', idle: 'Idle state',
+    passthrough: 'Serial pass-through (a fixture UART\'s RX on a port, while no session uses it)',
+    consolePassthrough: 'Console pass-through (the target\'s debug console on a port, while no session uses it)',
+    rvswdRest: 'RVSWD rest (SWCLK while the line rests)', wireHold: 'Debug wire hold (after its connection closes)',
+    own: 'The probe\'s own item',
     disable: 'Disable channels (not on this board: never used or touched)',
-    plan: 'Plan', uart: 'UART', set: 'Set', remove: 'Remove', configure: 'Configure', send: 'Send',
+    uart: 'UART', set: 'Set', remove: 'Remove', configure: 'Configure', send: 'Send',
     gpioHint: 'Plan the channel to oep.fixture.gpio first (it takes the pin for this session).', gpioPlan: 'Plan it',
-    uartHint: 'The UART needs its RX / TX planned (Settings: plan, or a saved plan).',
+    uartHint: 'The UART needs its RX / TX planned to oep.fixture.uart in this session.',
     fwP4: 'ESP32-P4 (DFU over its HS port)',
     fwP4Hint: 'Pick OepProbe-esp32p4-<version>.bin (the app image from the Release) and, to check it, firmware-<version>.json. The probe restarts into it; its settings stay.',
     fwWrite: 'Choose the device and write', fwEsp32: 'ESP32 (USB-Serial/JTAG, UART bridge)',
@@ -30,7 +34,7 @@ const WORDS = {
     speedHint: 'A UART bridge (serial) probe that offers port_speed runs faster for this session: each candidate is tried, confirmed at the new rate and committed - the first that passes is kept (the probe goes back to 115200 when the lock is released); in use, a rate whose frames keep breaking is left for the session. Which rates pass depends on the bridge chip. The default is 500000: a faster rate is tried only when you enter it here, and is used only after full frames ran 1 s each way at it (host guide §17).',
     speedTry: 'Try the rates',
     wifi: 'Wi-Fi network', wifiOpen: 'Open network (no passphrase)',
-    wifiHint: 'The probe tries the entries in index order. The passphrase is write-only: the probe never gives it back and this page never shows it. Left empty, the entry keeps the passphrase it has. Changing the entry in use drops the probe\'s TCP link.',
+    wifiHint: 'The probe tries the entries in entry order. The passphrase is write-only: the probe never gives it back and this page never shows it. Left empty, the entry keeps the passphrase it has. Changing the entry in use drops the probe\'s TCP link.',
   },
   ja: {
     unsupported: 'このブラウザには WebUSB / WebSerial / WebHID がありません。Chrome か Edge で、HTTPS か localhost で開いてください。',
@@ -38,11 +42,15 @@ const WORDS = {
     takeLock: 'ロックを取る（変更するとき）', notConnected: 'つながっていません。',
     tabDescribe: 'probe', tabSettings: '設定', tabTools: '操作', tabFirmware: 'firmware',
     describeRun: '宣言をすべて読む', saveJson: 'JSON で保存', read: '読む', saveToProbe: 'probe に保存', erase: '保存を消す',
-    addItem: '足す・変える', slot: 'スロット', bind: 'bind', label: 'ラベル', idle: '空きのときの状態', plan: 'plan',
+    addItem: '足す・変える', label: 'ラベル', idle: '空きのときの状態',
+    passthrough: 'シリアルの素通し（セッションが使っていない間、fixture UART の RX を口へ流す）',
+    consolePassthrough: 'コンソールの素通し（セッションが使っていない間、target の debug コンソールを口へ流す）',
+    rvswdRest: 'RVSWD の休ませ方（線を休ませる間の SWCLK）', wireHold: 'debug の線の保持（接続を閉じた後）',
+    own: 'probe 独自の項目',
     disable: '使わない channel（このボードに出ていない: 使わず、触れない）',
     uart: 'UART', set: '設定', remove: '消す', configure: '設定', send: '送る',
     gpioHint: '先にその channel を oep.fixture.gpio に plan します（このセッションの間、ピンを持ちます）。', gpioPlan: 'plan する',
-    uartHint: 'UART は RX / TX の plan が要ります（設定の plan か、保存した plan）。',
+    uartHint: 'UART は、このセッションで RX / TX を oep.fixture.uart に plan する必要があります。',
     fwP4: 'ESP32-P4（HS の口で DFU）',
     fwP4Hint: 'OepProbe-esp32p4-<version>.bin（Release の app の image）を選び、確かめるなら firmware-<version>.json も選びます。probe はそれで再起動し、設定は残ります。',
     fwWrite: 'デバイスを選んで書く', fwEsp32: 'ESP32（USB-Serial/JTAG、UART bridge）',
@@ -53,7 +61,7 @@ const WORDS = {
     speedHint: 'port_speed を持つ UART bridge（シリアル）の probe は、このセッションの間速くできます。候補を順に試し、新しい速さで confirm して決め、最初に通った速さを使います（ロックを放すと probe は 115200 に戻る）。使っている間にフレームが壊れ続ける速さはそのセッションでは降ります。通る速さは変換チップで決まります。既定は 500000 で、それより速い速さはここに入れたときだけ試し、両方向それぞれ 1 秒、最大のフレームを流して通ったときだけ使います（oep-if-link §3 の義務 7）。',
     speedTry: '速さを試す',
     wifi: 'Wi-Fi のネットワーク', wifiOpen: '開いたネットワーク（passphrase なし）',
-    wifiHint: 'probe は entry を index の順に試します。passphrase は書くだけで、probe は返さず、このページも表示しません。空のままなら、その entry の今の passphrase を保ちます。使っている entry を変えると、probe の TCP のつながりは切れます。',
+    wifiHint: 'probe は entry を番号の順に試します。passphrase は書くだけで、probe は返さず、このページも表示しません。空のままなら、その entry の今の passphrase を保ちます。使っている entry を変えると、probe の TCP のつながりは切れます。',
   },
 };
 /** @type {'en' | 'ja'} */
@@ -201,51 +209,65 @@ async function probeConfig() {
 
 /** @param {any} it */
 function itemText(it) {
-  if (it instanceof config.Slot) {
-    return [`slot ${it.slot} "${it.name}"`, `wire fn ${it.wireFn}`, `pins ${it.pins.join('/')}`, it.attach,
-      it.retryS ? `retry ${it.retryS} s` : '', it.maxSpeed ? `≤ ${it.maxSpeed} Hz` : '', `idle ${it.idleClock}`,
-      it.mechanism].filter(Boolean).join(', ');
-  }
-  if (it instanceof config.Bind) return `bind port ${it.port}: ${it.stream.join(':')}`;
   if (it instanceof config.Label) return `label ${it.channel} "${it.text}"`;
-  if (it instanceof config.Idle) return `idle ${it.channel} ${it.mode}${it.drive ? ` (${it.drive})` : ''}`;
+  if (it instanceof config.Idle) return `idle ${it.channel} ${it.mode}`;
   if (it instanceof config.Disable) return `disable ${it.channel}`;
-  if (it instanceof config.Plan) return `plan fn ${it.fn} role ${it.role} → channel ${it.channel}`;
-  if (it instanceof config.Uart) return `uart fn ${it.fn} ${it.baud} baud, format 0x${it.format.toString(16).padStart(2, '0')}`;
+  if (it instanceof config.Passthrough) {
+    return `passthrough port ${it.port}: uart fn ${it.fn} RX ${it.rx}, ${it.baud} baud, format 0x${it.format.toString(16).padStart(2, '0')}`;
+  }
+  if (it instanceof config.ConsolePassthrough) {
+    return `console-passthrough port ${it.port}: wire fn ${it.wireFn} pins ${it.swdio}/${it.swclk}, ≤ ${it.maxSpeed} Hz, `
+      + `console fn ${it.consoleFn} mechanism ${it.mechanism}`;
+  }
+  if (it instanceof config.RvswdRest) return `rvswd-rest ${it.channel} ${it.mode}`;
+  if (it instanceof config.WireHold) return `wire-hold ${it.channel} ${it.mode}`;
   if (it instanceof config.Wifi) {                                 // never the passphrase: shown() says set / none
     const w = it.shown();
-    return `wifi ${w.index} "${w.ssid}", passphrase ${w.passphrase}`;
+    return `wifi ${w.entry} "${w.ssid}", passphrase ${w.passphrase}`;
   }
-  return `tag 0x${it.tag?.toString(16)}`;
+  if (it instanceof config.Ipv4) {
+    return `ipv4 ${it.netif}: ${it.address ?? 'DHCP'}${it.gateway ? `, gateway ${it.gateway}` : ''}${it.dns ? `, dns ${it.dns}` : ''}`;
+  }
+  if (it instanceof config.Own) {
+    const v = it.value;
+    const shown = v === null ? '(secret, kept)' : v instanceof Uint8Array ? bytes.hex(v) : JSON.stringify(v);
+    return `${it.name}${it.key() ? ` [${it.key()}]` : ''} = ${shown}`;
+  }
+  const [name, key, data] = it;
+  return `${name} [${key}] ${bytes.hex(data)}`;
 }
 
-/** The key unset takes for this item (a plan's: its fn, the whole plan of that fn).
- * @param {any} it @returns {[config.ItemKind, number] | null} */
+/** The [name, key] unset takes for this item. @param {any} it @returns {[string, number]} */
 function itemKey(it) {
-  if (it instanceof config.Slot) return ['slot', it.slot];
-  if (it instanceof config.Bind) return ['bind', it.port];
-  if (it instanceof config.Label) return ['label', it.channel];
-  if (it instanceof config.Idle) return ['idle', it.channel];
-  if (it instanceof config.Disable) return ['disable', it.channel];
-  if (it instanceof config.Plan) return ['plan', it.fn];
-  if (it instanceof config.Uart) return ['uart', it.fn];
-  if (it instanceof config.Wifi) return ['wifi', it.index];
-  return null;
+  if (Array.isArray(it)) return [it[0], it[1]];
+  if (it instanceof config.Own) return [it.name, it.key()];
+  return [it.constructor.NAME, it.key()];
 }
 
-/** The settings: the items (get), what the probe declares (describe) and the live slot / bind / storage state (op
- * state, lock-free). */
+/** The settings: the items (get), what the probe declares (describe), the storage state (op state) and the network
+ * (op network, when the probe declares a netif); both lock-free. Only the forms of the items the probe takes are shown. */
 async function readSettings() {
   const cfg = await probeConfig();
-  const [items, declared, state] = await Promise.all([cfg.items(), cfg.describe(), cfg.state()]);
-  const slots = state.slots.map((s) => `slot ${s.slot}: ${s.state}${s.connection ? ` (connection ${s.connection})` : ''}`
-    + (s.lastTryAtNs !== null ? ` (last try at ${(Number(s.lastTryAtNs / 1_000_000n) / 1000).toFixed(3)} s)` : ''));
-  const binds = state.binds.map((b) => `port ${b.port}: ${b.flow}`);
-  const wifi = declared.wifiMax ? [`${declared.wifiMax} wifi entries`, ...(state.wifi ? [`wifi ${state.wifi.text()}`] : [])] : [];
-  $('settings-state').textContent = [`storage ${state.storage}${state.unreadable ? ` (${state.unreadable})` : ''}`
-    + (declared.storageBytes ? ` of ${declared.storageBytes} bytes` : ''), `${declared.slotsMax} slots`,
-  ...slots, ...binds, ...wifi].join(' · ');
-  $('form-wifi').hidden = !declared.items.includes(config.ITEM.wifi);
+  const declared = await cfg.describe();
+  const [items, state, net] = await Promise.all([cfg.items(), cfg.state(),
+    declared.netifs.length ? cfg.network() : Promise.resolve(null)]);
+  const netifs = net ? [`TCP port ${net.tcpPort || 'none'}`, ...net.netifs.map((n) => `${n.netif} ${n.state}`
+    + (n.entry !== null ? `, entry ${n.entry}` : '') + (n.reason !== 'none' ? `, reason ${n.reason}` : '')
+    + (n.rssi ? `, rssi ${n.rssi} dBm` : '') + (n.address ? `, ${n.address}` : ''))] : [];
+  $('settings-state').textContent = [`storage ${state.storage}${state.reason ? ` (${state.reason})` : ''}`
+    + (declared.storageBytes ? ` of ${declared.storageBytes} bytes` : ''), ...netifs].join(' · ');
+  for (const form of /** @type {NodeListOf<HTMLFormElement>} */ (document.querySelectorAll('form[data-item]'))) {
+    form.hidden = !declared.items.includes(/** @type {string} */ (form.dataset.item));
+  }
+  const own = declared.settings.filter((st) => st.form !== config.FORM.named);
+  const ownForm = /** @type {HTMLFormElement} */ ($('form-own'));
+  ownForm.hidden = !own.length;
+  const names = /** @type {HTMLSelectElement} */ (ownForm.elements.namedItem('name'));
+  names.replaceChildren(...own.map((st) => {
+    const o = document.createElement('option');
+    o.textContent = st.name;
+    return o;
+  }));
   const body = /** @type {HTMLTableSectionElement} */ ($('settings-items').querySelector('tbody'));
   body.replaceChildren();
   for (const it of items) {
@@ -254,18 +276,25 @@ async function readSettings() {
     td.textContent = itemText(it);
     const td2 = document.createElement('td');
     const key = itemKey(it);
-    if (key) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = t('remove');
-      b.dataset.needs = 'lock';
-      b.onclick = () => act(async () => { await (await probeConfig()).unset([key]); await readSettings(); });
-      td2.append(b);
-    }
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = t('remove');
+    b.dataset.needs = 'lock';
+    b.onclick = () => act(async () => { await (await probeConfig()).unset([key]); await readSettings(); });
+    td2.append(b);
     tr.append(td, td2);
     body.append(tr);
   }
   refreshButtons();
+}
+
+/** A probe's own item from the form: its value as the form the probe declares takes it. @param {Record<string, any>} d */
+async function ownItem(d) {
+  const st = (await (await probeConfig()).describe()).byName(String(d.name));
+  const v = String(d.value ?? '');
+  const value = st.secret && v === '' ? null : st.form === config.FORM.u32 ? Number(v)
+    : st.form === config.FORM.bool ? v === 'true' || v === '1' : st.form === config.FORM.bytes ? bytes.fromHex(v) : v;
+  return new config.Own(st.name, value, +d.key);
 }
 
 /** @param {any[]} items */
@@ -283,31 +312,24 @@ function wireForms() {
     const form = /** @type {HTMLFormElement} */ ($(id));
     form.onsubmit = (e) => { e.preventDefault(); act(async () => setItems(await make(formData(form)))); };
   };
-  on('form-slot', (d) => [new config.Slot({ slot: +d.slot, wireFn: +d.wireFn, pins: [+d.swdio, d.swclk === '' ? 0xffff : +d.swclk],
-    name: d.name, attach: d.attach, retryS: +d.retryS, maxSpeed: +d.maxSpeed, idleClock: d.idleClock, mechanism: d.mechanism })]);
-  on('form-bind', (d) => {                                         // one stream a port (probe.config §1.2)
-    const [kind, id] = String(d.stream).split(':').map((s) => s.trim());
-    return [new config.Bind({ port: +d.port, stream: [kind, +id] })];
-  });
   on('form-label', (d) => [new config.Label({ channel: +d.channel, text: d.text })]);
-  on('form-idle', async (d) => {
-    let drive = null;
-    if (d.driveMa !== '' && d.driveMa !== undefined) {             // a level of this probe's drive_levels (fixture §1.1)
-      if (!host) throw new Error('not connected');
-      const levels = await (await fixture.Gpio.open(host)).driveLevels();
-      if (!levels) throw new Error('this probe declares no drive_levels: it cannot switch the output strength');
-      drive = levels.atMost(+d.driveMa);
-    }
-    return [new config.Idle({ channel: +d.channel, mode: d.mode, drive })];
-  });
+  on('form-idle', (d) => [new config.Idle({ channel: +d.channel, mode: d.mode })]);
   on('form-disable', (d) => String(d.channels).split(',').filter((s) => s.trim() !== '')
     .map((s) => new config.Disable({ channel: +s.trim() })));
-  on('form-plan', (d) => String(d.roles).split(',').map((s) => {
-    const [role, ch] = s.trim().split('=');
-    return new config.Plan({ fn: +d.fn, role: +role, channel: +ch });
-  }));
-  on('form-uart', (d) => [new config.Uart({ fn: +d.fn, baud: +d.baud,
+  on('form-passthrough', (d) => [new config.Passthrough({ port: +d.port, fn: +d.fn, rx: +d.rx, baud: +d.baud,
     format: fixture.FixtureUart.formatByte(+d.dataBits, d.parity, +d.stopBits) })]);
+  on('form-console-passthrough', async (d) => {                   // mechanism: its place in the console's describe list
+    if (!host) throw new Error('not connected');
+    const mechanism = await (await targetConsole.Console.open(host, { fn: +d.consoleFn })).mechanismNumber(String(d.mechanism));
+    if (!mechanism) throw new Error(`console fn ${d.consoleFn} declares no mechanism ${d.mechanism}`);
+    return [new config.ConsolePassthrough({ port: +d.port, wireFn: +d.wireFn, swdio: +d.swdio,
+      swclk: d.swclk === '' ? 0xffff : +d.swclk, maxSpeed: +d.maxSpeed, consoleFn: +d.consoleFn, mechanism })];
+  });
+  on('form-rvswd-rest', (d) => [new config.RvswdRest({ channel: +d.channel, mode: d.mode })]);
+  on('form-wire-hold', (d) => [new config.WireHold({ channel: +d.channel, mode: d.mode })]);
+  on('form-ipv4', (d) => [new config.Ipv4({ netif: String(d.netif), address: d.address || null, gateway: d.gateway || null,
+    dns: d.dns || null })]);
+  on('form-own', async (d) => [await ownItem(d)]);
   // the passphrase is write-only (probe.config §1.4, host guide §15.1): a password field, cleared once read, never
   // filled from the probe or written to the log; empty keeps the entry's (pass_len 0xFF), "open" sends none
   const wifiForm = /** @type {HTMLFormElement} */ ($('form-wifi'));
@@ -317,7 +339,7 @@ function wireForms() {
     const d = formData(wifiForm);
     const passphrase = d.open ? null : pass.value === '' ? config.KEEP : pass.value;
     pass.value = '';
-    act(async () => setItems([new config.Wifi({ index: +d.index, ssid: String(d.ssid), passphrase })]));
+    act(async () => setItems([new config.Wifi({ entry: +d.entry, ssid: String(d.ssid), passphrase })]));
   };
 }
 

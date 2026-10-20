@@ -11,31 +11,50 @@ import { connect } from 'node:net';
  * @returns {Promise<import('../link.js').Transport>}
  */
 export function tcpTransport({ host = '127.0.0.1', port, framing = 'length', connectTimeoutMs = 3000, baudRate }) {
-  return new Promise((resolve, reject) => {
+  /** One connection, open. @returns {Promise<import('node:net').Socket>} */
+  const open = () => new Promise((resolve, reject) => {
     const sock = connect({ host, port });
     sock.setNoDelay(true);
     const timer = setTimeout(() => { sock.destroy(); reject(new Error(`no TCP connection to ${host}:${port}`)); }, connectTimeoutMs);
     sock.once('error', (e) => { clearTimeout(timer); reject(e); });
-    sock.once('connect', () => {
-      clearTimeout(timer);
-      /** @type {import('../link.js').Transport} */
-      const transport = {
-        framing,
-        kind: 'tcp',
-        keepsBoundaries: true,   // a pause inside a frame is normal on TCP, never a lost boundary (transports §5)
-        write: (data) => new Promise((res, rej) => sock.write(data, (e) => (e ? rej(e) : res()))),
-        start(onData, onClose) {
-          sock.on('data', (chunk) => onData(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.length)));
-          sock.on('close', () => onClose());
-          sock.on('error', (e) => onClose(e));
-        },
-        close: () => new Promise((res) => { sock.end(() => res()); setTimeout(() => { sock.destroy(); res(); }, 200); }),
-      };
-      if (baudRate !== undefined) {
-        transport.baudRate = baudRate;
-        transport.setBaudRate = async (rate) => { transport.baudRate = rate; };
-      }
-      resolve(transport);
-    });
+    sock.once('connect', () => { clearTimeout(timer); resolve(sock); });
+  });
+  return open().then((first) => {
+    let sock = first;
+    /** @type {((chunk: Uint8Array) => void) | null} */ let deliver = null;
+    /** @type {((error?: unknown) => void) | null} */ let closed = null;
+    /** @param {import('node:net').Socket} s */
+    const listen = (s) => {
+      s.on('data', (chunk) => { if (s === sock && deliver) deliver(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.length)); });
+      s.on('close', () => { if (s === sock && closed) closed(); });   // a socket left by reopen says nothing
+      s.on('error', (e) => { if (s === sock && closed) closed(e); });
+    };
+    /** @param {import('node:net').Socket} s */
+    const end = (s) => new Promise((res) => { s.end(() => res(undefined)); setTimeout(() => { s.destroy(); res(undefined); }, 200); });
+    /** @type {import('../link.js').Transport} */
+    const transport = {
+      framing,
+      kind: 'tcp',
+      keepsBoundaries: true,   // a pause inside a frame is normal on TCP, never a lost boundary (transports §5)
+      write: (data) => new Promise((res, rej) => sock.write(data, (e) => (e ? rej(e) : res()))),
+      start(onData, onClose) {
+        deliver = onData;
+        closed = onClose;
+        listen(sock);
+      },
+      close: () => end(sock),
+      // transports §5: a connection whose framing broke is closed and opened again (the same callbacks)
+      async reopen() {
+        const old = sock;
+        sock = await open();
+        if (deliver) listen(sock);
+        await end(old);
+      },
+    };
+    if (baudRate !== undefined) {
+      transport.baudRate = baudRate;
+      transport.setBaudRate = async (rate) => { transport.baudRate = rate; };
+    }
+    return transport;
   });
 }

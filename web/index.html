@@ -55,66 +55,79 @@
 
       <h3 data-i18n="addItem"></h3>
       <div class="forms">
-        <form id="form-slot" class="card">
-          <h4 data-i18n="slot"></h4>
-          <label>slot <input name="slot" type="number" min="0" value="0" required></label>
-          <label data-i18n-label="wireFn">wire fn <input name="wireFn" type="number" min="1" required></label>
-          <label>SWDIO <input name="swdio" type="number" min="0" required></label>
-          <label>SWCLK <input name="swclk" type="number" min="0" placeholder="65535 = none"></label>
-          <label data-i18n-label="name">name <input name="name" pattern="[a-z0-9_-]{1,32}" required></label>
-          <label>attach <select name="attach"><option>host</option><option>at-boot</option></select></label>
-          <label>retry s <input name="retryS" type="number" min="0" value="0"></label>
-          <label>max speed Hz <input name="maxSpeed" type="number" min="0" value="0"></label>
-          <label>idle clock <select name="idleClock"><option>high</option><option>low</option></select></label>
-          <label>mechanism <select name="mechanism"><option>dmseq</option><option>dmdata</option><option>sdi</option><option>none</option></select></label>
-          <button type="submit" data-i18n="set" data-needs="lock"></button>
-        </form>
-        <form id="form-bind" class="card">
-          <h4 data-i18n="bind"></h4>
-          <label data-i18n-label="port">port <input name="port" type="number" min="0" required></label>
-          <label data-i18n-label="stream">stream <input name="stream" placeholder="slot:0 or uart:5" pattern="\s*(slot|uart)\s*:\s*\d+\s*" required></label>
-          <button type="submit" data-i18n="set" data-needs="lock"></button>
-        </form>
-        <form id="form-label" class="card">
+        <form id="form-label" class="card" data-item="label">
           <h4 data-i18n="label"></h4>
           <label>channel <input name="channel" type="number" min="0" required></label>
           <label data-i18n-label="text">text <input name="text" maxlength="24" required></label>
           <button type="submit" data-i18n="set" data-needs="lock"></button>
         </form>
-        <form id="form-idle" class="card">
+        <form id="form-idle" class="card" data-item="idle">
           <h4 data-i18n="idle"></h4>
           <label>channel <input name="channel" type="number" min="0" required></label>
           <label>mode <select name="mode"><option>pull-up</option><option>pull-down</option><option>hi-z</option><option>output-low</option><option>output-high</option></select></label>
-          <label>drive ≤ mA <input name="driveMa" type="number" min="0" max="65535" placeholder="output modes only" title="the strongest of the probe's drive_levels at about this many mA or less"></label>
           <button type="submit" data-i18n="set" data-needs="lock"></button>
         </form>
-        <form id="form-disable" class="card">
+        <form id="form-disable" class="card" data-item="disable">
           <h4 data-i18n="disable"></h4>
           <label>channels <input name="channels" placeholder="28,29" pattern="\s*\d+(\s*,\s*\d+)*\s*" required></label>
           <button type="submit" data-i18n="set" data-needs="lock"></button>
         </form>
-        <form id="form-plan" class="card">
-          <h4 data-i18n="plan"></h4>
-          <label>fn <input name="fn" type="number" min="1" required></label>
-          <label data-i18n-label="roles">roles <input name="roles" placeholder="1=20,2=21" required></label>
-          <button type="submit" data-i18n="set" data-needs="lock"></button>
-        </form>
-        <form id="form-uart" class="card">
-          <h4 data-i18n="uart"></h4>
-          <label>fn <input name="fn" type="number" min="1" required></label>
+        <form id="form-passthrough" class="card" data-item="passthrough">
+          <h4 data-i18n="passthrough"></h4>
+          <label data-i18n-label="port">port <input name="port" type="number" min="0" required></label>
+          <label>UART fn <input name="fn" type="number" min="1" required></label>
+          <label>RX channel <input name="rx" type="number" min="0" required></label>
           <label>baud <input name="baud" type="number" min="1" value="115200" required></label>
           <label>data bits <select name="dataBits"><option>8</option><option>7</option></select></label>
           <label>parity <select name="parity"><option>N</option><option>E</option><option>O</option></select></label>
           <label>stop bits <select name="stopBits"><option>1</option><option>2</option></select></label>
           <button type="submit" data-i18n="set" data-needs="lock"></button>
         </form>
-        <form id="form-wifi" class="card" autocomplete="off" hidden>
+        <form id="form-console-passthrough" class="card" data-item="console-passthrough">
+          <h4 data-i18n="consolePassthrough"></h4>
+          <label data-i18n-label="port">port <input name="port" type="number" min="0" required></label>
+          <label data-i18n-label="wireFn">wire fn <input name="wireFn" type="number" min="1" required></label>
+          <label>SWDIO <input name="swdio" type="number" min="0" required></label>
+          <label>SWCLK <input name="swclk" type="number" min="0" placeholder="65535 = none"></label>
+          <label>max speed Hz <input name="maxSpeed" type="number" min="1" value="1000000" required></label>
+          <label>console fn <input name="consoleFn" type="number" min="1" required></label>
+          <label>mechanism <input name="mechanism" placeholder="dmseq" required title="a name the console's describe lists"></label>
+          <button type="submit" data-i18n="set" data-needs="lock"></button>
+        </form>
+        <form id="form-rvswd-rest" class="card" data-item="rvswd-rest">
+          <h4 data-i18n="rvswdRest"></h4>
+          <label>SWCLK channel <input name="channel" type="number" min="0" required></label>
+          <label>mode <select name="mode"><option>auto</option><option>high</option><option>low</option></select></label>
+          <button type="submit" data-i18n="set" data-needs="lock"></button>
+        </form>
+        <form id="form-wire-hold" class="card" data-item="wire-hold">
+          <h4 data-i18n="wireHold"></h4>
+          <label>SWDIO channel <input name="channel" type="number" min="0" required></label>
+          <label>mode <select name="mode"><option>on</option><option>off</option></select></label>
+          <button type="submit" data-i18n="set" data-needs="lock"></button>
+        </form>
+        <form id="form-wifi" class="card" autocomplete="off" data-item="wifi">
           <h4 data-i18n="wifi"></h4>
-          <label>index <input name="index" type="number" min="0" max="254" value="0" required></label>
+          <label>entry <input name="entry" type="number" min="0" max="65535" value="0" required></label>
           <label>SSID <input name="ssid" maxlength="32" required autocomplete="off"></label>
           <label data-i18n-label="passphrase">passphrase <input id="wifi-pass" name="passphrase" type="password" minlength="8" maxlength="64" autocomplete="new-password" spellcheck="false"></label>
           <label class="check"><input name="open" type="checkbox"> <span data-i18n="wifiOpen"></span></label>
           <p class="muted" data-i18n="wifiHint"></p>
+          <button type="submit" data-i18n="set" data-needs="lock"></button>
+        </form>
+        <form id="form-ipv4" class="card" data-item="ipv4">
+          <h4>IPv4</h4>
+          <label>netif <input name="netif" value="wifi" required></label>
+          <label data-i18n-label="ipv4Address">address <input name="address" placeholder="DHCP when empty, else 192.168.1.20/24"></label>
+          <label>gateway <input name="gateway" placeholder="none"></label>
+          <label>DNS <input name="dns" placeholder="none"></label>
+          <button type="submit" data-i18n="set" data-needs="lock"></button>
+        </form>
+        <form id="form-own" class="card" data-own>
+          <h4 data-i18n="own"></h4>
+          <label data-i18n-label="name">name <select name="name" required></select></label>
+          <label>key <input name="key" type="number" min="0" value="0" required></label>
+          <label data-i18n-label="value">value <input name="value" placeholder="text, number, true / false, a.b.c.d or hex bytes"></label>
           <button type="submit" data-i18n="set" data-needs="lock"></button>
         </form>
       </div>

@@ -111,53 +111,118 @@ export function check(what, result, status, opts = {}) {
   if (status !== OK || !result.succeeded) throw new TargetError(what, status, result, opts);
 }
 
-/** A scan hit: kind (1 riscv-dm, 2 arm-adi), the pair attach takes back as `pins`, and the raw value (DMSTATUS; DPIDR
- * on swd).
+/** A scan hit (§3 / §5): kind (the target interface), the pair attach takes back as `pins`, and the row's id(u32) -
+ * DMSTATUS on rvswd / swio, DPIDR on swd (its name from the RISC-V wires).
  * @typedef {{ kind: number, pins: [number, number], dmstatus: number }} Found */
 
-/** One live connection (§2.1). users: bit0 the host session, bit1 a slot; slot 0xFF: none; targetId null: none.
- * @typedef {{ conn: number, pins: [number, number], speedHz: number, users: number, slot: number,
- *   targetId: [number, Uint8Array] | null }} ConnectionInfo */
+/** One live connection (§2.1). targetId: [scheme, value] read at attach (null: none); targetsel: the TARGETSEL the
+ * host supplied at attach (swd; null: none); idleClock: rvswd's rest the connection uses, 'high' / 'low' (§3.1; null:
+ * not said).
+ * @typedef {{ conn: number, pins: [number, number], speedHz: number, targetId: [number, Uint8Array] | null,
+ *   targetsel: number | null, idleClock: string | null }} ConnectionInfo */
+
+/** Every target_id scheme defined so far: a u32. */
+const TARGET_ID_U32 = new Set(Object.values(reg.COMMON.enum.target_id_scheme));
+
+/** An attach answer's target_id TLV, scheme(u8) value (§1) -> [scheme, value], or null: absent, or a known scheme whose
+ * value is not its u32 (a broken TLV is not used, core §2.3). An unknown scheme's value is kept raw (its length is that
+ * scheme's). @param {Uint8Array | undefined} v @returns {[number, Uint8Array] | null} */
+export function targetIdOf(v) {
+  if (!v || !v.length || (TARGET_ID_U32.has(v[0]) && v.length !== 5)) return null;
+  return [v[0], v.slice(1)];
+}
+
+const SELECTED_TARGET = reg.WIRE_SWD.tlv.connections_answer.selected_target;
+const REST = RVSWD.tlv.connections_answer.idle_clock;
 
 const WOP = RVSWD.op;   // scan / attach / detach / connections: the same numbers on every wire
 const IDLE_CLOCK = RVSWD.enum.idle_clock;
 
-/** The attach answer's flags, the same on every wire (§3): bit0 havereset_acked, bit1 existing, bit2 dormant_woken,
- * bit3 halted (the dpc TLV is valid). */
+/** The attach answer's flags, the same on every wire (§3): bit0 havereset_acked, bit2 dormant_woken, bit3 halted (the
+ * dpc TLV is valid). */
 export const ATTACH_FLAGS = RVSWD.enum.attach_flags;
 
-/** oep.wire.<link>: scan / attach / detach / connections. The shared part; each link's attach takes its own arguments.
- * A failed scan, attach or detach is completed failed with `status(u8) [TLV]` (common §3). */
+/** oep.wire.<link>: scan / attach / detach / connections / holds (§0-§2). The shared part; each link's attach takes
+ * its own arguments. A failed scan, attach or detach is completed failed with `status(u8) [TLV]` (common §3). attach
+ * names its pins in the fixed part (§1): `pins` null takes the wire's one candidate pair (`candidatePairs`). */
 export class WireBase extends Interface {
   static SCAN = WOP.scan;
   static ATTACH = WOP.attach;
   static DETACH = WOP.detach;
   static CONNECTIONS = WOP.connections;
+  static HOLDS = WOP.holds;
   static REVISION = 1;
-  static TAG_MAX_SPEED = RVSWD.tlv.attach.max_speed;   // u32 Hz, critical; attach requires it (§1)
-  static TAG_PINS = RVSWD.tlv.attach.pins;             // swdio(u16) swclk(u16, 0xFFFF on one wire), critical (§1)
   static TAG_RESET = RVSWD.tlv.attach.reset;           // channel(u16) hold_ms(u16), critical: attach under reset (§3)
   static TAG_SCAN_MAX_SPEED = RVSWD.tlv.scan.max_speed;
-  static TAG_SKIP = RVSWD.tlv.scan.skip;               // scan, count 0 only: pairs of the count-0 list to skip (§1)
   static TAG_SCAN_IDLE_CLOCK = RVSWD.tlv.scan.idle_clock;
-  static TAG_FORCE = RVSWD.tlv.detach.force;
   static FLAGS = ATTACH_FLAGS;
-  static NO_SLOT = 0xFF;
   /** when the wire declares no max_clock_hz either */
   static DEFAULT_MAX_SPEED = 1_000_000;
 
   /** the attach_flags byte of the last attach */
   flags = 0;
 
-  /** attach's max_speed is required (malformed without): null takes the wire's declared max_clock_hz (its describe,
-   * cached), else DEFAULT_MAX_SPEED. The target's ceiling is the host's to know (§3).
+  /** swio: one wire, swclk 0xFFFF (§3) */
+  get oneWire() { return this.name === 'oep.wire.swio'; }
+
+  /** The rest TLVs are rvswd's (§3.1). */
+  get isRvswd() { return this.name === 'oep.wire.rvswd'; }
+
+  /** @returns {Promise<catalog.Description>} */
+  async description() { return catalog.decodeDescription(await describe(this.host, this.fn)); }
+
+  /**
+   * The [swdio, swclk] pairs the wire's describe allows (§1, core §7.4): per channel_group its role 1 / role 2 (kept
+   * only when role_channels, listing that role too, has the channel; a role the group does not list from
+   * role_channels), else role_channels' role 1 x role 2 without using a channel twice (swio: swclk 0xFFFF).
+   * @returns {Promise<[number, number][]>}
+   */
+  async candidatePairs() {
+    const d = await this.description();
+    /** @param {Map<number, number>} group @param {number} role */
+    const options = (group, role) => {
+      const ch = group.get(role);
+      if (ch !== undefined) return !d.roles.has(role) || /** @type {number[]} */ (d.roles.get(role)).includes(ch) ? [ch] : [];
+      return [...(d.roles.get(role) ?? [])];
+    };
+    /** @type {[number, number][]} */
+    const out = [];
+    const groups = d.groups.size ? [...d.groups.values()].map((pins) => new Map(pins)) : [new Map()];
+    for (const group of groups) {
+      const clks = this.oneWire ? [0xffff] : options(group, 2);
+      for (const dio of options(group, 1)) {
+        for (const clk of clks) {
+          if ((this.oneWire || dio !== clk) && !out.some(([a, b]) => a === dio && b === clk)) out.push([dio, clk]);
+        }
+      }
+    }
+    return out;
+  }
+
+  /** The pins named, or the wire's one candidate pair. @param {[number, number] | null | undefined} pins
+   * @returns {Promise<[number, number]>} */
+  async pinsOrOnly(pins) {
+    if (pins != null) return pins;
+    const pairs = await this.candidatePairs();
+    if (pairs.length !== 1) throw new RangeError(`${this.name}: name the pins - the probe allows ${pairs.length} pairs`);
+    return pairs[0];
+  }
+
+  /** attach's max_speed (the fixed part, never 0): null takes the wire's declared max_clock_hz (its describe, cached),
+   * else DEFAULT_MAX_SPEED. The target's ceiling is the host's to know (§1).
    * @param {number | null | undefined} maxSpeed */
   async speedOrDefault(maxSpeed) {
     if (maxSpeed != null) return maxSpeed;
-    for (const [tag, v] of await describe(this.host, this.fn)) {
-      if ((tag & ~m.TAG_CRITICAL) === catalog.COMMON.max_clock_hz && v.length >= 4) return getU32(v);
-    }
-    return WireBase.DEFAULT_MAX_SPEED;
+    // the first copy, a u32 exactly; bit 7 in an answer is an unknown tag (core §2.2, §2.3)
+    const v = catalog.firstFixed(await describe(this.host, this.fn), catalog.COMMON.max_clock_hz, 4);
+    return v ? getU32(v) : WireBase.DEFAULT_MAX_SPEED;
+  }
+
+  /** method(u8) swdio(u16) swclk(u16) max_speed(u32): attach's fixed part (§1).
+   * @param {number} method @param {[number, number] | null | undefined} pins @param {number | null | undefined} maxSpeed */
+  async attachFixed(method, pins, maxSpeed) {
+    const [dio, clk] = await this.pinsOrOnly(pins);
+    return new Writer().u8(method).u16(dio).u16(clk).u32(await this.speedOrDefault(maxSpeed)).done();
   }
 
   /** The probe's max_op_ms (core §7.5), FALLBACK_MAX_OP_MS when it cannot be read. */
@@ -180,31 +245,29 @@ export class WireBase extends Interface {
   }
 
   /**
-   * Try `pairs` of [swdio, swclk]; none = every pair the probe allows and nothing holds (describe's channel_group /
-   * role_channels, §1). A pair the probe does not allow, or one whose pins something holds, refuses the whole scan
-   * (rejected unavailable). maxSpeed (critical; none: the probe's slowest) and idleClock ('high' / 'low', rvswd only,
-   * critical) are the target's line settings (§3); they do not change a live connection's settings (a live pair is read
-   * over its connection, §1). The probe tries at most 255 pairs a request and stops early when
-   * its answer would not fit one frame; this goes on until every pair is tried (count 0: with skip until tried = 0;
-   * the probe tries at least one pair while any remain).
+   * Try `pairs` of [swdio, swclk]; null = candidatePairs() (the host builds the list: scan has no implicit one, §1). A
+   * pair the probe does not allow, or one whose pins something holds, refuses the whole scan (rejected). maxSpeed (null:
+   * the wire's slowest speed) and idleClock ('high' / 'low', rvswd only) are the target's line settings (§3). The probe
+   * answers how many it tried from the front (at least one while any remain); the rest go in the next request, until
+   * every pair is tried.
    * @param {[number, number][] | null} pairs @param {{ maxSpeed?: number | null, idleClock?: 'high' | 'low' | null }} [opts]
    * @returns {Promise<Found[]>}
    */
   async scan(pairs = null, { maxSpeed = null, idleClock = null } = {}) {
     /** @type {Found[]} */
     const out = [];
-    let left = [...(pairs ?? [])];
-    const listed = left.length > 0;
-    let skip = 0;
+    let left = [...(pairs ?? await this.candidatePairs())];
     const extra = new Writer();
     if (maxSpeed != null) extra.raw(m.tlv(WireBase.TAG_SCAN_MAX_SPEED, new Writer().u32(maxSpeed).done(), true));
     if (idleClock != null) extra.raw(m.tlv(WireBase.TAG_SCAN_IDLE_CLOCK, [IDLE_CLOCK[idleClock]], true));
     const expectMs = await this.scanMs();
-    for (;;) {
-      const chunk = left.slice(0, 255);
+    // count(u8) and 4 bytes a pair after the request's header, the TLVs at the end: at most 255, and what fits max_frame
+    const frame = (await this.host.confirmed()).maxFrame;
+    const most = Math.max(1, Math.min(255, Math.floor((frame - m.REQUEST_HEADER - 1 - extra.bytes.length) / 4)));
+    while (left.length) {
+      const chunk = left.slice(0, most);
       const w = new Writer().u8(chunk.length);
       for (const [d, c] of chunk) w.u16(d).u16(c);
-      if (!listed && skip) w.raw(m.tlv(WireBase.TAG_SKIP, u16(skip)));
       w.raw(extra.done());
       const rd = new m.Reader((await this.call(WireBase.SCAN, w.done(), { expectMs })).payload);
       const tried = rd.u8(), count = rd.u8();
@@ -213,50 +276,60 @@ export class WireBase extends Interface {
         out.push({ kind, pins: [dio, clk], dmstatus: status });
       }
       rd.tail();
-      if (tried === 0) return out;
-      if (listed) {
-        left = left.slice(tried);
-        if (!left.length) return out;
-      } else skip += tried;
+      if (tried === 0) throw new OepError(`${this.name} scan tried none of ${chunk.length} pairs`);
+      left = left.slice(tried);
     }
+    return out;
   }
 
-  /** Drop this host session's use of the connection; force: close it though a slot uses it too (§2).
-   * @param {number} conn @param {{ force?: boolean }} [opts] */
-  async detach(conn, { force = false } = {}) {
-    const body = new Writer().u16(conn);
-    if (force) body.raw(m.tlv(WireBase.TAG_FORCE, [], true));
-    await this.call(WireBase.DETACH, body.done());
-  }
+  /** Close the connection and its streams (§2). @param {number} conn */
+  async detach(conn) { await this.call(WireBase.DETACH, new Writer().u32(conn).done()); }
 
-  /** The wire's live connections, in the order they were made (§2.1, lock-free; paged: the request is first(u8), the
-   * answer `more count × entry [TLV]`, followed until more is 0). @returns {Promise<ConnectionInfo[]>} */
-  async connections() {
-    /** @type {ConnectionInfo[]} */
+  /** The ports this wire holds at their rest after a close (§2.2, lock-free; paged like connections): [[swdio, swclk],
+   * rest] - rest: rvswd's idle_clock value (0 high, 1 low), 0 on other wires. Not connections.
+   * @returns {Promise<[[number, number], number][]>} */
+  async holds() {
+    /** @type {[[number, number], number][]} */
     const out = [];
     for (;;) {
-      const rd = new m.Reader((await this.call(WireBase.CONNECTIONS, Uint8Array.of(out.length), { locked: false })).payload);
+      const rd = new m.Reader((await this.call(WireBase.HOLDS, Uint8Array.of(out.length), { locked: false })).payload);
       const more = rd.u8(), count = rd.u8();
       for (let i = 0; i < count; i++) {
-        const conn = rd.u16(), dio = rd.u16(), clk = rd.u16(), speedHz = rd.u32(), users = rd.u8(), slot = rd.u8();
-        const scheme = rd.u8(), tid = rd.bytes(rd.u8());
-        out.push({ conn, pins: [dio, clk], speedHz, users, slot, targetId: scheme ? [scheme, tid] : null });
+        const dio = rd.u16(), clk = rd.u16(), rest = rd.u8();
+        out.push([[dio, clk], rest]);
       }
       rd.tail();
       if (!more || !count || out.length > 0xff) return out;
     }
   }
 
-  /** critical: a probe that cannot keep to a ceiling must refuse, not ignore it (core §2.3: safety arguments)
-   * @param {number | null | undefined} maxSpeed */
-  speedTlv(maxSpeed) {
-    return maxSpeed == null ? new Uint8Array() : m.tlv(WireBase.TAG_MAX_SPEED, new Writer().u32(maxSpeed).done(), true);
-  }
-
-  /** the pair to attach on (a scan result's .pins); none: the probe's only pair (§1)
-   * @param {[number, number] | null | undefined} pins */
-  pinsTlv(pins) {
-    return pins == null ? new Uint8Array() : m.tlv(WireBase.TAG_PINS, new Writer().u16(pins[0]).u16(pins[1]).done(), true);
+  /** The wire's live connections, in the order they were made (§2.1, lock-free; paged: the request is first(u8), the
+   * answer `more count × entry [TLV]`, followed until more is 0). swd's selected_target TLVs (entry_index, targetsel)
+   * give each entry the TARGETSEL the host supplied; rvswd's idle_clock TLVs (entry_index, idle_clock) its rest.
+   * @returns {Promise<ConnectionInfo[]>} */
+  async connections() {
+    /** @type {ConnectionInfo[]} */
+    const out = [];
+    const rests = /** @type {Record<number, string>} */ (Object.fromEntries(Object.entries(IDLE_CLOCK).map(([k, v]) => [v, k])));
+    for (;;) {
+      const rd = new m.Reader((await this.call(WireBase.CONNECTIONS, Uint8Array.of(out.length), { locked: false })).payload);
+      const more = rd.u8(), count = rd.u8();
+      /** @type {ConnectionInfo[]} */
+      const page = [];
+      for (let i = 0; i < count; i++) {
+        const conn = rd.u32(), dio = rd.u16(), clk = rd.u16(), speedHz = rd.u32();
+        const scheme = rd.u8(), tid = rd.bytes(rd.u8());
+        page.push({ conn, pins: [dio, clk], speedHz, targetId: scheme ? [scheme, tid] : null, targetsel: null, idleClock: null });
+      }
+      for (const [tag, v] of m.splitTlvs(rd.rest())) {
+        // entry_index(u8) targetsel(u32), repeatable; bit 7 in an answer: an unknown tag (core §2.2, §2.3)
+        if (tag === SELECTED_TARGET && v.length === 5 && v[0] < page.length) page[v[0]].targetsel = getU32(v, 1);
+        // rvswd: entry_index(u8) idle_clock(u8) for every entry (§2.1, §3.1)
+        if (this.isRvswd && tag === REST && v.length === 2 && v[0] < page.length) page[v[0]].idleClock = rests[v[1]] ?? null;
+      }
+      out.push(...page);
+      if (!more || !count || out.length > 0xff) return out;
+    }
   }
 }
 
@@ -270,26 +343,22 @@ export class Wire extends WireBase {
   static HALT = RVSWD.enum.attach_method.halt;
   static TAG_TARGET_ID = RVSWD.tlv.attach_answer.target_id;
   static TAG_DPC = RVSWD.tlv.attach_answer.dpc;
-  static TAG_SEARCH_RETRIES = RVSWD.tlv.attach_answer.search_retries;
+  static TAG_REST = RVSWD.tlv.attach_answer.idle_clock;
   static SCHEME_DMI_7F = reg.COMMON.enum.target_id_scheme.dmi_7f;   // the u32 at DMI 0x7F (debug §3; one scheme space, common)
 
   hadReset = false;
-  existing = false;
   /** the hart is halted (attach flags bit3): `dpc` says where */
   halted = false;
   /** @type {number | null} the halted hart's dpc (the answer's TLV 0x11), else null */ dpc = null;
   speedHz = 0;
   /** @type {[number, Uint8Array] | null} (scheme, value) the last attach read, or null */ targetId = null;
-  /** @type {number | null} the last attach's failed speed-search tries (0xFFFF: 65535 or more; null: not said) */
-  searchRetries = null;
+  /** @type {string | null} rvswd: the rest the last attach's connection uses, 'high' / 'low' (§3.1; null: not said) */
+  idleClock = null;
   /** @type {Map<number, (number | null)[] | Rejected>} channel -> dpc per try (null: attach failed), or the rejection */
   lastSearch = new Map();
 
   /** @param {m.Tail} tail */
-  takeTargetId(tail) {
-    const v = tail.get(Wire.TAG_TARGET_ID);
-    this.targetId = v && v.length ? [v[0], v.slice(1)] : null;
-  }
+  takeTargetId(tail) { this.targetId = targetIdOf(tail.get(Wire.TAG_TARGET_ID)); }
 
   /** rvswd only, critical: a probe that cannot rest the line that way must refuse (§3)
    * @param {'high' | 'low' | null | undefined} idleClock */
@@ -299,55 +368,48 @@ export class Wire extends WireBase {
 
   /** The channels an attach's reset TLV may take (describe role_channels, role reset). There is no default reset
    * line: the host names one every time (§3). */
-  async resetChannels() {
-    const out = new Set();
-    for (const [tag, v] of await describe(this.host, this.fn)) {
-      if ((tag & ~m.TAG_CRITICAL) === catalog.COMMON.role_channels && v[0] === Wire.ROLE_RESET) {
-        for (const c of catalog.bitmapToChannels(getU16(v, 1), v.slice(3))) out.add(c);
-      }
-    }
-    return [...out].sort((a, b) => a - b);
-  }
+  async resetChannels() { return (await this.description()).roles.get(Wire.ROLE_RESET) ?? []; }
+
+  /** method 1 (halt) is offered only with features bit0 attach_halt (§3). */
+  async attachHaltOffered() { return !!(((await this.description()).features ?? 0) & RVSWD.enum.features.attach_halt); }
 
   /** @typedef {{ halt?: boolean, maxSpeed?: number | null, pins?: [number, number] | null, idleClock?: 'high' | 'low' | null,
    *   reset?: [number, number] | null }} AttachOptions */
 
-  /** The attach request: method, then the TLVs (max_speed always: it is required). @param {AttachOptions} [opts] */
+  /** The attach request: method, swdio, swclk, max_speed, then the TLVs (§3). @param {AttachOptions} [opts] */
   async attachBody({ halt = true, maxSpeed = null, pins = null, idleClock = null, reset = null } = {}) {
-    return concat([halt ? Wire.HALT : Wire.RUN], this.speedTlv(await this.speedOrDefault(maxSpeed)), this.pinsTlv(pins),
-      this.idleTlv(idleClock), this.resetTlv(reset));
+    return concat(await this.attachFixed(halt ? Wire.HALT : Wire.RUN, pins, maxSpeed), this.idleTlv(idleClock), this.resetTlv(reset));
   }
 
   /**
-   * -> { conn, dmstatus }. Attaching an attached wire returns its connection as it is (this.existing). this.hadReset:
-   * a pending havereset was acknowledged first (a V00x's DMSTATUS halt / run bits stay frozen until then);
-   * this.halted / this.dpc: the hart is halted and where (attach flags bit3, TLV dpc); this.speedHz: the speed the
-   * probe chose; maxSpeed: the ceiling the probe must keep (critical, required; null: the wire's declared
+   * -> { conn, dmstatus }. A new connection every time: pins a live connection holds are refused (unavailable cause 1,
+   * §1) - detach first. this.hadReset: a pending havereset was acknowledged first (a V00x's DMSTATUS halt / run bits
+   * stay frozen until then); this.halted / this.dpc: the probe saw hart 0 halted and where (attach flags bit3, TLV
+   * dpc); this.speedHz: the speed the probe chose; maxSpeed: the ceiling the probe must keep (null: the wire's declared
    * max_clock_hz); idleClock: 'high' / 'low', how rvswd rests SWCLK (critical; sent whenever given, high included).
-   * Both are the target's, known by the host (§3). An attach that joins a live connection (a slot's, another
-   * session's) changes only what it carries: idleClock null keeps the connection's current rest (null means high only
-   * for a new connection), and maxSpeed only lowers its speed (§1) - a caller that knows the target's rest (a slot's
-   * idleClock) passes it, high included. reset = [channel, holdMs]: hold that reset line (one of resetChannels()) low for holdMs, then attach -
-   * halting before the first instruction with halt - the way back from firmware that turns the debug pins into GPIOs
-   * (on an existing connection: the target is reset, mark reset detail 3). this.targetId: [scheme, value] of the
-   * target's identity when the probe could read one; this.searchRetries: the answer's failed speed-search tries. The
+   * Both are the target's, known by the host (§3). halt is method 1, offered only with features attach_halt. reset =
+   * [channel, holdMs]: hold that reset line (one of resetChannels()) low for holdMs, then attach - halting as early as
+   * it can with halt - the way back from firmware that turns the debug pins into GPIOs. this.targetId: [scheme, value]
+   * of the target's identity when the probe could read one; this.idleClock: rvswd's rest the connection uses. The
    * answer is waited for max_op_ms as its argument time (core §4.4, debug §1).
    * @param {AttachOptions} [opts]
    */
   async attach(opts = {}) {
     const rd = new m.Reader((await this.call(Wire.ATTACH, await this.attachBody(opts), { expectMs: await this.attachMs(opts.reset) })).payload);
-    const conn = rd.u16(), dmstatus = rd.u32();
+    const conn = rd.u32(), dmstatus = rd.u32();
     this.flags = rd.u8();
     this.speedHz = rd.u32();
     this.hadReset = !!(this.flags & ATTACH_FLAGS.havereset_acked);
-    this.existing = !!(this.flags & ATTACH_FLAGS.existing);
     this.halted = !!(this.flags & ATTACH_FLAGS.halted);
     const tail = rd.tail();
     this.takeTargetId(tail);
     const dpc = tail.get(Wire.TAG_DPC);
-    this.dpc = this.halted && dpc && dpc.length >= 4 ? getU32(dpc) : null;
-    const tries = tail.get(Wire.TAG_SEARCH_RETRIES);                // oep-if-debug §1 (optional)
-    this.searchRetries = tries && tries.length >= 2 ? getU16(tries) : null;
+    // dpc is a u32: a value of another length is broken, not used (core §2.3)
+    this.dpc = this.halted && dpc && dpc.length === 4 ? getU32(dpc) : null;
+    // rvswd: the rest the connection uses, the host's or the probe's choice from target_id (§3.1)
+    const rest = this.isRvswd ? tail.get(Wire.TAG_REST) : undefined;
+    const names = /** @type {Record<number, string>} */ (Object.fromEntries(Object.entries(IDLE_CLOCK).map(([k, v]) => [v, k])));
+    this.idleClock = rest && rest.length === 1 ? names[rest[0]] ?? null : null;
     return { conn, dmstatus };
   }
 
@@ -371,10 +433,14 @@ export class Wire extends WireBase {
    * after the probe fix of 2026-09-24), while landing on the vector by chance is not a worry. Channels the probe does
    * not allow (rejected) are skipped; a failed attach counts as a miss and is tried again. Each try pulls one channel
    * low (open drain) for holdMs. The target is left running (or halted, where resume is not acknowledged).
-   * this.lastSearch: what each channel gave.
-   * @param {number[]} candidates @param {{ resetVector?: number, holdMs?: number, tries?: number }} [opts]
+   * this.lastSearch: what each channel gave. pins: the debug pins (a scan result's .pins; null: the wire's one
+   * candidate pair); a live connection on them is closed first (attach never joins one, §1).
+   * @param {number[]} candidates
+   * @param {{ resetVector?: number, holdMs?: number, tries?: number, pins?: [number, number] | null }} [opts]
    */
-  async findResetLine(candidates, { resetVector = 0, holdMs = 20, tries = 3 } = {}) {
+  async findResetLine(candidates, { resetVector = 0, holdMs = 20, tries = 3, pins = null } = {}) {
+    const at = await this.pinsOrOnly(pins);
+    for (const c of await this.connections()) if (c.pins[0] === at[0] && c.pins[1] === at[1]) await this.detach(c.conn);
     /** @type {number[]} */
     const hits = [];
     this.lastSearch = new Map();
@@ -384,7 +450,7 @@ export class Wire extends WireBase {
       for (let i = 0; i < tries; i++) {
         let conn, dpc;
         try {
-          ({ conn, dpc } = await this.attachUnderReset(channel, { holdMs }));
+          ({ conn, dpc } = await this.attachUnderReset(channel, { holdMs, pins: at }));
         } catch (e) {
           if (e instanceof Rejected) { seen = e; break; }      // not a channel this probe allows
           if (e instanceof Failed) { seen.push(null); continue; }   // the attach itself failed: try again
@@ -396,7 +462,7 @@ export class Wire extends WireBase {
           // Leave the vector for real: a hart left halted there reads dpc = vector again through the next, wrong
           // channel (2026-09-24: a CH32L103 whose resume was not acknowledged made the channel after NRST a false
           // hit). A reset-and-run always gets it going.
-          if (dpc === resetVector) await dm.reset({ confirm: true });
+          if (dpc === resetVector) await dm.reset();
           else await dm.resume();
         } catch (e) {
           // a CH32L103 raises no allresumeack; a hart left halted mid-code still lands off the vector
@@ -422,13 +488,16 @@ export class StepListError extends TargetError {
  * the probe could not halt the hart (dpc and values mean nothing); notRun: the preparation (registers, dcsr, pc) failed
  * - the hart was not run and is still halted, the loader did not run (dpc means nothing); an invalid dpc is 0, so
  * runWhere() shows it only when it means something; elapsedUs: from the resumereq that started the hart to the halt
- * seen, made or given up (the probe's measure), 0 when not run; values: the registers asked for in `outs`, in order.
+ * seen, made or given up (the probe's measure), 0 when not run; values: the registers asked for in `outs`, in order;
+ * unknownStopped: a stopped byte this client does not know, as it came (core §2.4: shown as an unknown value, never as
+ * one of the four; its dpc and values are not taken as valid), else null.
  * @typedef {{ status: number, stopped: boolean, notHalted: boolean, notRun: boolean, dpc: number, elapsedUs: number,
- *   values: number[] }} RunResult */
+ *   values: number[], unknownStopped: number | null }} RunResult */
 
 /** The dpc of a run for a message, never an invalid one (debug §4.4). @param {RunResult} run */
 export function runWhere(run) {
   if (run.notRun) return 'not run';
+  if (run.unknownStopped !== null) return `stopped 0x${run.unknownStopped.toString(16).padStart(2, '0')} (unknown), dpc unknown`;
   return run.notHalted ? 'not halted, dpc unknown' : `dpc 0x${run.dpc.toString(16)}`;
 }
 
@@ -462,41 +531,53 @@ export function dmiValueCount(kinds, done, status) {
 }
 
 /** The probe declares no max_length for an interface with read_block / write_block. oep-if-debug §4.5 / §6 make it
- * mandatory there, and the host takes its block size from it alone - never from max_frame. */
+ * mandatory there; the host's count is at most it and what the route's max_frame carries (§4.5). */
 export class NoMaxLength extends OepError {}
 
 /**
- * The describe common tag max_length (core §7.4) of interface `fn`, in bytes, rounded down to a word. The probe declares
- * it so that both a read_block answer and a write_block request fit its max_frame (oep-if-debug §4.5). Throws
- * NoMaxLength when the probe does not declare it (or declares less than one word).
+ * The describe common tag max_length (core §7.4) of interface `fn`, in bytes, rounded down to a word: the function's
+ * limit, whatever the route (the host's count is at most min(max_length, max_frame - 8 / - 20) / 4 on the route it
+ * uses, oep-if-debug §4.5). Throws NoMaxLength when the probe does not declare it (or declares less than one word).
  * @param {import('./host.js').Host} hst @param {number} fn @param {string} name
  */
 export async function declaredMaxLength(hst, fn, name) {
-  for (const [tag, v] of await describe(hst, fn)) {
-    if ((tag & ~m.TAG_CRITICAL) === catalog.COMMON.max_length && v.length >= 2) {
-      const length = Math.floor(getU16(v) / 4) * 4;
-      if (length >= 4) return length;
-      break;
-    }
+  const v = catalog.firstFixed(await describe(hst, fn), catalog.COMMON.max_length, 2);   // the first copy, a u16 (core §2.3)
+  if (v) {
+    const length = Math.floor(getU16(v) / 4) * 4;
+    if (length >= 4) return length;
   }
-  throw new NoMaxLength(`${name} (fn ${fn}) declares no usable max_length: read_block / write_block need it `
-    + '(oep-if-debug §4.5; the host does not compute a block size from max_frame)');
+  throw new NoMaxLength(`${name} (fn ${fn}) declares no usable max_length: read_block / write_block need it (oep-if-debug §4.5)`);
+}
+
+/** read_block's answer header 5, done 2, status 1 (§4.5). */
+export const READ_BLOCK_OVERHEAD = 8;
+/** write_block's request header 10, connection 4, address 4, count 2 (§4.5). */
+export const WRITE_BLOCK_OVERHEAD = 20;
+
+/** The words a block op may move on the host's route: min(maxLength, max_frame - overhead) / 4, at least 1.
+ * @param {Interface & { maxLength: number | null }} iface @param {number} overhead */
+export async function routeWords(iface, overhead) {
+  const length = iface.maxLength ?? await declaredMaxLength(iface.host, iface.fn, iface.name);
+  let frame = null;
+  try { frame = (await iface.host.confirmed()).maxFrame; } catch { /* no route to tell */ }
+  return Math.max(1, Math.floor((frame === null ? length : Math.min(length, frame - overhead)) / 4));
 }
 
 /**
  * `maxLength` (bytes one read_block / write_block may move, from the probe's describe) and `maxWords` on an interface
- * with block operations (RiscvDm, ArmAdi): read once, on first need. Throws NoMaxLength when the probe declares none.
+ * with block operations (RiscvDm, ArmAdi): read once, on first need; maxWords is the smaller of read_block's and
+ * write_block's counts on the route (§4.5). Throws NoMaxLength when the probe declares none.
  * @param {Interface & { maxLength: number | null, maxWords: number | null }} iface @returns {Promise<number>} maxWords
  */
 export async function blockWords(iface) {
   if (iface.maxWords === null || iface.maxLength === null) {
     iface.maxLength = await declaredMaxLength(iface.host, iface.fn, iface.name);
-    iface.maxWords = iface.maxLength / 4;
+    iface.maxWords = Math.min(await routeWords(iface, READ_BLOCK_OVERHEAD), await routeWords(iface, WRITE_BLOCK_OVERHEAD));
   }
   return iface.maxWords;
 }
 
-/** oep.target.riscv-dm on one connection (every request starts with the connection, u16). Build with
+/** oep.target.riscv-dm on one connection (every request starts with the connection, u32). Build with
  * `await RiscvDm.on(host, conn)`. `maxLength` (bytes) / `maxWords` bound read_block / write_block: the probe's declared
  * max_length (oep-if-debug §4.5), filled by `on()` when declared, else null (`blockWords()` then throws NoMaxLength). */
 export class RiscvDm extends Interface {
@@ -511,36 +592,35 @@ export class RiscvDm extends Interface {
   static RUN = RV.op.run;
   static STEP = RV.op.step;
   static RESET_RUN = RV.enum.reset_mode.run;
-  static RESET_RUN_CONFIRM = RV.enum.reset_mode.run_verified;
   static RESET_HALT = RV.enum.reset_mode.halt_at_reset;
   static TAG_STEP_LEFT = RV.tlv.step_answer.step_left;
   static DPC = 0x07B1;
-  /** The optional ops (debug §4), by name: block (read_block / write_block, a pair), run, reset, step. */
-  static OPTIONAL = Object.freeze({ block: [RV.op.read_block, RV.op.write_block], run: [RV.op.run], reset: [RV.op.reset],
-    step: [RV.op.step] });
+  /** The optional ops (debug §4), by name: halt, resume, block (read_block / write_block, a pair), run, reset, step. */
+  static OPTIONAL = Object.freeze({ halt: [RV.op.halt], resume: [RV.op.resume], block: [RV.op.read_block, RV.op.write_block],
+    run: [RV.op.run], reset: [RV.op.reset], step: [RV.op.step] });
 
-  /** @type {number | null} bytes one block operation may move (describe max_length; never computed from max_frame) */
+  /** @type {number | null} bytes one block operation may move (describe max_length: the function's limit) */
   maxLength = null;
-  /** @type {number | null} words (u32) one block operation may move: maxLength / 4 */
+  /** @type {number | null} words (u32) one block operation either way may move on the route (§4.5) */
   maxWords = null;
   /** @type {number | null} DATA0 as it was before this host's own abstract commands changed it (null: unchanged) */
   dataSaved = null;
 
   /** @param {import('./host.js').Host} hst @param {number} conn @param {{ fn?: number, name?: string }} [opts] */
   static async on(hst, conn, { fn, name } = {}) {
-    const dm = /** @type {RiscvDm} */ (await RiscvDm.open(hst, { fn, name, prefix: u16(conn) }));
+    const dm = /** @type {RiscvDm} */ (await RiscvDm.open(hst, { fn, name, prefix: new Writer().u32(conn).done() }));
     await dm.blockWords().catch((e) => { if (!(e instanceof NoMaxLength)) throw e; });   // undeclared: null until a block op needs it
     return dm;
   }
 
-  get conn() { return getU16(this.prefix); }
+  get conn() { return getU32(this.prefix); }
 
   /** The words one read_block / write_block may move, from the probe's declared max_length (NoMaxLength when none). */
   blockWords() { return blockWords(this); }
 
-  /** The optional ops this probe offers, from its describe's ops tag (debug §4, core §1.2, §7.4): 'block' (read_block
-   * / write_block, offered as a pair), 'run', 'reset', 'step'. dmi, halt and resume are always there; an op not offered
-   * is answered unknown_operation, and the host builds the same thing from dmi. A describe without an ops tag (not a
+  /** The optional ops this probe offers, from its describe's ops tag (debug §4, core §1.2, §7.4): 'halt', 'resume',
+   * 'block' (read_block / write_block, offered as a pair), 'run', 'reset', 'step'. Only dmi is always there (debug §4:
+   * halt and resume are optional too); an op not offered is answered unknown_operation, and the host builds the same thing from dmi. A describe without an ops tag (not a
    * conforming probe) declares none. @returns {Promise<Set<string>>} */
   async declared() {
     const offered = (await this.ops()) ?? new Set();
@@ -572,7 +652,8 @@ export class RiscvDm extends Interface {
   }
 
   /** Write DATA0 back as it was before this host's own abstract commands changed it (debug §4: before the hart runs;
-   * readRegister leaves it changed). Nothing when none ran since the hart last ran; resume, step and run call it first. */
+   * readRegister leaves it changed). Nothing when none ran since the hart last ran; resume, step, run and reset call it
+   * first. */
   async restoreData() {
     if (this.dataSaved === null) return;
     await this.dmi([RiscvDm.stepWrite(0x04, this.dataSaved)]);
@@ -597,7 +678,7 @@ export class RiscvDm extends Interface {
     return data0;
   }
 
-  /** reset's answer: status flags(bit0 reached, bit1 verified) pc (§4.3); its argument time is max_op_ms - the probe
+  /** reset's answer: status flags(bit0 reached) pc (§4.3); its argument time is max_op_ms - the probe
    * answers within it, a DM silent after the release included (core §4.4). @param {number} mode */
   async resetMode(mode) {
     const r = await this.request(RiscvDm.RESET, new Writer().u8(mode).done(), { expectMs: await this.resetMs() });
@@ -608,11 +689,13 @@ export class RiscvDm extends Interface {
     return { flags, pc };
   }
 
-  /** Reset through ndmreset and let it run (confirm: seen running, the pc read). The reset op never drives a reset line
-   * (debug §4.3): a line moves only through attach's reset TLV (`Wire.attachUnderReset`) or a fixture. -> { flags, pc }
-   * @param {{ confirm?: boolean }} [opts] */
-  reset({ confirm = true } = {}) {
-    return this.resetMode(confirm ? RiscvDm.RESET_RUN_CONFIRM : RiscvDm.RESET_RUN);
+  /** Reset through ndmreset and let it run (success: the probe saw it running, flags bit0). The reset op never drives a
+   * reset line (debug §4.3): a line moves only through attach's reset TLV (`Wire.attachUnderReset`) or a fixture. The
+   * hart runs after it, so DATA0 this host's abstract commands changed is written back first (`restoreData`, debug §4).
+   * -> { flags, pc } */
+  async reset() {
+    await this.restoreData();
+    return this.resetMode(RiscvDm.RESET_RUN);
   }
 
   /** Reset and stop before the first instruction (haltreq held through the reset). -> dpc */
@@ -629,7 +712,10 @@ export class RiscvDm extends Interface {
     const rd = ran(r);
     const status = rd.u8(), moved = rd.u8() !== 0, before = rd.u32(), after = rd.u32();
     const tail = rd.tail();
-    if (status !== OK || !r.succeeded) throw new StepError(status, r, tail.get(RiscvDm.TAG_STEP_LEFT) !== undefined);   // §4.2
+    if (status !== OK || !r.succeeded) {
+      const left = tail.get(RiscvDm.TAG_STEP_LEFT);                  // length 0; any other is broken, not used (core §2.3)
+      throw new StepError(status, r, left !== undefined && !left.length);   // §4.2
+    }
     return { moved, before, after };
   }
 
@@ -691,7 +777,8 @@ export class RiscvDm extends Interface {
     const values = rd.words(nvals);
     rd.tail();
     return { status, stopped: stopped === RUN_STOPPED.stopped, notHalted: stopped === RUN_STOPPED.not_halted,
-      notRun: stopped === RUN_STOPPED.not_run, dpc, elapsedUs, values };
+      notRun: stopped === RUN_STOPPED.not_run, dpc, elapsedUs, values,
+      unknownStopped: Object.values(RUN_STOPPED).includes(stopped) ? null : stopped };
   }
 
   /** Set registers and dpc (dcsr.ebreakm, prv = M), resume, wait for the hart's own ebreak (forced halt at the
@@ -758,14 +845,15 @@ function gpioSetBody(channel, mode) { return new Writer().u8(1).u16(channel).u8(
  * its release and an attach (halt) in one pipeline so the probe starts the attach right after the release, and retry -
  * a race at the edge of the target's reset window (2026-09-24, CH32V003 with SWIO turned off: 2 of 5 pipelined, 0 of 5
  * one request at a time). -> { conn, dmstatus }
+ * pins: the debug pins (null: the wire's one candidate pair).
  * @param {import('./host.js').Host} hst @param {Wire} wire @param {number} gpioFn @param {number} channel
- * @param {{ tries?: number, lowMs?: number }} [opts]
+ * @param {{ tries?: number, lowMs?: number, pins?: [number, number] | null }} [opts]
  */
-export async function attachAfterGpioReset(hst, wire, gpioFn, channel, { tries = 10, lowMs = 20 } = {}) {
+export async function attachAfterGpioReset(hst, wire, gpioFn, channel, { tries = 10, lowMs = 20, pins = null } = {}) {
   if (tries < 1) throw new RangeError('tries must be at least 1');
   /** @type {m.Result | null} */
   let last = null;
-  const attachReq = wire.req(Wire.ATTACH, await wire.attachBody({ halt: true }));   // built once: its describe is not in the race
+  const attachReq = wire.req(Wire.ATTACH, await wire.attachBody({ halt: true, pins }));   // built once: its describe is not in the race
   const expectMs = await wire.attachMs();             // max_op_ms is the attach's argument time (core §4.4)
   for (let i = 0; i < tries; i++) {
     await hst.call(gpioFn, GPIO.op.set, gpioSetBody(channel, GPIO.enum.mode.open_drain_low));
@@ -777,7 +865,7 @@ export async function attachAfterGpioReset(hst, wire, gpioFn, channel, { tries =
     if (!release.succeeded) throw new Failed(release);
     if (attach.succeeded) {
       const rd = new m.Reader(attach.payload);
-      const conn = rd.u16(), dmstatus = rd.u32();
+      const conn = rd.u32(), dmstatus = rd.u32();
       return { conn, dmstatus };
     }
   }

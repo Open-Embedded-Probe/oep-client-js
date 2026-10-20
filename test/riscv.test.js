@@ -8,12 +8,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writer, fromHex } from '../src/bytes.js';
 import * as m from '../src/message.js';
-import { Failed, NoConnection, Rejected, Unavailable, Unsupported } from '../src/errors.js';
+import { Failed, NoResource, Rejected, Unavailable, Unsupported } from '../src/errors.js';
 import { FALLBACK_MAX_OP_MS, describe, find, planApply } from '../src/core.js';
 import * as reg from '../src/registry.js';
 import { decodeDescription } from '../src/catalog.js';
 import * as rv from '../src/riscv.js';
-import { RiscvDm, StepListError, TargetError, Wire } from '../src/riscv.js';
+import { ATTACH_FLAGS, RiscvDm, StepListError, TargetError, Wire } from '../src/riscv.js';
 import { openTcp } from '../src/node/index.js';
 import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 import { ScriptedHost, handlers, ok } from './scripted.js';
@@ -52,49 +52,42 @@ const w = () => new Writer();
 
 // ---- oep.wire.* against the virtual bench ----------------------------------------------------------------------------
 
-test('attach twice returns the same connection; max_speed goes critical', { skip: !haveVirtualBench }, () => withBench(X035, async (hst) => {
+/** attach's fixed part: method swdio swclk max_speed (debug §1, §3). @param {number} method @param {[number, number]} pins
+ * @param {number} hz */
+const attachFixed = (method, [dio, clk], hz) => [...w().u8(method).u16(dio).u16(clk).u32(hz).done()];
+
+test('attach makes a new connection on named pins: pins a live one holds are refused, max_speed 0 malformed (debug §1, §3)', { skip: !haveVirtualBench }, () => withBench(X035, async (hst) => {
   const log = tap(hst);
   const wire = await Wire.open(hst);
+  const [pair] = await wire.candidatePairs();                              // the wire's one pair
   const { conn, dmstatus } = await wire.attach({ halt: true, maxSpeed: 1_000_000 });
-  assert.ok(wire.hadReset && !wire.existing && wire.speedHz === 1_000_000 && (dmstatus & 0x300));
-  assert.ok(wire.halted && wire.dpc !== null);                             // flags bit3 + the dpc TLV 0x11
-  assert.equal(/** @type {any} */ (wire).ignored, undefined);           // no ignored list (core §2.3)
-  assert.deepEqual([...log.at(-1)?.[2] ?? []], [1, 0x81, 4, 0, ...w().u32(1_000_000).done()]);
-  const again = await wire.attach({ halt: false });
-  assert.equal(again.conn, conn);
-  assert.ok(wire.existing && !wire.hadReset);
-  assert.deepEqual([...log.at(-1)?.[2] ?? []], [0, 0x81, 4, 0, ...w().u32(5_000_000).done()]);   // none: the declared max_clock_hz
-  await assert.rejects(hst.call(wire.fn, Wire.ATTACH, Uint8Array.of(0)), (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);   // max_speed is required
+  assert.ok(wire.hadReset && wire.speedHz === 1_000_000 && (dmstatus & 0x300));
+  assert.ok(wire.halted && wire.dpc !== null);                             // flags halted + the dpc TLV
+  assert.deepEqual([...log.at(-1)?.[2] ?? []], attachFixed(Wire.HALT, pair, 1_000_000));
+  await assert.rejects(wire.attach({ halt: false }), (e) => e instanceof Unavailable && JSON.stringify(e.channels) === `[${pair[0]}]`);
+  await assert.rejects(hst.call(wire.fn, Wire.ATTACH, Uint8Array.from(attachFixed(Wire.RUN, pair, 0))),
+    (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);
   const list = await wire.connections();
-  assert.equal(list.length, 1);
-  assert.equal(list[0].conn, conn);
-  assert.deepEqual(list[0].pins, [2, 54]);
-  assert.equal(list[0].users & 1, 1);
-  assert.equal(list[0].slot, Wire.NO_SLOT);
-  assert.equal(list[0].targetId, null);
-  await wire.detach(conn, { force: true });
-  assert.deepEqual(await wire.connections(), []);
+  assert.deepEqual(list.map((c) => [c.conn, c.pins, c.targetsel]), [[conn, pair, null]]);
+  await wire.detach(conn);
+  const again = await wire.attach({ halt: false });
+  assert.ok(again.conn !== conn && !wire.hadReset);
+  const declared = /** @type {number} */ ((await wire.description()).maxClockHz);
+  assert.deepEqual([...log.at(-1)?.[2] ?? []], attachFixed(Wire.RUN, pair, declared));   // none: the declared max_clock_hz
 }));
 
-test('a join carries idle_clock only when given (high included), lowers the speed only; a scan leaves a live connection', { skip: !haveVirtualBench }, () => withBench(X035, async (hst) => {
-  // oep-spec 59dd028 (debug §1, §3): a join keeps the settings it does not carry; the virtual bench's side is checked in
-  // oep-client-python's tests/test_spec_59dd028.py (the rest itself is not visible on the wire)
+test('rvswd: idle_clock goes critical whenever given (high included); the connection says the rest it uses (debug §3.1)', { skip: !haveVirtualBench }, () => withBench(X035, async (hst) => {
   const log = tap(hst);
   const wire = await Wire.open(hst);
-  const speed = (/** @type {number} */ hz) => [0x81, 4, 0, ...w().u32(hz).done()];
+  const [pair] = await wire.candidatePairs();
+  const idle = (/** @type {'high' | 'low'} */ v) => [...m.tlv(Wire.TAG_IDLE_CLOCK, [Wire.IDLE_CLOCK[v]], true)];
   const { conn } = await wire.attach({ halt: false, maxSpeed: 1_000_000, idleClock: 'low' });
-  assert.deepEqual([...log.at(-1)?.[2] ?? []], [0, ...speed(1_000_000), 0x84, 1, 0, 1]);
-  await wire.attach({ halt: false, maxSpeed: 4_000_000 });                 // a join: no idle_clock TLV, the rest kept
-  assert.deepEqual([...log.at(-1)?.[2] ?? []], [0, ...speed(4_000_000)]);
-  assert.ok(wire.existing && wire.speedHz === 1_000_000);                  // a join never raises the speed
+  assert.deepEqual([...log.at(-1)?.[2] ?? []], [...attachFixed(Wire.RUN, pair, 1_000_000), ...idle('low')]);
+  assert.equal(wire.idleClock, 'low');
+  assert.deepEqual((await wire.connections()).map((c) => c.idleClock), ['low']);
+  await wire.detach(conn);
   await wire.attach({ halt: false, maxSpeed: 1_000_000, idleClock: 'high' });   // the target's high, sent explicitly
-  assert.deepEqual([...log.at(-1)?.[2] ?? []], [0, ...speed(1_000_000), 0x84, 1, 0, 0]);
-  await wire.attach({ halt: false, maxSpeed: 500_000 });
-  assert.ok(wire.existing && /** @type {number} */ (wire.speedHz) === 500_000);   // lowered
-  const found = await wire.scan([[2, 54]], { maxSpeed: 100_000, idleClock: 'low' });
-  assert.deepEqual(found.map((f) => f.pins), [[2, 54]]);
-  const [c] = await wire.connections();
-  assert.ok(c.conn === conn && c.speedHz === 500_000);                     // the scan did not touch it
+  assert.deepEqual([...log.at(-1)?.[2] ?? []], [...attachFixed(Wire.RUN, pair, 1_000_000), ...idle('high')]);
 }));
 
 test('scan and attach take the pin pair and refuse one not allowed', { skip: !haveVirtualBench }, () => withBench(X035, async (hst) => {
@@ -118,40 +111,49 @@ test('attach reports the target id when the probe reads one', { skip: !haveVirtu
   assert.deepEqual(c.targetId, [Wire.SCHEME_DMI_7F, fromHex('01065e03')]);
 }));
 
-test('the client scan walks the whole count-0 list (skip until tried = 0)', { skip: !haveVirtualBench }, () => withBench(['--profile', 'rp2350-pins'], async (hst) => {
+test('scan without pairs tries the candidate pairs the host builds from describe, in requests of 255 at most (debug §1)', { skip: !haveVirtualBench }, () => withBench(['--profile', 'rp2350-pins'], async (hst) => {
   const wire = await Wire.open(hst);
+  const pairs = await wire.candidatePairs();
+  assert.ok(pairs.length > 255);
   let scans = 0;
   const call = wire.call.bind(wire);
   wire.call = (op, body, opts) => { if (op === Wire.SCAN) scans++; return call(op, body, opts); };
-  assert.deepEqual((await wire.scan()).map((f) => f.pins), [[0, 1]]);
-  assert.equal(scans, Math.ceil((29 * 28) / 255) + 1);   // 255 a request, then the one that answers tried = 0
+  const found = await wire.scan();
+  assert.ok(found.length >= 1);
+  assert.ok(scans >= Math.ceil(pairs.length / 255));                      // the probe tries what fits its answer
 }));
 
-test('swio: no default reset line, only the declared channels; gpio reset fallback', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
+test('swio: attach under reset is the reset TLV; no default reset line; gpio reset fallback', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
   const log = tap(hst);
   const wire = await Wire.open(hst, { name: 'oep.wire.swio' });
-  assert.deepEqual(await wire.resetChannels(), [23]);
-  await assert.rejects(wire.attachUnderReset(22), (e) => e instanceof Unsupported && e.tag === 0x85);   // not a reset line
-  const { conn, dpc } = await wire.attachUnderReset(23, { holdMs: 5 });
-  assert.equal(dpc, 0);                                                     // halted before the first instruction
+  const [pair] = await wire.candidatePairs();
+  assert.equal(pair[1], 0xffff);                                            // one wire
+  const [nrst] = await wire.resetChannels();
+  const reset = (/** @type {number} */ ch, /** @type {number} */ ms) => [...m.tlv(Wire.TAG_RESET, w().u16(ch).u16(ms).done(), true)];
+  const { conn, dpc } = await wire.attachUnderReset(nrst, { holdMs: 30 });
+  assert.equal(dpc, 0);                                                     // halted as early as the probe can
   assert.ok(wire.halted);
-  assert.deepEqual([...log.at(-1)?.[2] ?? []], [1, 0x81, 4, 0, ...w().u32(1_000_000).done(), 0x85, 4, 0, 23, 0, 5, 0]);   // the reset TLV
-  const again = await wire.attach({ halt: false, reset: [23, 5] });        // an existing connection: the target reset, running
-  assert.ok(again.conn === conn && wire.existing && !wire.halted && wire.dpc === null);
-  await assert.rejects(wire.attach({ reset: [23, 20000] }), Unsupported);  // longer than max_op_ms
-  await assert.rejects(wire.attach({ idleClock: 'low' }), Unsupported);   // rvswd's TLV: unknown and critical on swio
+  assert.deepEqual([...log.at(-1)?.[2] ?? []], [...attachFixed(Wire.HALT, pair, 1_000_000), ...reset(nrst, 30)]);
   await wire.detach(conn);
-  await planApply(hst, [[4, 1, 23]]);                                      // fixture.gpio takes NRST
-  const got = await rv.attachAfterGpioReset(hst, wire, 4, 23, { lowMs: 0 });
+  const again = await wire.attach({ halt: false, reset: [nrst, 20] });     // a new connection, the target reset while running
+  assert.ok(again.conn !== conn && !wire.halted && wire.dpc === null);
+  await wire.detach(again.conn);
+  const other = (await describe(hst, 0)).length && nrst - 1;
+  await assert.rejects(wire.attach({ reset: [other, 20] }), (e) => e instanceof Unsupported && e.tag === (Wire.TAG_RESET | m.TAG_CRITICAL));   // not a reset line
+  await assert.rejects(wire.attach({ reset: [nrst, 20000] }), Unsupported);   // longer than max_op_ms
+  await assert.rejects(wire.attach({ idleClock: 'low' }), Unsupported);   // rvswd's TLV: unknown and critical on swio
+  const gpio = await find(hst, 'oep.fixture.gpio');
+  await planApply(hst, [[gpio, 1, nrst]]);                                  // fixture.gpio takes NRST
+  const got = await rv.attachAfterGpioReset(hst, wire, gpio, nrst, { lowMs: 0 });
   assert.ok(got.conn >= 1);
 }));
 
 test('no connection after the connection is gone', { skip: !haveVirtualBench }, () => withBench(X035, async (hst) => {
   const { wire, dm } = await attached(hst);
   await wire.detach(dm.conn);
-  await assert.rejects(dm.halt(), NoConnection);
-  await assert.rejects(wire.detach(dm.conn), NoConnection);
-  await assert.rejects((await RiscvDm.on(hst, 77)).read32(0), NoConnection);
+  await assert.rejects(dm.halt(), NoResource);
+  await assert.rejects(wire.detach(dm.conn), NoResource);
+  await assert.rejects((await RiscvDm.on(hst, 77)).read32(0), NoResource);
 }));
 
 // ---- oep.target.riscv-dm against the virtual bench -------------------------------------------------------------------
@@ -230,9 +232,10 @@ test('run returns the registers asked for; a timeout is returned, not thrown', {
     const log = tap(hst);
     const { dm } = await attached(hst);
     const r = await dm.run(0x20000000, [[rv.REG_A0, 5]], { timeoutMs: 100, outs: [rv.REG_A0, rv.REG_A1] });
-    assert.deepEqual(r, { status: rv.OK, stopped: true, notHalted: false, notRun: false, dpc: 0x200000B0, elapsedUs: 1234, values: [0, 0x08000100] });
+    assert.deepEqual(r, { status: rv.OK, stopped: true, notHalted: false, notRun: false, dpc: 0x200000B0, elapsedUs: 1234,
+      values: [0, 0x08000100], unknownStopped: null });
     assert.deepEqual((await dm.run(0x20000000, [], { outs: [], timeoutMs: null })).values, []);
-    assert.deepEqual([...log.at(-1)?.[2].slice(6, 10) ?? []], [...w().u32(10000).done()]);   // null: the probe's max_op_ms
+    assert.deepEqual([...log.at(-1)?.[2].slice(8, 12) ?? []], [...w().u32(10000).done()]);   // after connection(u32) pc: null, the probe's max_op_ms
     const t = await dm.run(0x3000, []);
     assert.ok(!t.stopped && !t.notHalted && t.status === rv.TIMEOUT);
     assert.deepEqual([t.dpc, t.values], [0x3008, [0]]);                      // stopped 0: halted by the probe, values valid
@@ -257,10 +260,10 @@ test('state and unknown statuses are failures; reset answers status flags pc', {
   const odd = new m.Result(1, m.COMPLETED, m.SUCCESS, Uint8Array.of(0x42));
   assert.throws(() => rv.check('halt', odd, 0x42), /halt stopped: unknown status 0x42 \(completed\)/);
   assert.equal(await dm.resetHalt(), 0);
-  const r = await dm.reset({ confirm: true });
+  const r = await dm.reset();
   assert.deepEqual(Object.keys(r).sort(), ['flags', 'pc']);               // status flags pc: no method, no attempts (§4.3)
-  assert.ok(r.flags & 2);
-  const raw = await dm.request(RiscvDm.RESET, Uint8Array.of(1));
+  assert.ok(r.flags & 1);                                                  // bit0 reached
+  const raw = await dm.request(RiscvDm.RESET, Uint8Array.of(RiscvDm.RESET_RUN));
   assert.equal(raw.payload.length, 1 + 1 + 4);
   await dm.halt();
   const s = await dm.step();
@@ -279,65 +282,76 @@ test('dmi value count rule', () => {
   assert.equal(rv.statusName(4), 'timeout');
 });
 
+/** The pair the scripted wire attaches on (it declares none: named every time). */
+const PAIR = /** @type {[number, number]} */ ([2, 54]);
+/** attach's fixed part in a request: method(u8) swdio swclk max_speed (9 bytes), then the TLVs. */
+const ATTACH_FIXED = 9;
+/** An attach answer: connection(u32) dmstatus flags speed, then `tail`. @param {number} flags @param {Uint8Array} [tail] */
+const attachAnswer = (flags, tail = new Uint8Array()) => ok([...w().u32(1).u32(0xc82).u8(flags).u32(1_000_000).done(), ...tail]);
+
 test('findResetLine hits the vector, skips disallowed channels and retries failures', async () => {
   /** @type {Record<number, number>} */
   const tries = {};
+  const RESET_TAG = Wire.TAG_RESET | m.TAG_CRITICAL;
   const hst = new ScriptedHost(handlers([
+    [1, Wire.CONNECTIONS, () => ok([0, 0])],                                // none live on the pins
     [1, Wire.ATTACH, (p) => {
-      const reset = new m.Reader(p.slice(1)).tail().get(0x85);
+      const reset = new m.Reader(p.slice(ATTACH_FIXED)).tail().get(RESET_TAG);
       assert.ok(reset && p[0] === Wire.HALT);
       const channel = reset[0] | (reset[1] << 8);
       tries[channel] = (tries[channel] ?? 0) + 1;
-      if (channel === 9) return [m.REJECTED, m.REJECT.unsupported, Uint8Array.of(0x85)];   // not a reset line on this probe
-      if (channel === 5 && tries[5] === 1) return [m.COMPLETED, m.FAILED, Uint8Array.of(4)];   // the attach failed once: status
+      if (channel === 9) return [m.REJECTED, m.REJECT.unsupported, Uint8Array.of(RESET_TAG)];   // not a reset line on this probe
+      if (channel === 5 && tries[5] === 1) return [m.COMPLETED, m.FAILED, Uint8Array.of(reg.STATUS.line)];   // the attach failed once
       const dpc = channel === 2 && tries[2] === 2 ? 0 : 0x1300 + channel;              // the real line, second try
-      return ok([...w().u16(1).u32(0xc82).u8(8).u32(1_000_000).done(), ...m.tlv(0x11, w().u32(dpc).done())]);   // halted + dpc
+      return attachAnswer(ATTACH_FLAGS.halted, m.tlv(Wire.TAG_DPC, w().u32(dpc).done()));   // halted + dpc
     }],
-    [2, RiscvDm.RESUME, () => [m.COMPLETED, m.FAILED, Uint8Array.of(5)]],               // an L103: state
-    [2, RiscvDm.RESET, () => ok(w().u8(0).u8(3).u8(1).u32(0x1234).done())],
+    [2, RiscvDm.RESUME, () => [m.COMPLETED, m.FAILED, Uint8Array.of(reg.STATUS.state)]],   // an L103: state
+    [2, RiscvDm.RESET, () => ok(w().u8(reg.STATUS.ok).u8(1).u32(0x1234).done())],
     [1, Wire.DETACH, () => ok()],
   ]));
   const wire = await Wire.open(hst);
-  assert.deepEqual(await wire.findResetLine([3, 9, 2, 5], { tries: 3 }), [2]);
+  assert.deepEqual(await wire.findResetLine([3, 9, 2, 5], { tries: 3, pins: PAIR }), [2]);
   assert.ok(wire.lastSearch.get(9) instanceof Rejected);
   assert.deepEqual(wire.lastSearch.get(2), [0x1302, 0]);
   assert.deepEqual(wire.lastSearch.get(5), [null, 0x1305, 0x1305]);
   assert.deepEqual(wire.lastSearch.get(3), [0x1303, 0x1303, 0x1303]);
   const resets = hst.log.filter(([fn, op]) => fn === 2 && op === RiscvDm.RESET).map(([, , p]) => [...p]);
-  assert.deepEqual(resets, [[1, 0, RiscvDm.RESET_RUN_CONFIRM]]);   // only after the hit: off the vector for real
+  assert.deepEqual(resets, [[...w().u32(1).u8(RiscvDm.RESET_RUN).done()]]);   // only after the hit: off the vector for real
 });
 
 test('attachAfterGpioReset pipelines the release with the attach and retries', async () => {
+  const SET = reg.FIXTURE_GPIO.op.set, MODE = reg.FIXTURE_GPIO.enum.mode;
   /** @type {Uint8Array[]} */
   const attaches = [];
   const hst = new ScriptedHost(handlers([
-    [3, 0x01, () => ok()],
+    [3, SET, () => ok()],
     [1, Wire.ATTACH, (p) => {
       attaches.push(p);
-      return attaches.length === 3 ? ok(w().u16(1).u32(0xc82).u8(0).u32(1_000_000).done()) : [m.COMPLETED, m.FAILED, Uint8Array.of(2)];
+      return attaches.length === 3 ? attachAnswer(0) : [m.COMPLETED, m.FAILED, Uint8Array.of(reg.STATUS.line)];
     }],
   ]));
   const wire = await Wire.open(hst);
-  assert.deepEqual(await rv.attachAfterGpioReset(hst, wire, 3, 23, { tries: 5, lowMs: 0 }), { conn: 1, dmstatus: 0xc82 });
+  assert.deepEqual(await rv.attachAfterGpioReset(hst, wire, 3, 23, { tries: 5, lowMs: 0, pins: PAIR }), { conn: 1, dmstatus: 0xc82 });
   assert.equal(attaches.length, 3);
-  assert.deepEqual([...attaches[0]], [1, 0x81, 4, 0, ...w().u32(1_000_000).done()]);   // attach with halt, max_speed (required)
-  assert.deepEqual(hst.log.slice(0, 3).map(([fn, op]) => [fn, op]), [[3, 1], [3, 1], [1, Wire.ATTACH]]);
-  assert.deepEqual([...hst.log[0][2]], [1, 23, 0, 5]);                       // set: n=1, channel 23 open-drain low
-  assert.deepEqual([...hst.log[1][2]], [1, 23, 0, 6]);                       // ... then released
+  // attach with halt on the pins, max_speed: the declared max_clock_hz (none here: the default)
+  assert.deepEqual([...attaches[0]], [...w().u8(Wire.HALT).u16(PAIR[0]).u16(PAIR[1]).u32(Wire.DEFAULT_MAX_SPEED).done()]);
+  assert.deepEqual(hst.log.slice(0, 3).map(([fn, op]) => [fn, op]), [[3, SET], [3, SET], [1, Wire.ATTACH]]);
+  assert.deepEqual([...hst.log[0][2]], [...w().u8(1).u16(23).u8(MODE.open_drain_low).done()]);   // set: channel 23 open-drain low
+  assert.deepEqual([...hst.log[1][2]], [...w().u8(1).u16(23).u8(MODE.open_drain_release).done()]);   // ... then released
 
-  const never = new ScriptedHost(handlers([[3, 0x01, () => ok()], [1, Wire.ATTACH, () => [m.COMPLETED, m.FAILED, new Uint8Array()]]]));
-  await assert.rejects(rv.attachAfterGpioReset(never, await Wire.open(never), 3, 23, { tries: 2, lowMs: 0 }), Failed);
+  const never = new ScriptedHost(handlers([[3, SET, () => ok()], [1, Wire.ATTACH, () => [m.COMPLETED, m.FAILED, new Uint8Array()]]]));
+  await assert.rejects(rv.attachAfterGpioReset(never, await Wire.open(never), 3, 23, { tries: 2, lowMs: 0, pins: PAIR }), Failed);
 });
 
 test('resetHalt and step decode; reset is the mode alone', async () => {
   const hst = new ScriptedHost(handlers([
-    [2, RiscvDm.RESET, (p) => ok(p[2] === 2 ? w().u8(0).u8(0).u32(0).done() : [])],
-    [2, RiscvDm.STEP, () => ok([...w().u8(0).u8(1).u32(0).u32(0x17f0).done(), 0x40, 0x01, 0x00, 0x00])],
+    [2, RiscvDm.RESET, (p) => ok(p[4] === RiscvDm.RESET_HALT ? w().u8(reg.STATUS.ok).u8(0).u32(0).done() : [])],
+    [2, RiscvDm.STEP, () => ok([...w().u8(reg.STATUS.ok).u8(1).u32(0).u32(0x17f0).done(), ...m.tlv(0x40, Uint8Array.of(0))])],
   ]));
   const dm = await RiscvDm.on(hst, 1);
   assert.equal(dm.conn, 1);
   assert.equal(await dm.resetHalt(), 0);
-  assert.deepEqual([...hst.log[hst.log.length - 1][2]], [1, 0, 2]);          // connection(u16), mode 2
+  assert.deepEqual([...hst.log[hst.log.length - 1][2]], [...w().u32(1).u8(RiscvDm.RESET_HALT).done()]);   // connection(u32), mode
   assert.deepEqual(await dm.step(), { moved: true, before: 0, after: 0x17f0 });   // an unknown TLV after the fixed part: skipped
   assert.equal(/** @type {any} */ (RiscvDm).METHOD_SYSTEM, undefined);   // no reset method (debug §4.3)
 });
@@ -349,8 +363,8 @@ test('readRegister keeps DATA0 and resume / step / run write it back first (debu
     [2, RiscvDm.DMI, (p) => {
       /** @type {number[]} */ const values = [];
       const v = new DataView(p.buffer, p.byteOffset, p.byteLength);
-      const n = v.getUint16(2, true);
-      for (let at = 4, k = 0; k < n; k++) {
+      const n = v.getUint16(4, true);                                   // after connection(u32)
+      for (let at = 6, k = 0; k < n; k++) {
         const kind = p[at];
         if (kind === rv.STEP_WRITE) {
           const addr = p[at + 1], val = v.getUint32(at + 2, true);
@@ -399,16 +413,17 @@ test('attach, scan and reset wait max_op_ms as their argument time (debug §1, �
 test('connections are paged with first / more (debug §2.1)', async () => {
   /** @type {number[]} */
   const firsts = [];
-  const entry = (/** @type {number} */ c) => w().u16(c).u16(2).u16(54).u32(1_000_000).u8(1).u8(0xff).u8(0).u8(0).done();   // count x entry (core §2.3)
+  // connection(u32) swdio swclk speed scheme(u8) len(u8) value: count x entry (core §2.3)
+  const entry = (/** @type {number} */ c) => w().u32(c).u16(2).u16(54).u32(1_000_000).u8(0).u8(0).done();
   const hst = new ScriptedHost(handlers([[1, Wire.CONNECTIONS, (p) => {
     firsts.push(p[0]);
-    return p[0] < 2 ? ok([1, 2, ...entry(p[0] + 1), ...entry(p[0] + 2)]) : ok([0, 1, ...entry(5), 0x41, 0, 0]);   // an unknown TLV after
+    return p[0] < 2 ? ok([1, 2, ...entry(p[0] + 1), ...entry(p[0] + 2)]) : ok([0, 1, ...entry(5), ...m.tlv(0x41, new Uint8Array())]);   // an unknown TLV after
   }]]));
   const wire = await Wire.open(hst);
   const list = await wire.connections();
   assert.deepEqual(list.map((c) => c.conn), [1, 2, 5]);
   assert.deepEqual(firsts, [0, 2]);
-  assert.deepEqual(list[0], { conn: 1, pins: [2, 54], speedHz: 1_000_000, users: 1, slot: 0xff, targetId: null });
+  assert.deepEqual(list[0], { conn: 1, pins: [2, 54], speedHz: 1_000_000, targetId: null, targetsel: null, idleClock: null });
 });
 
 test('read_block, dmi and run answers carry their counts; a wrong-kind resource number is unavailable cause 6', { skip: !haveVirtualBench }, () => withBench(X035, async (hst) => {

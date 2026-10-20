@@ -10,15 +10,12 @@ import { Writer, concat, getU16, getU32, getU64 } from './bytes.js';
 import * as m from './message.js';
 import { Unavailable } from './errors.js';
 import { Interface, describe } from './core.js';
-import { CRITICAL, decodeDescription } from './catalog.js';
+import { decodeDescription, firstFixed } from './catalog.js';
 import { PositionStream, StreamIO } from './console.js';
 
 const GPIO = reg.FIXTURE_GPIO, UART = reg.FIXTURE_UART, I2C = reg.FIXTURE_I2C_TARGET, SPI = reg.FIXTURE_SPI_TARGET;
 const MODE = GPIO.enum.mode;
 const TAG_INDEX = GPIO.tlv.unavailable_payload.index;   // 0x40: the list position of what was refused
-/** drive_level's default (fixture §1.1): 0xFF, drive_levels' default level */
-export const DRIVE_DEFAULT = GPIO.enum.drive_level.default;
-
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -26,90 +23,24 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * refused channel stood (TLV 0x40). */
 export class GpioUnavailable extends Unavailable {
   /** Every index TLV, in order. */
-  get indexes() { return this.tlvs.filter(([t, v]) => (t & 0x7f) === TAG_INDEX && v.length >= 1).map(([, v]) => v[0]); }
+  get indexes() { return this.tlvs.filter(([t, v]) => t === TAG_INDEX && v.length === 1).map(([, v]) => v[0]); }
   /** The first index (none: null). */
   get index() { return this.indexes[0] ?? null; }
 }
 
 /**
- * An output strength (oep-if-fixture §1.1), for gpio set and the settings' idle: a level number of the probe's
- * drive_levels (0 the weakest, in its order), or the default level (0xFF). Levels are one probe's list: a host that
- * takes a setting to another probe picks the level again from that probe's drive_levels (`DriveLevels.atMost`).
- */
-export class Drive {
-  /** @param {number} value  a level number (u8), DRIVE_DEFAULT the default level */
-  constructor(value) { this.value = value; Object.freeze(this); }
-
-  /** A level number of the probe's drive_levels (0 .. 0xFE). @param {number} n */
-  static level(n) {
-    if (!Number.isInteger(n) || n < 0 || n >= DRIVE_DEFAULT) throw new RangeError(`drive level ${n}: 0 to ${DRIVE_DEFAULT - 1} (0xFF is the default level)`);
-    return new Drive(n);
-  }
-
-  /** The default level of drive_levels (0xFF; fixture §1.1). */
-  static default() { return new Drive(DRIVE_DEFAULT); }
-
-  get isDefault() { return this.value === DRIVE_DEFAULT; }
-
-  /** A Drive as it is, a number as a level number. @param {Drive | number} drive */
-  static of(drive) { return drive instanceof Drive ? drive : Drive.level(Number(drive)); }
-
-  /** level(u8), the form both places use. */
-  pack() {
-    if (!Number.isInteger(this.value) || this.value < 0 || this.value > 0xff) throw new RangeError(`drive ${this.value}: a u8 level, 0xFF the default`);
-    return Uint8Array.of(this.value);
-  }
-
-  /** @param {Uint8Array} data  level(u8) */
-  static unpack(data) { return new Drive(data[0]); }
-
-  toString() { return this.isDefault ? 'default' : `level ${this.value}`; }
-}
-
-/**
- * describe drive_levels (fixture §1.1): the strengths the probe selects - approximate mA per level in ascending order
- * (a level's number is its position) - and the default level.
- */
-export class DriveLevels {
-  /** @param {number} defaultLevel @param {number[]} ma */
-  constructor(defaultLevel, ma) { this.defaultLevel = defaultLevel; this.ma = Object.freeze([...ma]); Object.freeze(this); }
-
-  /** The level a Drive selects here (null: a level number past the list - the probe refuses that drive unsupported).
-   * @param {Drive | number} drive @returns {number | null} */
-  pick(drive) {
-    const d = Drive.of(drive);
-    if (d.isDefault) return this.defaultLevel;
-    return d.value < this.ma.length ? d.value : null;
-  }
-
-  /** The strongest level of about `ma` mA or less (level 0 when every level is stronger): the host's way to carry a
-   * strength between probes (host guide §18.5). @param {number} ma */
-  atMost(ma) {
-    let best = 0;
-    this.ma.forEach((x, i) => { if (x <= ma) best = i; });
-    return Drive.level(best);
-  }
-}
-
-/** One gpio set element: [channel, mode] or [channel, mode, drive] (drive: a Drive, a level number, or null: none).
- * @typedef {[number, number] | [number, number, Drive | number | null | undefined]} GpioElement */
-
-/**
  * oep.fixture.gpio. `set` applies [channel, mode] pairs in order in one request (pull NRST, then release it); a
- * channel the plan did not assign or a mode the probe lacks rejects the whole list as unavailable (GpioUnavailable:
- * .channels, and its position .index, TLV 0x40). The open-drain modes never drive a line high: the way to move a
- * target's reset line. An output element (mode 3 / 4) may carry a strength (`Drive`, or a level number) on a probe
- * that declares drive_levels (`driveLevels()`); without one it is driven at the idle item's strength, else the default.
- * A level past drive_levels, or any drive on a probe without them, is refused unsupported (Unsupported).
+ * channel the plan did not assign rejects the whole list as unavailable (GpioUnavailable: .channels, and its position
+ * .index, TLV 0x40); a mode the probe does not declare, unsupported (then the same channel / index TLVs). The
+ * open-drain modes never drive a line high: the way to move a target's reset line. The output strength is the probe's
+ * own (fixture §1: revision 1 defines no strength selection).
  */
 export class Gpio extends Interface {
   static NAME = 'oep.fixture.gpio';
   static REVISION = 1;
   static SET = GPIO.op.set;
   static READ = GPIO.op.read;
-  static TAG_DRIVE = GPIO.tlv.set.drive;                     // set's drive TLV: index(u8) level(u8), one per element
   static TAG_MODES = GPIO.tlv.describe.modes;
-  static TAG_DRIVE_LEVELS = GPIO.tlv.describe.drive_levels;
   static INPUT = MODE.input;
   static INPUT_PULLUP = MODE.input_pullup;
   static INPUT_PULLDOWN = MODE.input_pulldown;
@@ -118,51 +49,28 @@ export class Gpio extends Interface {
   static OPEN_DRAIN_LOW = MODE.open_drain_low;
   static OPEN_DRAIN_RELEASE = MODE.open_drain_release;
 
-  /** n(u8) n x (channel(u16) mode(u8)), then a drive TLV (index(u8) level(u8), critical: a strength that did not take
-   * would drive the line otherwise) for each element that carries a third item (a Drive or a level number; null /
-   * undefined: none). @param {GpioElement[]} elements */
-  static setBody(elements) {
-    const w = new Writer().u8(elements.length);
-    for (const [ch, mode] of elements) w.u16(ch).u8(mode);
-    /** @type {Uint8Array[]} */
-    const tlvs = [];
-    elements.forEach((e, i) => {
-      const drive = e[2];
-      if (drive !== undefined && drive !== null) tlvs.push(m.tlv(Gpio.TAG_DRIVE, concat(Uint8Array.of(i), Drive.of(drive).pack()), true));
-    });
-    return concat(w.done(), ...tlvs);
+  /** n(u8) n x (channel(u16) mode(u8)) (fixture §1). @param {[number, number][]} pairs */
+  static setBody(pairs) {
+    const w = new Writer().u8(pairs.length);
+    for (const [ch, mode] of pairs) w.u16(ch).u8(mode);
+    return w.done();
   }
 
-  /** [channel, mode] or [channel, mode, drive] elements, applied in order; drive only on mode 3 / 4 (anything else is
-   * rejected malformed). A level past the probe's drive_levels, or a drive on a probe without them: rejected
-   * unsupported, nothing applied (fixture §1.1).
-   * @param {GpioElement[]} elements @returns {Promise<void>} */
-  async set(elements) {
+  /** [channel, mode] pairs, applied in order (fixture §1). @param {[number, number][]} pairs @returns {Promise<void>} */
+  async set(pairs) {
     try {
-      await this.call(Gpio.SET, Gpio.setBody(elements));
+      await this.call(Gpio.SET, Gpio.setBody(pairs));
     } catch (e) {
       if (e instanceof Unavailable && !(e instanceof GpioUnavailable)) throw new GpioUnavailable(e.result);
       throw e;
     }
   }
 
-  /** describe drive_levels (fixture §1.1): null when the probe cannot switch the output strength.
-   * @returns {Promise<DriveLevels | null>} */
-  async driveLevels() {
-    for (const [tag, v] of await describe(this.host, this.fn)) {
-      if ((tag & ~CRITICAL) === Gpio.TAG_DRIVE_LEVELS && v.length >= 2 && v.length >= 2 + 2 * v[1]) {
-        return new DriveLevels(v[0], Array.from({ length: v[1] }, (_, i) => getU16(v, 2 + 2 * i)));
-      }
-    }
-    return null;
-  }
-
   /** describe modes: a u32 bit set, bit n = mode n (0xFF when not declared). @returns {Promise<number>} */
   async modes() {
-    for (const [tag, v] of await describe(this.host, this.fn)) {
-      if ((tag & ~CRITICAL) === Gpio.TAG_MODES && v.length >= 4) return getU32(v);
-    }
-    return 0xff;
+    // the first copy, a u32 exactly; bit 7 in an answer is an unknown tag (core §2.2, §2.3)
+    const v = firstFixed(await describe(this.host, this.fn), Gpio.TAG_MODES, 4);
+    return v ? getU32(v) : 0xff;
   }
 
   /** @param {number} channel @param {number} mode */
@@ -200,20 +108,27 @@ export class Gpio extends Interface {
   }
 }
 
-/** oep.fixture.uart status (op 0x07, lock-free): the baud and format the UART runs with now (fixture §2).
- * @typedef {{ baud: number, format: number }} UartStatus */
+/** oep.fixture.uart status (lock-free): the baud and format the UART runs with now (fixture §2); baud 0 and format 0
+ * before the first configure and after a failed one (configured false: nothing is received).
+ * @typedef {{ baud: number, format: number, configured: boolean }} UartStatus */
 
 /**
- * oep.fixture.uart: one position stream per fn, like the console without a stream number. The stream exists while
- * the plan gives the fn RX or TX; received bytes are kept from then on, whatever the session, and the position never
- * goes back within one boot (a plan released and applied again carries on). Reads are lock-free and do not consume.
- * TX idles high while planned, before configure too.
+ * oep.fixture.uart: one position stream per fn, like the console without a stream number (fixture §2). The stream
+ * exists while the plan gives the fn RX or TX; nothing is received until a configure, and received bytes are kept from
+ * then on, whatever the session; reconfiguring (it succeeds or fails) keeps them and the position never goes back
+ * within one boot. Reads are lock-free and do not consume. TX idles high while planned; write needs TX in the plan and
+ * a configure (else unavailable cause 6). marks, clear, mark and write are optional ops (`offers`).
  */
 export class FixtureUart extends PositionStream {
   static NAME = 'oep.fixture.uart';
   static REVISION = 1;
   static CONFIGURE = UART.op.configure;
   static STATUS = UART.op.status;
+  static READ = UART.op.read;
+  static MARKS = UART.op.marks;
+  static CLEAR = UART.op.clear;
+  static MARK = UART.op.mark;
+  static WRITE = UART.op.write;
   static TAG_FORMAT = UART.tlv.configure.format;
   // format bits: data bits (0 = 8, 1 = 7), parity (0 none, 1 even, 2 odd) << 2, stop bits (0 = 1, 1 = 2) << 4
   static EIGHT_N_1 = 0x00;
@@ -230,7 +145,9 @@ export class FixtureUart extends PositionStream {
   /**
    * -> the actual baud (within 5 % of the one asked, else the probe refuses Unsupported). fmt (formatByte()) goes as
    * its TLV (critical: this host's choice); a format the probe cannot set is refused Unsupported, never run as 8N1;
-   * none leaves the default 8N1. An fn whose plan has neither RX nor TX is rejected Unavailable (cause 6).
+   * none leaves the default 8N1. An fn whose plan has neither RX nor TX is rejected Unavailable (cause 6). A configure
+   * the probe took but could not bring up is completed failed (Failed; its baud is 0): the UART is not configured then,
+   * received bytes stay readable, and unsent TX is dropped (fixture §2).
    * @param {number} baud @param {number} [fmt]
    */
   async configure(baud, fmt) {
@@ -247,7 +164,7 @@ export class FixtureUart extends PositionStream {
     const rd = new m.Reader((await this.call(FixtureUart.STATUS, new Uint8Array(), { locked: false })).payload);
     const baud = rd.u32(), format = rd.u8();
     rd.tail();
-    return { baud, format };
+    return { baud, format, configured: baud !== 0 };
   }
 }
 
@@ -299,14 +216,14 @@ async function targetDescribe(iface) {
   const tlvs = await describe(iface.host, iface.fn);
   /** @type {Map<number, Uint8Array>} */
   const own = new Map();
-  for (const [tag, v] of tlvs) if (!own.has(tag & ~CRITICAL)) own.set(tag & ~CRITICAL, v);
+  for (const [tag, v] of tlvs) if (!own.has(tag)) own.set(tag, v);   // the first copy; bit 7 in an answer: an unknown tag (core §2.2, §2.3)
   return { d: decodeDescription(tlvs), own };
 }
 
 /** @param {Map<number, Uint8Array>} own @param {number} tag */
-const ownU8 = (own, tag) => { const v = own.get(tag); return v && v.length >= 1 ? v[0] : null; };
+const ownU8 = (own, tag) => { const v = own.get(tag); return v && v.length === 1 ? v[0] : null; };   // a value without its defined length is broken (core §2.3)
 /** @param {Map<number, Uint8Array>} own @param {number} tag */
-const ownU32 = (own, tag) => { const v = own.get(tag); return v && v.length >= 4 ? getU32(v) : null; };
+const ownU32 = (own, tag) => { const v = own.get(tag); return v && v.length === 4 ? getU32(v) : null; };
 
 /** @param {m.Tail} tail @param {number} tag */
 const nsOf = (tail, tag) => { const v = tail.get(tag); return v && v.length >= 8 ? getU64(v) : null; };

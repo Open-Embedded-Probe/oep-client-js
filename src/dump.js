@@ -83,7 +83,7 @@ export async function collect(hst, prefix = '', exact = false) {
   const coreTlvs = await describeAll(m.CORE_FN);
   /** @type {Capabilities} */
   const caps = { revision: limits.revision, maxFrame: limits.maxFrame, offers: [],
-    core: { entry: { fn: m.CORE_FN, instance: 0, revision: limits.revision, flags: 0, name: '' },
+    core: { entry: { fn: m.CORE_FN, instance: 0, revision: limits.revision, name: '' },
       description: catalog.decodeDescription(coreTlvs), tlvs: coreTlvs },
     requests, missing: requiredMissing(limits, coreTlvs) };
   /** @type {catalog.ListEntry[]} */
