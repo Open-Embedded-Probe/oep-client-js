@@ -4,7 +4,7 @@
 //   request : role(0x01) corr(u16) fn(u16) op(u8) session_id(u32) payload     10 bytes; session_id 0 = no session
 //   result  : role(0x02) corr(u16) resolution(u8) detail(u8) payload
 //
-// Every fixed form (a fixed part, a TLV's value, a sequence's element, a probe.config item) is fixed by (name, revision)
+// Every fixed form (a fixed part, a TLV's value, a sequence's element, a settings value) is fixed by (name, revision)
 // and never extended at its end; a sequence is count x element with no element length (core §2.3). After a result's
 // fixed part (and any counted list or length-prefixed data) come TLVs (tag u8, len u16, value - core §2.2, one form
 // whatever the length); a host skips tags it does not know. A request may end with TLVs; tag bit 7 = critical: a probe
@@ -209,7 +209,7 @@ export class Reader {
    * data has since core §2.3 put a length on every container. @param {1 | 2 | 4} width */
   counted(width = 2) { return this.bytes(width === 1 ? this.u8() : width === 4 ? this.u32() : this.u16()); }
   get left() { return this.data.length - this.at; }
-  /** The rest as bytes (an answer that is a TLV list itself: probe.config get). */
+  /** The rest as bytes (values and then a TLV tail: the settings' get). */
   rest() { const v = this.data.slice(this.at); this.at = this.data.length; return v; }
   /** The TLVs after the known part (core §2.3). */
   tail() { return Tail.parse(this.rest()); }

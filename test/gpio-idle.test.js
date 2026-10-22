@@ -1,12 +1,12 @@
 // @ts-check
-// gpio set and the idle item without a strength selection (fixture §1: revision 1 defines none; probe.config §1: idle is
-// channel(u16) mode(u8)), an unknown TLV on set (core §2.3), and a target silent until a reset. Mirrors
+// gpio set and the idle item without a strength selection (fixture §1: revision 1 defines none; core §13.8: channel.{}.idle
+// is an enum keyed by the channel), an unknown TLV on set (core §2.3), and a target silent until a reset. Mirrors
 // oep-client-python's tests/test_gpio_drive_and_serve_options.py through the TCP virtual bench (virtual_bench_serve's
 // --silent-until-reset gives a target that answers only after a reset): over TCP only what the wire says is checked.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Writer, concat } from '../src/bytes.js';
-import * as config from '../src/config.js';
+import * as settings from '../src/settings.js';
 import { describe, planApply } from '../src/core.js';
 import { Unsupported } from '../src/errors.js';
 import { Gpio } from '../src/fixture.js';
@@ -44,13 +44,6 @@ async function gpioOf(hst, channels = [20, 21, 22]) {
  * @param {import('../src/host.js').Host} hst @param {Gpio} g @param {[number, number][]} pairs @param {Uint8Array} tail */
 const rawSet = (hst, g, pairs, tail = new Uint8Array()) => hst.call(g.fn, Gpio.SET, concat(Gpio.setBody(pairs), tail));
 
-test('the idle item is 3 bytes: channel(u16) mode(u8), and decodes back (probe.config §1)', () => {
-  const it = new config.Idle({ channel: 7, mode: 'output-high' });
-  assert.deepEqual([...it.data()], [reg.PROBE_CONFIG.enum.idle_mode.output_high]);
-  assert.deepEqual(config.decode('idle', 7, it.data()), it);
-  assert.throws(() => new config.Idle({ channel: 7, mode: 'strong' }).data(), RangeError);
-});
-
 test('gpio set: an unknown TLV is ignored plain and refused critical, with the tag as received; no drive_levels declared', { skip },
   () => withBench(['--profile', 'p4-bench'], async (hst) => {
     const g = await gpioOf(hst);
@@ -67,10 +60,10 @@ test('gpio set: an unknown TLV is ignored plain and refused critical, with the t
   }));
 
 test('the idle item set on the bench reads back as it was sent', { skip }, () => withBench(['--profile', 'p4-bench'], async (hst) => {
-  const cfg = await config.ProbeConfig.open(hst);
-  await cfg.set([new config.Idle({ channel: 21, mode: 'output-low' })]);
-  const items = await cfg.items();
-  assert.ok(items.some((it) => it instanceof config.Idle && it.channel === 21 && it.mode === 'output-low'));
+  const st = new settings.Settings(hst);
+  await st.setNamed(settings.CORE_CATEGORY, { 'channel.GPIO21.idle': 'low' });
+  const row = (await st.show()).find((r) => r.name === 'channel.GPIO21.idle');
+  assert.deepEqual([row?.value, row?.origin, row?.item.form], ['low', 'user', 'enum']);
 }));
 
 test('a host attach with the reset TLV wakes a target silent until a reset; scan does not see it', { skip },

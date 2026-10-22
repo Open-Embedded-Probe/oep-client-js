@@ -9,11 +9,11 @@ import { test } from 'node:test';
 import * as reg from '../src/registry.js';
 import * as cobs from '../src/cobs.js';
 import * as m from '../src/message.js';
-import * as config from '../src/config.js';
+import * as settings from '../src/settings.js';
 import * as dump from '../src/dump.js';
 import * as capture from '../src/capture.js';
 import { Writer, utf8 } from '../src/bytes.js';
-import { Locked, Unsupported } from '../src/errors.js';
+import { Locked, Rejected, Unsupported } from '../src/errors.js';
 import { Host, ownerText } from '../src/host.js';
 import { Link, RESYNC_WAIT_MS } from '../src/link.js';
 import { connect } from '../src/open.js';
@@ -315,25 +315,25 @@ test('C-07: the first confirm on a length-prefixed port waits for 50 ms of quiet
 
 // ---- PC-1 / PC-2 / PC-5: the line search and labels ---------------------------------------------------------------
 
-test('PC-1: findLine: <profile>.<name>, then for a single target the bare name, then the firmware\'s label (host guide §5.3)', async () => {
-  const fw = /** @type {[number, string][]} */ ([[23, 'NRST']]);
-  assert.equal(await config.findLine([], 'nrst', { firmware: fw }), 23);
-  assert.equal(await config.findLine([new config.Label({ channel: 22, text: 'nrst' })], 'nrst', { firmware: fw }), 22);
-  assert.equal(await config.findLine([], 'nrst', { firmware: [[23, 'NRST'], [24, 'nrst']] }), null);   // two at one step
-  assert.equal(await config.findLine([], 'nrst', { profile: 'b', firmware: fw, single: false }), null);   // several targets: (b), (c) not
-  assert.equal(await config.findLine([new config.Label({ channel: 5, text: 'B.NRST' })], 'nrst', { profile: 'b', single: false }), 5);
-  assert.deepEqual([...config.LINE_NAMES], Object.keys(reg.PROBE_CONFIG.line_names));   // from the registry (PC-2)
+test('PC-1: findLine: <profile>.<name>, then for a single target the bare name (host guide §5.3)', async () => {
+  assert.equal(await settings.findLine([[23, 'NRST']], 'nrst'), 23);
+  assert.equal(await settings.findLine([[23, 'NRST'], [24, 'nrst']], 'nrst'), null);   // two at one step
+  assert.equal(await settings.findLine([[23, 'NRST']], 'nrst', { profile: 'b', single: false }), null);   // several targets: (b) not
+  assert.equal(await settings.findLine([[5, 'B.NRST']], 'nrst', { profile: 'b', single: false }), 5);
+  assert.deepEqual([...settings.LINE_NAMES], Object.keys(reg.CORE.line_names));   // from the registry (PC-2)
 });
 
-test('PC-1: findLine on a Host reads describe\'s labels', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
-  assert.equal(await config.findLine(hst, 'nrst'), 23);
+test('PC-1: findLine on a Host reads every label, the firmware\'s fixed ones too', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
+  assert.equal(await settings.findLine(hst, 'nrst'), 23);
 }));
 
-test('PC-5: a label the probe would refuse, or a host would not show, is not sent', () => {
-  for (const text of ['', 'x'.repeat(33), 'a\tb', 'a\x7fb']) assert.throws(() => new config.Label({ channel: 1, text }).data(), RangeError, JSON.stringify(text));
-  assert.equal(new config.Label({ channel: 1, text: 'x'.repeat(32) }).data().length, 32);
-  assert.equal(new config.Label({ channel: 1, text: '日本語' }).data().length, 9);
-});
+test('PC-5: a label the probe would refuse is refused there (core §13.3: a text value is checked for its length)', { skip: !haveVirtualBench }, () => withBench(['--profile', 'p4-bench'], async (hst) => {
+  await hst.open(3000);
+  const st = new settings.Settings(hst);
+  for (const text of ['', 'x'.repeat(33)]) await assert.rejects(st.setNamed('core', { 'channel.GPIO20.label': text }), Rejected, JSON.stringify(text));
+  assert.equal(await st.setNamed('core', { 'channel.GPIO20.label': 'x'.repeat(32) }), 2);
+  assert.equal(await st.setNamed('core', { 'channel.GPIO21.label': '日本語' }), 3);   // 9 bytes
+}));
 
 // ---- C-22 / C-18: text, the owner and the session id ---------------------------------------------------------------
 

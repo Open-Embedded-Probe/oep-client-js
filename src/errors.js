@@ -96,6 +96,9 @@ export class Unsupported extends Rejected {
   get channel() { const v = this.first(UNS.channel); return v && v.length === 2 ? getU16(v) : null; }
   /** The fn the probe names (unsupported_payload 0x05; u16 exactly), else null. */
   get fn() { const v = this.first(UNS.fn); return v && v.length === 2 ? getU16(v) : null; }
+  /** A settings set / unset's refused value: its place in the request (unsupported_payload item, u8; core §13.5), else
+   * null. */
+  get item() { const v = this.first(UNS.item); return v && v.length === 1 ? v[0] : null; }
   /** confirm's refusal (core §7.1, C-15): [min, max] of the protocol revisions the probe handles (TLV 0x01 supported
    * after tag 0x00); null for any other refusal. @returns {[number, number] | null} */
   get supported() {
@@ -111,8 +114,8 @@ const UNA = reg.CORE.tlv.unavailable_payload;
 const CAUSES = Object.fromEntries(Object.entries(reg.CORE.enum.unavailable_cause).map(([k, v]) => [v, k]));
 
 /** rejected unavailable (core §4.3): cause, channels and fn from the payload's TLVs (each may be missing); `tlvs` has
- * every TLV, the interface's own (0x40 and up) too. cause held_by_settings (5): the settings' plan, disable, output idle
- * or slot hold it - probe.config's get says which. */
+ * every TLV, the interface's own (0x40 and up) too. cause held_by_settings (5): the settings' disable or output idle
+ * hold it - fn 0's settings get says which. */
 export class Unavailable extends Rejected {
   get tlvs() { try { return splitTlvs(this.result.payload); } catch { return []; } }
   /** The first TLV `tag` when it is `size` bytes; undefined when absent or that first copy is broken (not used, and no

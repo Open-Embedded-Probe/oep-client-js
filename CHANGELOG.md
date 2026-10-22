@@ -1,6 +1,21 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) **The settings follow the core (oep-spec core §13, 9fc6ad9 .. c4fbd6e), as oep-client-python.** `config`
+  (`oep.probe.config`) is gone; `settings` (settings.js) has fn 0's get / set / unset / save / state / network, the names
+  of a boot (`Catalog`: categories, items, choices, channel / route / netif names), values by name (`show`, `setNamed`,
+  `unsetNamed`, `unsetAll`), the settings file (`export`, `planImport`, `applyImport`; secrets never read) and the label
+  convention over every channel label (`findLine`; the firmware's labels are the settings' fixed values, so
+  `core.firmwareLabels` reads them with get). `Unsupported.item`; `probeInfo` has `channelNames` and `netifs` (no
+  `labels`). The page's settings tab is built from the probe's declarations, with export and import. Registry and
+  test/vectors synced (settings_file.json added).
+- (JA) **設定を oep-client-python と同じく core（oep-spec core §13、9fc6ad9〜c4fbd6e）に合わせた。** `config`
+  （`oep.probe.config`）を無くし、`settings`（settings.js）を足した: fn 0 の get / set / unset / save / state / network、
+  boot ごとの名前（`Catalog`: カテゴリ、項目、選択肢、channel・経路・netif の名前）、名前での値（`show`、`setNamed`、
+  `unsetNamed`、`unsetAll`）、設定のファイル（`export`、`planImport`、`applyImport`。secret は読まない）、全部の channel の
+  label からの線の探し方（`findLine`。firmware の label は設定の固定の値なので、`core.firmwareLabels` は get で読む）。
+  `Unsupported.item` を足し、`probeInfo` は `labels` の代わりに `channelNames` と `netifs` を持つ。ページの設定のタブは
+  probe の宣言から組み立て、書き出しと読み込みを足した。registry と test/vectors を同期した（settings_file.json を追加）。
 - (EN) **Follow oep-spec c6ab5d9 .. 32724e4, as oep-client-python 0.0.36.** Registry and test/vectors synced (multirate.json
   gone; capture_formats.json, core_*.json, interface_*.json added); README names 32724e4.
   - Core: confirm without flags; list entries without flags; reject `no_resource` (`NoResource`; `Busy` / `NoConnection`

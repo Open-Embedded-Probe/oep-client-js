@@ -106,9 +106,10 @@ const CAPTURE = [['mode', 'mode', captureMode], ['rate_range', 'rate range', rat
 
 /** fn 0, the core (no name, never in list; core §0, §12): its describe is the probe itself (core §7.5). */
 export const CORE_KNOWN = known(
-  'the core: confirm, list, describe, clock, open / end / keepalive, lock state; describe = the probe itself',
+  'the core: confirm, list, describe, clock, open / end / keepalive, lock state, the settings (core §13); describe = the probe itself',
   { tags: tagsOf(CORE_KEY, ['firmware', 'firmware', asText], ['model', 'model', asText], ['unit_id', 'unit id', asText],
-    ['channels', 'channels', u16], ['label', 'label', label], ['transport', 'transport', transport],
+    ['channels', 'channels', u16], ['channel_name', 'channel name', label], ['netif', 'netif', asText],
+    ['transport', 'transport', transport],
     ['chip', 'chip', asText], ['max_op_ms', 'max op ms', u32]) });
 
 /** The interfaces whose names begin with oep. (interfaces/README.ja.md).
@@ -130,9 +131,6 @@ export const KNOWN = {
   'oep.target.arm-adi': known('ARM Debug Interface: DP/AP transfer lists, block transfers'),
   'oep.target.console': known('console streams on a debug connection (position-addressed, marks)',
     { tags: tagsOf('oep.target.console', ['mechanism', 'mechanism', asText]) }),
-  'oep.probe.config': known('the probe\'s settings (named items: pins, pass-throughs, network, its own) and their storage; the state is op state',
-    { tags: tagsOf('oep.probe.config', ['storage', 'storage', (v) => `${u32(v.slice(0, 4))} bytes`],
-      ['setting', 'setting', (v) => (v.length > 5 ? asText(v.slice(5)) : hex(v))], ['netif', 'netif', asText]) }),
   'oep.fixture.gpio': known('drive and read probe pins', { roles: rolesOf('oep.fixture.gpio', 'role', { line: 'line' }),
     tags: tagsOf('oep.fixture.gpio', ['modes', 'modes', bits32]) }),
   'oep.fixture.uart': known('a UART (USART, asynchronous) on probe pins', { roles: rolesOf('oep.fixture.uart', 'role', { rx: 'RX', tx: 'TX' }),

@@ -19,7 +19,7 @@ the map for the scaffold.
 ```text
 src/            the library (the core, no environment)   -> npm "oep-client-js" (bundled to dist/oep-client.js)
   index.js        the entry: VERSION and the core's public API
-  (to come)       frame, message, session, core, describe, config, the interfaces, registry (generated)
+  (to come)       frame, message, session, core, describe, settings, the interfaces, registry (generated)
 src/browser/    the browser's transports                 -> npm "./browser"
   index.js        WebSerial, WebUSB (vendor bulk, DFU), WebHID
 src/node/       Node's transports                        -> npm "./node"
@@ -75,8 +75,8 @@ docs/           this document, the release steps
    - RP2040 / RP2350: the steps to copy the UF2 to the BOOTSEL drive (a browser cannot write the drive).
    - Every image is checked against `firmware-<version>.json`'s sha256.
 2. **Connect and look**: pick a transport, connect, show everything describe declares (as `oep dump` does).
-3. **Settings** (`oep.probe.config`): show and edit slots, binds, plans, labels and idle states, save and erase. The
-   screens are built from describe (how many slots, which items); a bind carries one stream.
+3. **Settings** (core §13): show every value with its origin, set and unset by name, save, export to and import from a
+   settings file. The form is built from what each owner's describe declares (its items, their keys and choices).
 4. **Simple operations**: GPIO read / write, a UART terminal, attach / halt / resume / reset a target, its console.
 
 Not done here: showing captures ([WireSkein](https://github.com/Open-Embedded-Probe/wireskein)'s), writing a target's

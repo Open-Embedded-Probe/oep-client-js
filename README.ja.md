@@ -58,7 +58,7 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   （list は `first` だけで頁を送り、接頭辞の絞り込みはラベルの境で host が行う。fn ごとの `ops`: `core.ops` / `offers`、`Interface.ops()` / `.offers(op)`。`core.require` は送らずに、probe が答えるのと同じ
   detail unknown_operation の `Rejected` を投げる）/ plan（`core.planApply` / `planRelease` / `planRoles` は oep.probe.plan を名前で探す）
 - インターフェース: debug の線（rvswd、swio、swd）と riscv-dm、ARM の ADI / MEM-AP / Cortex-M、target のコンソール、
-  fixture（gpio、uart、i2c-target、spi-target）、キャプチャ（ロジック、アナログ、capture-group、sigrok の .sr）、probe.config、
+  fixture（gpio、uart、i2c-target、spi-target）、キャプチャ（ロジック、アナログ、capture-group、sigrok の .sr）、設定（core §13）、
   `oep dump` の表示
 - 経路: ブラウザは WebSerial、WebUSB（vendor bulk）、WebHID。Node は TCP、シリアルの口（`serialport`）、USB（`usb`）
   （ネイティブの package は任意）。シリアルの口は 8N1、フロー制御なし、DTR と RTS を立てて開く（transports §4）。USB の probe は
@@ -136,20 +136,15 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   （`configure(address)`、データのある書き込み 1 回が 1 フレーム、読み出しは `preloadTx` の置き場か 0xFF、`status()` は
   `{ state, queued, rxFrames, txSlots, errors }`、`internalPullups()`。stretch は任意の op）。spi-target に reset は無い。uart の
   `status()` は `{ baud, format, configured }`（baud 0 は設定前）
-- probe.config（oep-if-probe-config）: 項目は名前つきで、番号はこの boot の describe が振る（`ProbeConfig.describe()` は `settings`
-  と `netifs` を持つ `Declared`。`wire(item)` は名前から番号を引く）。`Label`、`Idle`、`Disable`、`Passthrough`（セッションが
-  使っていない間、fixture UART の RX をシリアルの口へ流す）、`ConsolePassthrough`（target の debug コンソールを同じように）、
-  `RvswdRest`、`WireHold`、`Wifi`、`Ipv4`、`Own`（probe 独自の逆 DNS の名前の項目。宣言された form で符号化し、secret のものは
-  書くだけ）。`get()` は世代と [name, key, data] の項目。set / unset / save / erase / `state()`（`{ storage, savedGeneration,
-  reason }`）/ `network()`（TCP の port と、netif ごとの state、entry、reason、rssi、アドレス）。host は項目を比べる
-  （`config.sameItems`）。`needsSave()` と `apply(wanted, { save })`（host ガイド §15）。`findLine(config, name, { profile,
-  firmware, single })` は host ガイド §5.3 の線の探し方
-- Wi-Fi（probe.config §1.4、host ガイド §15.1）: `config.Wifi({ entry, ssid, passphrase })` ― passphrase は null（開いた
-  ネットワーク）、`config.KEEP`（その entry のものを保つ。get の形、pass_len 0xFF）、8〜63 文字の印字できる ASCII か 16 進 64 桁。
-  passphrase は書くだけ: get は返さず（`KEEP` と読む）、private field に持つ（`console.log`、`util.inspect`、`JSON.stringify` に
-  出ない。`toString()` / `shown()` は set / none と言う）。断ったときの error にも載せない。`sameItems` と `apply` は wifi の項目を
-  passphrase 抜きで比べ、変わる entry にだけ送る。ページの Wi-Fi の欄は passphrase を password の欄で受け、読んだら消し、probe
-  から埋め戻さない（空: 保つ。「開いたネットワーク」: なし）
+- 設定（oep-spec core §13、settings.js）: fn 0 の get / set / unset / save / state / network。持ち主（core の fn 0 か
+  interface）が自分の describe で項目を宣言する。`new Settings(host)`: `catalog()` はこの boot の名前（fn ごとのカテゴリ
+  `core` / `name/instance`、項目と選択肢、channel・経路・netif の名前）、`show()` は全部の値を `{ category, name, value,
+  origin }`（origin は fixed / default / user）で、`setNamed(category, { 平らな名前: 値 })` / `unsetNamed` / `unsetAll`、
+  [fn, number, key] での `set` / `unset`、`save()`、`state()`、`needsSave()`、`network()`。`export()` / `planImport(doc)` /
+  `applyImport(plan)` は設定のファイル（oep-client-python docs/oep-settings-file.ja.md）。`findLine(source, name, { profile,
+  single })` は host ガイド §5.3 の線の探し方で、全部の channel の label（firmware の固定の値も）から探す。secret（Wi-Fi の
+  passphrase）は読まない: get はデータを返さず、`show()` とファイルは `{ secret: true }`。set で 0 バイトなら今の値を保つ。
+  ページの設定のタブは secret を password の欄で受け、読んだら消し、埋め戻さない（空: 保つ）
 - キャプチャ: configure の TLV は core §2.3 に従う（扱わない値は受け取ったままの tag で `Unsupported`）。データ形式 1 のロジック
   ブロック（`dataFormat`、`events` は role → D、`roles`、`blockMax`。区画は `blocks()` か `columns()` で読む、captureblocks.js）と
   4 の試験用カウンタ。`triggerOpts`（arm、rearm、when、hysteresis）、トリガの記録（`triggers()`）、stream_buffer

@@ -18,7 +18,7 @@ oep-client-js の構成と、何をどこに置くか、何を作らないか。
 ```text
 src/            ライブラリ（環境に依らない核）         -> npm の "oep-client-js"（dist/oep-client.js にバンドル）
   index.js        入口。VERSION と、核の公開 API
-  (これから)      frame、message、session、core、describe、config、各インターフェース、registry（生成物）
+  (これから)      frame、message、session、core、describe、settings、各インターフェース、registry（生成物）
 src/browser/    ブラウザの経路                         -> npm の "./browser"
   index.js        WebSerial、WebUSB（vendor bulk、DFU）、WebHID
 src/node/       Node の経路                            -> npm の "./node"
@@ -70,8 +70,8 @@ docs/           この文書、リリースの手順
    - RP2040 / RP2350: BOOTSEL のドライブにコピーする手順の案内（ブラウザからドライブには書けない）。
    - どの firmware も `firmware-<version>.json` の sha256 で照合します。
 2. **つなぐ、見る**: 経路を選んでつなぎ、describe を全部見せる（`oep dump` と同じ）。
-3. **設定**（`oep.probe.config`）: スロット、bind、plan、ラベル、空きのときの状態の表示と編集、保存と消去。画面は describe から
-   組み立てます（スロットの数、扱う項目）。bind はストリーム 1 本。
+3. **設定**（core §13）: 全部の値と出どころの表示、名前での設定と解除、保存、設定のファイルへの書き出しと読み込み。欄は
+   各持ち主の describe の宣言（項目、key、選択肢）から組み立てます。
 4. **簡単な操作**: GPIO の読み書き、UART の端末、target の attach / halt / resume / reset、target のコンソール。
 
 作らないもの: キャプチャの表示（[WireSkein](https://github.com/Open-Embedded-Probe/wireskein) の担当）、target への書き込み

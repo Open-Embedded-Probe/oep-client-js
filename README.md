@@ -55,8 +55,8 @@ What is there:
   `core.require` throws, without sending, the same `Rejected` with detail unknown_operation the probe answers) / plan
   (`core.planApply` / `planRelease` / `planRoles` on oep.probe.plan, found by name);
 - the interfaces: the debug wires (rvswd, swio, swd) and riscv-dm, ARM ADI / MEM-AP / Cortex-M, the target console, the
-  fixtures (gpio, uart, i2c-target, spi-target), the captures (logic, analog, capture-group, sigrok .sr), probe.config and
-  the `oep dump` view;
+  fixtures (gpio, uart, i2c-target, spi-target), the captures (logic, analog, capture-group, sigrok .sr), the settings
+  (core §13) and the `oep dump` view;
 - the transports: WebSerial, WebUSB (vendor bulk), WebHID in the browser; TCP, serial ports (`serialport`) and USB (`usb`)
   in Node (the native packages optional); serial ports open 8N1 without flow control, DTR and RTS asserted (transports §4);
   a USB probe is found by the project's USB VID:PID `1209:4F45` alone (transports §3: the WebUSB / WebHID choosers' default
@@ -143,22 +143,16 @@ What is there:
   i2c-target has one form (`configure(address)`, every write with data one frame, reads from `preloadTx` slots or 0xFF,
   `status()` -> `{ state, queued, rxFrames, txSlots, errors }`, `internalPullups()`; stretch an optional op), spi-target
   has no reset, uart's `status()` is `{ baud, format, configured }` (baud 0: not configured).
-- probe.config (oep-if-probe-config): items are named and numbered by the probe's describe for this boot
-  (`ProbeConfig.describe()` -> `Declared` with its `settings` and `netifs`; `wire(item)` looks the number up by name):
-  `Label`, `Idle`, `Disable`, `Passthrough` (a fixture UART's RX on a serial port while no session uses it),
-  `ConsolePassthrough` (the target's debug console the same way), `RvswdRest`, `WireHold`, `Wifi`, `Ipv4` and `Own` (a
-  probe's own reverse-DNS item, encoded by the form it declares; a secret one write-only). `get()` gives the generation
-  and the items as [name, key, data]; set / unset / save / erase / `state()` (`{ storage, savedGeneration, reason }`)
-  / `network()` (the TCP port and each netif's state, entry, reason, rssi and address); a host compares items
-  (`config.sameItems`), `needsSave()` and `apply(wanted, { save })` (host guide §15); `findLine(config, name, { profile,
-  firmware, single })` is host guide §5.3's line lookup.
-- Wi-Fi (probe.config §1.4; host guide §15.1): `config.Wifi({ entry, ssid, passphrase })` - passphrase null (an open
-  network), `config.KEEP` (keep the entry's: get's form, pass_len 0xFF) or 8-63 printable ASCII characters / 64 hex
-  digits. The passphrase is write-only: get never returns it (decoded as `KEEP`), it is a private field (not in
-  `console.log`, `util.inspect` or `JSON.stringify`; `toString()` / `shown()` say set / none), a refused one's error does
-  not carry it; `sameItems` and `apply` compare a wifi item without it and send it only for an entry that changes. The
-  page's Wi-Fi form takes the passphrase in a password field that is cleared once read and never filled back (empty:
-  keep; "open": none).
+- the settings (oep-spec core §13; settings.js): fn 0's get / set / unset / save / state / network. Each owner - the core
+  (fn 0) or an interface - declares its items in its describe; `new Settings(host)`: `catalog()` = the names of this
+  boot (each fn's category `core` / `name/instance`, the items and their choices, the channel / route / netif names),
+  `show()` = every value as `{ category, name, value, origin }` (origin fixed / default / user), `setNamed(category,
+  { flat: value })` / `unsetNamed` / `unsetAll`, raw `set` / `unset` by [fn, number, key], `save()`, `state()`,
+  `needsSave()`, `network()`; `export()` / `planImport(doc)` / `applyImport(plan)` = the settings file
+  (oep-client-python docs/oep-settings-file.ja.md); `findLine(source, name, { profile, single })` is host guide §5.3's
+  line lookup over every channel label (the firmware's fixed ones too). A secret (the Wi-Fi passphrase) is never read:
+  get gives no data, `show()` and the file `{ secret: true }`; 0 bytes in a set keep it. The page's settings tab sets a
+  secret in a password field that is cleared once read and never filled back (empty: keep).
 - capture: configure's TLVs follow core §2.3 (a value the probe does not handle is `Unsupported` with the tag as
   received); data format 1, the logic blocks (`dataFormat`, `events` role -> D, `roles`, `blockMax`; a segment read as
   `blocks()` or `columns()`, captureblocks.js) and 4, the test counter; `triggerOpts` (arm, rearm, when, hysteresis),

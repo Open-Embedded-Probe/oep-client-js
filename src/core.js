@@ -1,6 +1,6 @@
 // @ts-check
 // The probe's core (fn 0, no name: never in list, core §0) as the other clients need it: finding interfaces by name,
-// describe (with the ops check of core §7.4), the probe's labels and transports, taking the lock; the small probe
+// describe (with the ops check of core §7.4), the probe's fixed labels and transports, taking the lock; the small probe
 // interfaces found by name - oep.probe.plan (the pin plan), oep.probe.restart (its restart_max_ms), oep.probe.link (the
 // link test) - and `Interface`, the base every interface client shares.
 
@@ -11,6 +11,7 @@ import * as m from './message.js';
 import { OepError, rejection } from './errors.js';
 import { checkMaxOpMs } from './host.js';
 import * as names from './names.js';
+import * as settings from './settings.js';
 
 const D = reg.CORE.tlv.describe;
 export const TRANSPORT_KIND = reg.CORE.enum.transport_kind;
@@ -173,17 +174,14 @@ export async function restartMaxMs(hst) {
   return v ? getU32(v) : null;
 }
 
-/** The firmware's fixed channel labels from fn 0's describe (tag 0x46) as [channel, text], in describe order -
- * every one, two channels with the same text included (probe.config §1.3 step (c) finds none then). Text shown as core
- * §2.1 says (`m.shown`). @param {import('./host.js').Host} hst @returns {Promise<[number, string][]>} */
-export async function firmwareLabels(hst) {
-  return (await describe(hst, 0)).filter(([tag, v]) => tag === D.label && v.length >= 2)
-    .map(([, v]) => [getU16(v), m.shown(v.slice(2))]);
-}
+/** The labels the firmware fixes (channel.{}.label of origin fixed, core §13.4) as [channel, text], in get's order.
+ * A probe without the settings: none. @param {import('./host.js').Host} hst @returns {Promise<[number, string][]>} */
+export async function firmwareLabels(hst) { return settings.labels(hst, 'fixed'); }
 
 /**
- * fn 0's describe decoded (core §7.5). Text values are shown as core §2.1 says (control characters replaced). labels: the firmware's fixed channel labels (0x46); the labels the settings
- * gave are read from oep.probe.config (config.ProbeConfig.items(), Label). chip and model are free text. maxOpMs: the longest one request may take. ops: fn 0's ops (core
+ * fn 0's describe decoded (core §7.5). Text values are shown as core §2.1 says (control characters replaced).
+ * channelNames: each channel's name (core §13.3); netifs: the netifs' names, from 1. The labels are settings
+ * (`settings.labels`). chip and model are free text. maxOpMs: the longest one request may take. ops: fn 0's ops (core
  * §7.4; null: none declared). plan_roles and restart_max_ms are their interfaces' (`planRoles`, `restartMaxMs`).
  * @param {import('./host.js').Host} hst
  */
@@ -191,7 +189,7 @@ export async function probeInfo(hst) {
   const info = {
     firmware: /** @type {string | null} */ (null), model: /** @type {string | null} */ (null),
     unitId: /** @type {string | null} */ (null), chip: /** @type {string | null} */ (null),
-    channels: 0, /** @type {Map<string, number>} */ labels: new Map(),
+    channels: 0, channelNames: /** @type {Map<number, string>} */ (new Map()), netifs: /** @type {string[]} */ ([]),
     /** @type {{ index: number, kind: number, usbInterface: number }[]} */ transports: [],
     maxOpMs: /** @type {number | null} */ (null), ops: /** @type {Set<number> | null} */ (null),
     /** @type {[number, Uint8Array][]} */ other: [],
@@ -210,7 +208,8 @@ export async function probeInfo(hst) {
     else if (t === D.unit_id) info.unitId = unitIdValue(tlvs) ? m.shown(v) : null;
     else if (t === D.chip) info.chip = m.shown(v);
     else if (t === D.channels) info.channels = v.length === 2 ? getU16(v) : 0;
-    else if (t === D.label && v.length >= 2) info.labels.set(m.shown(v.slice(2)), getU16(v));
+    else if (t === D.channel_name && v.length >= 2) info.channelNames.set(getU16(v), m.shown(v.slice(2)));
+    else if (t === D.netif) info.netifs.push(m.shown(v));
     else if (t === D.transport && v.length === 3) info.transports.push({ index: v[0], kind: v[1], usbInterface: v[2] });
     else if (t === D.max_op_ms) info.maxOpMs = v.length === 4 ? getU32(v) : null;
     else if (t === m.TAG_OPS) info.ops = catalog.unpackOps(v);

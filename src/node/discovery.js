@@ -23,7 +23,7 @@
 // answers are merged. IPv4 only.
 //
 // mDNS stays on the local link: behind a NAT (WSL 2's default network, a VM) or across subnets nothing is found - give
-// the probe's address and port then (openTcp({ host, port }); the address is also in probe.config's state over another
+// the probe's address and port then (openTcp({ host, port }); the address is also in the settings' network op over another
 // transport: the wifi state's ipv4).
 import { createSocket } from 'node:dgram';
 import { randomInt } from 'node:crypto';

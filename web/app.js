@@ -2,7 +2,7 @@
 // OEP Probe Tool: connect to a probe from the browser, show what it declares, set up its settings, try simple
 // operations, update its firmware (docs/design.md §4). Everything goes through oep-client-js.
 import {
-  VERSION, bytes, config, core, dump, fixture, targetConsole, openWebHid, openWebSerial, openWebUsb, parseFirmwareManifest, pickFirmware,
+  VERSION, settings, core, dump, fixture, openWebHid, openWebSerial, openWebUsb, parseFirmwareManifest, pickFirmware,
   requestDfuDevice, dfuUpdate, verifyFirmware, Rejected, Unavailable, raiseSpeed, speedText,
 } from './oep-client.js';
 
@@ -15,12 +15,9 @@ const WORDS = {
     takeLock: 'Take the lock (to change things)', notConnected: 'Not connected.',
     tabDescribe: 'Probe', tabSettings: 'Settings', tabTools: 'Tools', tabFirmware: 'Firmware',
     describeRun: 'Read everything it declares', saveJson: 'Save as JSON', read: 'Read', saveToProbe: 'Save in the probe',
-    erase: 'Erase the saved', addItem: 'Add or change', label: 'Label', idle: 'Idle state',
-    passthrough: 'Serial pass-through (a fixture UART\'s RX on a port, while no session uses it)',
-    consolePassthrough: 'Console pass-through (the target\'s debug console on a port, while no session uses it)',
-    rvswdRest: 'RVSWD rest (SWCLK while the line rests)', wireHold: 'Debug wire hold (after its connection closes)',
-    own: 'The probe\'s own item',
-    disable: 'Disable channels (not on this board: never used or touched)',
+    unsetAll: 'Unset all (save after it to empty the storage)', exportFile: 'Export to a file', importFile: 'Import a file',
+    importAsk: 'Make the probe\'s values this file\'s?', addItem: 'Set a value',
+    secretHint: 'A secret: the probe never gives it back and this page never shows it. Left empty, the value it has is kept.',
     uart: 'UART', set: 'Set', remove: 'Remove', configure: 'Configure', send: 'Send',
     gpioHint: 'Plan the channel to oep.fixture.gpio first (it takes the pin for this session).', gpioPlan: 'Plan it',
     uartHint: 'The UART needs its RX / TX planned to oep.fixture.uart in this session.',
@@ -33,21 +30,16 @@ const WORDS = {
     locked: 'lock held', noLock: 'no lock',
     speedHint: 'A UART bridge (serial) probe that offers port_speed runs faster for this session: each candidate is tried, confirmed at the new rate and committed - the first that passes is kept (the probe goes back to 115200 when the lock is released); in use, a rate whose frames keep breaking is left for the session. Which rates pass depends on the bridge chip. The default is 500000: a faster rate is tried only when you enter it here, and is used only after full frames ran 1 s each way at it (host guide §17).',
     speedTry: 'Try the rates',
-    wifi: 'Wi-Fi network', wifiOpen: 'Open network (no passphrase)',
-    wifiHint: 'The probe tries the entries in entry order. The passphrase is write-only: the probe never gives it back and this page never shows it. Left empty, the entry keeps the passphrase it has. Changing the entry in use drops the probe\'s TCP link.',
   },
   ja: {
     unsupported: 'このブラウザには WebUSB / WebSerial / WebHID がありません。Chrome か Edge で、HTTPS か localhost で開いてください。',
     connectUsb: '接続（USB）', connectSerial: '接続（シリアル）', connectHid: '接続（HID）', disconnect: '切断',
     takeLock: 'ロックを取る（変更するとき）', notConnected: 'つながっていません。',
     tabDescribe: 'probe', tabSettings: '設定', tabTools: '操作', tabFirmware: 'firmware',
-    describeRun: '宣言をすべて読む', saveJson: 'JSON で保存', read: '読む', saveToProbe: 'probe に保存', erase: '保存を消す',
-    addItem: '足す・変える', label: 'ラベル', idle: '空きのときの状態',
-    passthrough: 'シリアルの素通し（セッションが使っていない間、fixture UART の RX を口へ流す）',
-    consolePassthrough: 'コンソールの素通し（セッションが使っていない間、target の debug コンソールを口へ流す）',
-    rvswdRest: 'RVSWD の休ませ方（線を休ませる間の SWCLK）', wireHold: 'debug の線の保持（接続を閉じた後）',
-    own: 'probe 独自の項目',
-    disable: '使わない channel（このボードに出ていない: 使わず、触れない）',
+    describeRun: '宣言をすべて読む', saveJson: 'JSON で保存', read: '読む', saveToProbe: 'probe に保存',
+    unsetAll: 'すべて既定に戻す（その後に保存すると保存領域が空になる）', exportFile: 'ファイルに書き出す', importFile: 'ファイルを読み込む',
+    importAsk: 'probe の値をこのファイルの内容にしますか？', addItem: '値を設定する',
+    secretHint: '秘密の値です。probe は返さず、このページも表示しません。空のままなら今の値を保ちます。',
     uart: 'UART', set: '設定', remove: '消す', configure: '設定', send: '送る',
     gpioHint: '先にその channel を oep.fixture.gpio に plan します（このセッションの間、ピンを持ちます）。', gpioPlan: 'plan する',
     uartHint: 'UART は、このセッションで RX / TX を oep.fixture.uart に plan する必要があります。',
@@ -60,8 +52,6 @@ const WORDS = {
     locked: 'ロックあり', noLock: 'ロックなし',
     speedHint: 'port_speed を持つ UART bridge（シリアル）の probe は、このセッションの間速くできます。候補を順に試し、新しい速さで confirm して決め、最初に通った速さを使います（ロックを放すと probe は 115200 に戻る）。使っている間にフレームが壊れ続ける速さはそのセッションでは降ります。通る速さは変換チップで決まります。既定は 500000 で、それより速い速さはここに入れたときだけ試し、両方向それぞれ 1 秒、最大のフレームを流して通ったときだけ使います（oep-if-link §3 の義務 7）。',
     speedTry: '速さを試す',
-    wifi: 'Wi-Fi のネットワーク', wifiOpen: '開いたネットワーク（passphrase なし）',
-    wifiHint: 'probe は entry を番号の順に試します。passphrase は書くだけで、probe は返さず、このページも表示しません。空のままなら、その entry の今の passphrase を保ちます。使っている entry を変えると、probe の TCP のつながりは切れます。',
   },
 };
 /** @type {'en' | 'ja'} */
@@ -201,146 +191,141 @@ function saveDescribe() {
 }
 
 // ---- settings ------------------------------------------------------------------------------------------------------
+// Every item comes from what the probe declares (core §13.2): the table shows each value by its names, the form sets
+// one by category, item and key; a file holds the user's values by name (export / import).
 
-async function probeConfig() {
+function probeSettings() {
   if (!host) throw new Error('not connected');
-  return config.ProbeConfig.open(host);
+  return new settings.Settings(host);
 }
 
-/** @param {any} it */
-function itemText(it) {
-  if (it instanceof config.Label) return `label ${it.channel} "${it.text}"`;
-  if (it instanceof config.Idle) return `idle ${it.channel} ${it.mode}`;
-  if (it instanceof config.Disable) return `disable ${it.channel}`;
-  if (it instanceof config.Passthrough) {
-    return `passthrough port ${it.port}: uart fn ${it.fn} RX ${it.rx}, ${it.baud} baud, format 0x${it.format.toString(16).padStart(2, '0')}`;
-  }
-  if (it instanceof config.ConsolePassthrough) {
-    return `console-passthrough port ${it.port}: wire fn ${it.wireFn} pins ${it.swdio}/${it.swclk}, ≤ ${it.maxSpeed} Hz, `
-      + `console fn ${it.consoleFn} mechanism ${it.mechanism}`;
-  }
-  if (it instanceof config.RvswdRest) return `rvswd-rest ${it.channel} ${it.mode}`;
-  if (it instanceof config.WireHold) return `wire-hold ${it.channel} ${it.mode}`;
-  if (it instanceof config.Wifi) {                                 // never the passphrase: shown() says set / none
-    const w = it.shown();
-    return `wifi ${w.entry} "${w.ssid}", passphrase ${w.passphrase}`;
-  }
-  if (it instanceof config.Ipv4) {
-    return `ipv4 ${it.netif}: ${it.address ?? 'DHCP'}${it.gateway ? `, gateway ${it.gateway}` : ''}${it.dns ? `, dns ${it.dns}` : ''}`;
-  }
-  if (it instanceof config.Own) {
-    const v = it.value;
-    const shown = v === null ? '(secret, kept)' : v instanceof Uint8Array ? bytes.hex(v) : JSON.stringify(v);
-    return `${it.name}${it.key() ? ` [${it.key()}]` : ''} = ${shown}`;
-  }
-  const [name, key, data] = it;
-  return `${name} [${key}] ${bytes.hex(data)}`;
-}
+/** @type {import('../src/settings.js').Catalog | null} */ let catalog = null;
 
-/** The [name, key] unset takes for this item. @param {any} it @returns {[string, number]} */
-function itemKey(it) {
-  if (Array.isArray(it)) return [it[0], it[1]];
-  if (it instanceof config.Own) return [it.name, it.key()];
-  return [it.constructor.NAME, it.key()];
-}
+/** A value as shown (a secret never: the probe gives none). @param {unknown} v */
+const valueText = (v) => (typeof v === 'object' && v !== null ? '(secret)' : JSON.stringify(v));
 
-/** The settings: the items (get), what the probe declares (describe), the storage state (op state) and the network
- * (op network, when the probe declares a netif); both lock-free. Only the forms of the items the probe takes are shown. */
+/** The values (get), the storage state (op state) and the network (op network, when the probe declares a netif); all
+ * lock-free. */
 async function readSettings() {
-  const cfg = await probeConfig();
-  const declared = await cfg.describe();
-  const [items, state, net] = await Promise.all([cfg.items(), cfg.state(),
-    declared.netifs.length ? cfg.network() : Promise.resolve(null)]);
+  const st = probeSettings();
+  catalog = await st.catalog();
+  const [rows, state, net] = await Promise.all([st.show(), (await st.offers('state')) ? st.state() : Promise.resolve(null),
+    catalog.netif.size ? st.network() : Promise.resolve(null)]);
   const netifs = net ? [`TCP port ${net.tcpPort || 'none'}`, ...net.netifs.map((n) => `${n.netif} ${n.state}`
     + (n.entry !== null ? `, entry ${n.entry}` : '') + (n.reason !== 'none' ? `, reason ${n.reason}` : '')
     + (n.rssi ? `, rssi ${n.rssi} dBm` : '') + (n.address ? `, ${n.address}` : ''))] : [];
-  $('settings-state').textContent = [`storage ${state.storage}${state.reason ? ` (${state.reason})` : ''}`
-    + (declared.storageBytes ? ` of ${declared.storageBytes} bytes` : ''), ...netifs].join(' · ');
-  for (const form of /** @type {NodeListOf<HTMLFormElement>} */ (document.querySelectorAll('form[data-item]'))) {
-    form.hidden = !declared.items.includes(/** @type {string} */ (form.dataset.item));
-  }
-  const own = declared.settings.filter((st) => st.form !== config.FORM.named);
-  const ownForm = /** @type {HTMLFormElement} */ ($('form-own'));
-  ownForm.hidden = !own.length;
-  const names = /** @type {HTMLSelectElement} */ (ownForm.elements.namedItem('name'));
-  names.replaceChildren(...own.map((st) => {
-    const o = document.createElement('option');
-    o.textContent = st.name;
-    return o;
-  }));
+  $('settings-state').textContent = [state ? `storage ${state.storage}${state.reason ? ` (${state.reason})` : ''}` : 'no storage',
+    ...netifs].join(' · ');
   const body = /** @type {HTMLTableSectionElement} */ ($('settings-items').querySelector('tbody'));
   body.replaceChildren();
-  for (const it of items) {
+  for (const r of rows) {
     const tr = document.createElement('tr');
+    for (const text of [r.category, r.name, valueText(r.value), r.origin]) {
+      const td = document.createElement('td');
+      td.textContent = text;
+      tr.append(td);
+    }
     const td = document.createElement('td');
-    td.textContent = itemText(it);
-    const td2 = document.createElement('td');
-    const key = itemKey(it);
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.textContent = t('remove');
-    b.dataset.needs = 'lock';
-    b.onclick = () => act(async () => { await (await probeConfig()).unset([key]); await readSettings(); });
-    td2.append(b);
-    tr.append(td, td2);
+    if (r.origin === 'user') {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = t('remove');
+      b.dataset.needs = 'lock';
+      b.onclick = () => act(async () => { await probeSettings().unsetNamed(r.category, [r.name]); await readSettings(); });
+      td.append(b);
+    }
+    tr.append(td);
     body.append(tr);
   }
+  fillSettingForm();
   refreshButtons();
 }
 
-/** A probe's own item from the form: its value as the form the probe declares takes it. @param {Record<string, any>} d */
-async function ownItem(d) {
-  const st = (await (await probeConfig()).describe()).byName(String(d.name));
-  const v = String(d.value ?? '');
-  const value = st.secret && v === '' ? null : st.form === config.FORM.u32 ? Number(v)
-    : st.form === config.FORM.bool ? v === 'true' || v === '1' : st.form === config.FORM.bytes ? bytes.fromHex(v) : v;
-  return new config.Own(st.name, value, +d.key);
+/** @param {HTMLSelectElement} sel @param {[string, string][]} options value, text */
+function setOptions(sel, options) {
+  const was = sel.value;
+  sel.replaceChildren(...options.map(([value, text]) => Object.assign(document.createElement('option'), { value, textContent: text })));
+  if (options.some(([v]) => v === was)) sel.value = was;
 }
 
-/** @param {any[]} items */
-async function setItems(items) {
-  await (await probeConfig()).set(items);
+/** The form's selects from the catalog: the categories with items, the chosen category's items, the chosen item's keys
+ * and, for a value that names something, its choices. */
+function fillSettingForm() {
+  const form = /** @type {HTMLFormElement} */ ($('form-setting'));
+  const el = (/** @type {string} */ n) => /** @type {HTMLSelectElement} */ (form.elements.namedItem(n));
+  const cat = catalog;
+  form.hidden = !cat || ![...cat.items.values()].some((items) => items.length);
+  if (!cat) return;
+  setOptions(el('category'), [...cat.category].filter(([fn]) => cat.items.get(fn)?.length).map(([, c]) => [c, c]));
+  const fn = cat.fnOf(el('category').value);
+  const items = fn === null ? [] : cat.items.get(fn) ?? [];
+  setOptions(el('item'), items.map((it) => [String(it.number), it.name]));
+  const it = items.find((x) => String(x.number) === el('item').value);
+  if (!it) return;
+  const keys = it.keyKind === 'none' ? [] : it.keyKind === 'index' ? Array.from({ length: it.keys }, (_, k) => String(k))
+    : [...cat.table(it.keyKind).values()];
+  el('key').parentElement?.toggleAttribute('hidden', it.keyKind === 'none');
+  setOptions(el('key'), keys.map((k) => [k, k]));
+  /** @type {string[] | null} */
+  const choices = it.form === 'enum' ? [...it.choices.values()] : it.form === 'bool' ? ['true', 'false']
+    : it.form === 'channel' ? [...cat.channel.values()] : it.form === 'transport' ? [...cat.route.values()]
+      : it.form === 'fn' ? [...cat.category.values()] : null;
+  el('choice').hidden = !choices;
+  setOptions(el('choice'), (choices ?? []).map((c) => [c, c]));
+  const value = input('setting-value');
+  value.hidden = !!choices;
+  value.type = it.secret ? 'password' : 'text';
+  value.autocomplete = it.secret ? 'new-password' : 'off';
+  value.placeholder = it.form === 'ipv4' ? 'a.b.c.d' : it.form === 'u32' ? 'number' : it.form === 'bytes' ? 'hex bytes' : '';
+  $('setting-hint').textContent = it.secret ? t('secretHint') : '';
+}
+
+/** Set the form's value by name. A secret left empty keeps what the probe has (0 bytes, core §13.5); the field is
+ * cleared once read and never written to the log. */
+async function setFromForm() {
+  const form = /** @type {HTMLFormElement} */ ($('form-setting'));
+  const d = Object.fromEntries(new FormData(form).entries());
+  const value = input('setting-value');
+  const cat = /** @type {import('../src/settings.js').Catalog} */ (catalog);
+  const it = cat.item(/** @type {number} */ (cat.fnOf(String(d.category))), +d.item);
+  if (!it) throw new Error('no such item');
+  const flat = it.keyKind === 'none' ? it.name : it.name.replace('{}', String(d.key));
+  const raw = String(value.hidden ? d.choice : value.value);
+  value.value = '';
+  const st = probeSettings();
+  if (it.secret && raw === '') {
+    const [found, key] = /** @type {[import('../src/settings.js').Item, number]} */ (cat.resolve(String(d.category), flat));
+    await st.set([[found.fn, found.number, key, new Uint8Array()]]);
+  } else {
+    await st.setNamed(String(d.category), { [flat]: it.form === 'bool' ? raw === 'true' : raw });
+  }
+  log(it.secret ? `set ${flat}` : `set ${flat} = ${raw}`);
   await readSettings();
-  log('set');
 }
 
-/** @param {HTMLFormElement} form */
-const formData = (form) => Object.fromEntries(new FormData(form).entries());
+/** The user's values to a file (settings file §3; secrets as { secret: true }). */
+async function exportSettings() {
+  const doc = await probeSettings().export();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([`${JSON.stringify(doc, null, 2)}\n`], { type: 'application/json' }));
+  a.download = `${info?.unitId ?? 'probe'}.oep-settings.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 
-function wireForms() {
-  const on = (/** @type {string} */ id, /** @type {(d: Record<string, any>) => any[] | Promise<any[]>} */ make) => {
-    const form = /** @type {HTMLFormElement} */ ($(id));
-    form.onsubmit = (e) => { e.preventDefault(); act(async () => setItems(await make(formData(form)))); };
-  };
-  on('form-label', (d) => [new config.Label({ channel: +d.channel, text: d.text })]);
-  on('form-idle', (d) => [new config.Idle({ channel: +d.channel, mode: d.mode })]);
-  on('form-disable', (d) => String(d.channels).split(',').filter((s) => s.trim() !== '')
-    .map((s) => new config.Disable({ channel: +s.trim() })));
-  on('form-passthrough', (d) => [new config.Passthrough({ port: +d.port, fn: +d.fn, rx: +d.rx, baud: +d.baud,
-    format: fixture.FixtureUart.formatByte(+d.dataBits, d.parity, +d.stopBits) })]);
-  on('form-console-passthrough', async (d) => {                   // mechanism: its place in the console's describe list
-    if (!host) throw new Error('not connected');
-    const mechanism = await (await targetConsole.Console.open(host, { fn: +d.consoleFn })).mechanismNumber(String(d.mechanism));
-    if (!mechanism) throw new Error(`console fn ${d.consoleFn} declares no mechanism ${d.mechanism}`);
-    return [new config.ConsolePassthrough({ port: +d.port, wireFn: +d.wireFn, swdio: +d.swdio,
-      swclk: d.swclk === '' ? 0xffff : +d.swclk, maxSpeed: +d.maxSpeed, consoleFn: +d.consoleFn, mechanism })];
-  });
-  on('form-rvswd-rest', (d) => [new config.RvswdRest({ channel: +d.channel, mode: d.mode })]);
-  on('form-wire-hold', (d) => [new config.WireHold({ channel: +d.channel, mode: d.mode })]);
-  on('form-ipv4', (d) => [new config.Ipv4({ netif: String(d.netif), address: d.address || null, gateway: d.gateway || null,
-    dns: d.dns || null })]);
-  on('form-own', async (d) => [await ownItem(d)]);
-  // the passphrase is write-only (probe.config §1.4, host guide §15.1): a password field, cleared once read, never
-  // filled from the probe or written to the log; empty keeps the entry's (pass_len 0xFF), "open" sends none
-  const wifiForm = /** @type {HTMLFormElement} */ ($('form-wifi'));
-  wifiForm.onsubmit = (e) => {
-    e.preventDefault();
-    const pass = input('wifi-pass');
-    const d = formData(wifiForm);
-    const passphrase = d.open ? null : pass.value === '' ? config.KEEP : pass.value;
-    pass.value = '';
-    act(async () => setItems([new config.Wifi({ entry: +d.entry, ssid: String(d.ssid), passphrase })]));
-  };
+/** A file's values made the probe's (settings file §4): what changes is shown and asked first. @param {File} file */
+async function importSettings(file) {
+  const st = probeSettings();
+  const plan = await st.planImport(JSON.parse(await file.text()));
+  const lines = [`set ${plan.sets.length}, unset ${plan.unsets.length}`,
+    ...(plan.otherProbe ? ['the file is of another probe'] : []),
+    ...plan.unresolved.map(([c, n]) => `not on this probe: ${c} ${n}`),
+    ...plan.secretWithoutValue.map(([c, n]) => `a secret the probe has no value for (set it): ${c} ${n}`)];
+  if (!plan.sets.length && !plan.unsets.length) { log(lines.join('; ')); return; }
+  if (!window.confirm(`${t('importAsk')}\n\n${lines.join('\n')}`)) return;
+  await st.applyImport(plan);
+  log(lines.join('; '));
+  await readSettings();
 }
 
 // ---- tools ---------------------------------------------------------------------------------------------------------
@@ -452,10 +437,19 @@ function main() {
   $('describe-run').onclick = () => act(runDescribe);
   $('describe-save').onclick = saveDescribe;
   $('settings-read').onclick = () => act(readSettings);
-  $('settings-save').onclick = () => act(async () => { const h = await (await probeConfig()).save(); log(`saved (hash ${h.toString(16)})`); await readSettings(); });
-  $('settings-erase').onclick = () => act(async () => { await (await probeConfig()).erase(); log('erased'); await readSettings(); });
+  $('settings-save').onclick = () => act(async () => { log(`saved (generation ${await probeSettings().save()})`); await readSettings(); });
+  $('settings-unset-all').onclick = () => act(async () => { await probeSettings().unsetAll(); log('unset all'); await readSettings(); });
+  $('settings-export').onclick = () => act(exportSettings);
+  $('settings-import-pick').onclick = () => input('settings-import').click();
+  input('settings-import').onchange = () => {
+    const file = input('settings-import').files?.[0];
+    input('settings-import').value = '';
+    if (file) act(() => importSettings(file));
+  };
+  const settingForm = /** @type {HTMLFormElement} */ ($('form-setting'));
+  settingForm.onchange = (e) => { if (/** @type {HTMLElement} */ (e.target).id !== 'setting-value') fillSettingForm(); };
+  settingForm.onsubmit = (e) => { e.preventDefault(); act(setFromForm); };
   $('fw-dfu').onclick = () => act(writeFirmware);
-  wireForms();
   wireTools();
   applyWords();
   refreshButtons();

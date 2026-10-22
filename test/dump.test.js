@@ -98,12 +98,11 @@ test('the core (fn 0) is described first and never listed; its describe is the p
   const d = /** @type {Record<string, string>} */ (row.declares);
   assert.equal(d['unit id'], 'fafe00000003');
   assert.equal(d.transport, '0 = UART bridge');
-  assert.ok(d.label.includes('16 = SWIO') && d.label.includes('23 = NRST'));   // repeated tags all kept
-  const cfg = dump.describeOffer(/** @type {dump.Offer} */ (caps.offers.find((o) => o.entry.name === 'oep.probe.config'))).declares;
-  assert.ok(cfg && String(cfg.setting).includes('label') && cfg.slots === undefined);   // named items (probe.config §4)
+  assert.ok(d['channel name'].includes('16 = GPIO16') && d['channel name'].includes('23 = GPIO23'));   // repeated tags all kept
+  assert.equal(d.netif, 'wifi');
   const text = dump.toText(caps);
   // the core block reads like every other: its heading, the summary, then what it declares
-  assert.match(text, /\ncore {9}fn 0 {3}\(no name; the probe itself\)\n {14}the core: confirm, list, describe, clock, open \/ end \/ keepalive, lock state; describe = the probe itself\n {16}ops: confirm, list, describe, clock, open, end, keepalive, lock_state\n/);
+  assert.match(text, /\ncore {9}fn 0 {3}\(no name; the probe itself\)\n {14}the core: confirm, list, describe, clock, open \/ end \/ keepalive, lock state, the settings \(core §13\); describe = the probe itself\n {16}ops: confirm, list, describe, clock, open, end, keepalive, lock_state, get, set, unset, save, state, network\n/);
   assert.ok(!text.includes('oep.core'));
   assert.deepEqual(dump.toData(caps).core.declares?.['unit id'], 'fafe00000003');
 }, 'cobs'));
@@ -121,9 +120,9 @@ test('filters', { skip: !haveVirtualBench }, () => withBench('esp32-v003', async
 test('p4 follows the agreed names; text and JSON', { skip: !haveVirtualBench }, () => withBench('p4-x035', async (hst) => {
   const caps = await dump.collect(hst);
   const byName = new Map(caps.offers.map((o) => [o.entry.name, o]));
-  assert.equal(caps.offers.length, 15);                             // fn 0 not among them; oep.probe.plan / restart / link listed
+  assert.equal(caps.offers.length, 14);                             // fn 0 not among them; oep.probe.plan / restart / link listed
   assert.equal(caps.requests.list, 1);
-  assert.equal(caps.requests.describe, 16);                         // fn 0 and every listed fn
+  assert.equal(caps.requests.describe, 15);                         // fn 0 and every listed fn
   const L = reg.PROBE_LINK.op, P = reg.PROBE_PLAN.op;
   assert.ok([L.source, L.sink].every((op) => byName.get('oep.probe.link')?.description.ops?.has(op)));
   assert.ok(!byName.get('oep.probe.link')?.description.ops?.has(L.port_speed));   // no UART bridge here
@@ -136,7 +135,7 @@ test('p4 follows the agreed names; text and JSON', { skip: !haveVirtualBench }, 
   assert.deepEqual(i2c.description.roles.get(1), i2c.description.roles.get(2));
   assert.ok(!i2c.description.roles.get(1)?.includes(2));           // reserved for RVSWD
   const text = dump.toText(caps);
-  assert.match(text, /^OEP revision 1, max frame 1024 bytes; 15 interfaces in 1 list and 16 describe requests\n/);
+  assert.match(text, /^OEP revision 1, max frame 1024 bytes; 14 interfaces in 1 list and 15 describe requests\n/);
   assert.ok(text.includes('instance 0') && text.includes('oep.fixture.i2c-target'));
   assert.ok(!text.includes('preloaded tx') && !text.includes('clock stretching'));   // one form; stretch: an op (ops)
   assert.ok(text.includes('ops: configure, read_rx, preload_tx, status, stretch'));
@@ -149,7 +148,7 @@ test('p4 follows the agreed names; text and JSON', { skip: !haveVirtualBench }, 
   assert.deepEqual(caps.missing, []);
   const data = JSON.parse(dump.toJson(caps));
   assert.equal(data.maxFrame, 1024);
-  assert.equal(data.interfaces.length, 15);
+  assert.equal(data.interfaces.length, 14);
   const rvswd = data.interfaces.find((/** @type {any} */ i) => i.name === 'oep.wire.rvswd');
   assert.equal(rvswd.roles, undefined);                             // rvswd declares a fixed pin set, not roles
   assert.deepEqual(rvswd.pinGroups['1'], { SWDIO: 2, SWCLK: 54 });
@@ -161,5 +160,4 @@ test('a board whose wire takes any pins', { skip: !haveVirtualBench }, () => wit
   const wire = dump.describeOffer(/** @type {dump.Offer} */ (caps.offers.find((o) => o.entry.name === 'oep.wire.rvswd')));
   assert.equal(wire.name, 'oep.wire.rvswd');
   assert.deepEqual(wire.roles, { SWDIO: '0-18,20-29', SWCLK: '0-18,20-29', reset: '0-18,20-29' });
-  assert.ok(!caps.offers.some((o) => o.entry.name === 'oep.probe.config'));
 }));

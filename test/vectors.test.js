@@ -15,12 +15,12 @@ import { fileURLToPath } from 'node:url';
 import * as catalog from '../src/catalog.js';
 import * as cobs from '../src/cobs.js';
 import * as core from '../src/core.js';
-import * as config from '../src/config.js';
+import * as settings from '../src/settings.js';
 import * as m from '../src/message.js';
 import { fromHex, hex } from '../src/bytes.js';
 import { FnNotUsable, Locked, NotUsable, Rejected, Unavailable, Unsupported, rejection } from '../src/errors.js';
 import * as reg from '../src/registry.js';
-import { Writer, concat, getU32 } from '../src/bytes.js';
+import { Writer, concat, getU16, getU32 } from '../src/bytes.js';
 import { Host } from '../src/host.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -347,68 +347,60 @@ function client(c, session = null) {
   for (const [k, name] of Object.entries(c.fns)) {
     const fn = Number(k), table = /** @type {any} */ (reg.INTERFACES)[/** @type {string} */ (name)];
     hst.fns.set(/** @type {string} */ (name), fn); hst.revisions.set(fn, 1);
-    // every op of the interface, max_length 256 (as oep-client-python's scripted); probe.config's settings, the
-    // console's standard mechanisms
+    // every op of the interface, max_length 256 (as oep-client-python's scripted); the console's standard mechanisms
     /** @type {[number, Uint8Array][]} */
     const d = table ? [[m.TAG_OPS, catalog.packOps(Object.values(table.op))], [catalog.COMMON.max_length, new Writer().u16(256).done()]] : [];
-    if (name === config.ProbeConfig.NAME) d.push(...VECTOR_SETTINGS);
     if (name === 'oep.target.console') {
       for (const n of ['sdi', 'dmdata', 'dmseq']) d.push([reg.TARGET_CONSOLE.tlv.describe.mechanism, new TextEncoder().encode(n)]);
     }
     hst.describes.set(fn, d);
   }
-  hst.describes.set(0, [[reg.CORE.tlv.describe.max_op_ms, new Writer().u32(1000).done()]]);
+  hst.describes.set(0, [[reg.CORE.tlv.describe.max_op_ms, new Writer().u32(1000).done()],
+    ...(r.fn === m.CORE_FN ? /** @type {[number, Uint8Array][]} */ ([[m.TAG_OPS, catalog.packOps(Object.values(reg.CORE.op))]]) : [])]);
   return { hst, sent };
 }
 
-/** One describe setting (probe.config §4): form keys max_len flags name.
- * @param {string} name @param {number} keys @param {number} [form] @param {number} [maxLen] @param {number} [flags]
- * @returns {[number, Uint8Array]} */
-const setting = (name, keys, form = 0, maxLen = 0, flags = 0) =>
-  [config.DESCRIBE.setting, concat(new Writer().u8(form).u16(keys).u8(maxLen).u8(flags).done(), new TextEncoder().encode(name))];
+/** The settings cases this client sends and reads (oep-client-python's SETTINGS_CLIENT). */
+const SETTINGS_CLIENT = ['settings state: no saved', 'settings state: independent', 'settings get:', 'settings unset:',
+  'settings set: longest label', 'settings set: changed contents', 'settings set: disable conflicts',
+  'settings set: idle conflicts', 'settings set: ipv4 static'];
 
-/** The vectors' probe.config lists these items in this order (oep-spec tools/oepvectors1.py) and netif [wifi]. */
-const VECTOR_SETTINGS = /** @type {[number, Uint8Array][]} */ ([setting('label', 0xffff), setting('idle', 0xffff),
-  setting('disable', 0xffff), setting('wifi', 4), setting('ipv4', 2), setting('com.example.ntp-server', 1, config.FORM.text, 32),
-  [config.DESCRIBE.netif, new TextEncoder().encode('wifi')]]);
-
-/** The probe.config cases this client sends and reads (oep-client-python's CONFIG_CLIENT). */
-const CONFIG_CLIENT = ['probe.config state: no saved', 'probe.config state: independent', 'probe.config get:',
-  'probe.config unset:', 'probe.config set: longest', 'probe.config set: changed contents',
-  'probe.config set: disable conflicts', 'probe.config set: idle conflicts'];
-
-/** probe.config §1-§3: the client's get / set / unset / state are the case's bytes, and it reads the answers - get's
+/** core §13.5, §13.7: the client's get / set / unset / state are the case's bytes, and it reads the answers - get's
  * count apart from the answer's own TLVs. @param {any} c @returns {Promise<Uint8Array[] | null>} */
-async function configOnClient(c) {
+async function settingsOnClient(c) {
   const name = /** @type {string} */ (c.name);
-  if (!CONFIG_CLIENT.some((p) => name.startsWith(p))) return null;
+  if (!SETTINGS_CLIENT.some((p) => name.startsWith(p))) return null;
   const r = m.Request.unpack(hx(c.request_hex)), res = m.Result.unpack(hx(c.answer_hex));
   const { hst, sent } = client(c, S);
-  const cfg = new config.ProbeConfig(hst, r.fn, config.ProbeConfig.NAME);
-  if (name.startsWith('probe.config state')) {
-    const st = await cfg.state();
-    assert.deepEqual([st.storage, st.savedGeneration, st.reason], name.includes('no saved') ? ['none', 0, null] : ['partial', 0, 'item'], name);
-  } else if (name.startsWith('probe.config get')) {
+  const st = new settings.Settings(hst);
+  if (name.startsWith('settings state')) {
+    const state = await st.state();
+    assert.deepEqual([state.storage, state.savedGeneration, state.reason], name.includes('no saved') ? ['none', 0, null] : ['partial', 0, 'item'], name);
+  } else if (name.startsWith('settings get')) {
     const first = r.payload[0] | (r.payload[1] << 8);
     if (first) {
-      const rd = new m.Reader((await hst.call(r.fn, config.ProbeConfig.GET, r.payload, { locked: false })).payload);
+      const rd = new m.Reader((await st.call('get', r.payload, { locked: false })).payload);
       assert.deepEqual([rd.u8(), rd.u32(), rd.u8()], [0, 2, 0], name);
-    } else if (name.includes('wifi')) {
-      // the passphrase write-only (§1.4)
-      assert.deepEqual(await cfg.get(), { generation: 2, items: [['wifi', 0, Uint8Array.of(3, ...new TextEncoder().encode('lab'), 0xff)]] }, name);
     } else {
-      assert.deepEqual(await cfg.get(), { generation: 2, items: [['idle', 4, Uint8Array.of(0)]] }, name);
+      const { generation, values } = await st.get();
+      assert.equal(generation, 2, name);
+      assert.deepEqual(values.map((v) => [v.fn, v.key, v.origin]), (name.includes('secret') ? [0, 0] : [4]).map((k) => [0, k, 'user']), name);
     }
-  } else if (name.startsWith('probe.config unset')) {
-    assert.equal(await cfg.unset(name.includes('wifi') ? [['wifi', 0]] : [['disable', 4]]), 3, name);
+  } else if (name.startsWith('settings unset')) {
+    /** @type {settings.KeyRow[]} */
+    const keys = [];
+    for (let i = 0, at = 1; i < r.payload[0]; i++, at += 5) keys.push([getU16(r.payload, at), r.payload[at + 2], getU16(r.payload, at + 3)]);
+    assert.equal(await st.unset(keys), 3, name);
   } else {
-    const decl = await cfg.describe();
-    const items = config.splitItems(r.payload.slice(1), r.payload[0])[0].map(([n, k, d]) => {
-      const st = /** @type {config.Setting} */ (decl.byNumber(n));
-      return /** @type {config.Item} */ (config.decode(st.name, k, d, st));
-    });
-    if (res.resolution === m.REJECTED) await assert.rejects(cfg.set(items), Unavailable, name);
-    else assert.equal(await cfg.set(items), 2, name);
+    /** @type {settings.SetRow[]} */
+    const values = [];
+    for (let i = 0, at = 1; i < r.payload[0]; i++) {
+      const n = getU16(r.payload, at + 5);
+      values.push([getU16(r.payload, at), r.payload[at + 2], getU16(r.payload, at + 3), r.payload.slice(at + 7, at + 7 + n)]);
+      at += 7 + n;
+    }
+    if (res.resolution === m.REJECTED) await assert.rejects(st.set(values), Unavailable, name);
+    else assert.equal(await st.set(values), getU32(res.payload), name);
   }
   return sent.slice(-1);
 }
@@ -564,7 +556,7 @@ async function onClient(c) {
     }
     return sent.slice(-1);
   }
-  if (name.startsWith('probe.config')) return configOnClient(c);
+  if (name.startsWith('settings')) return settingsOnClient(c);
   if (CAPTURE_CLIENT.some((p) => name.startsWith(p))) return captureOnClient(c);
   return null;
 }
@@ -634,15 +626,35 @@ async function captureOnClient(c) {
   return sent.slice(-1);
 }
 
-test('ops: a wifi set past the probe\'s max_frame is refused before sending (probe.config §1.4)', async () => {
-  const c = OPS.find((/** @type {any} */ x) => x.name.includes('the longest wifi item'));
-  const { hst, sent } = client(c, S);
-  /** @type {any} */ (hst.limits).maxFrame = reg.MIN_MAX_FRAME;
-  const w = new config.Wifi({ entry: 0, ssid: 's'.repeat(config.SSID_MAX), passphrase: '0123456789abcdef'.repeat(4) });
-  await assert.rejects(new config.ProbeConfig(hst, 8, config.ProbeConfig.NAME).set([w]),
-    (e) => e instanceof RangeError && e.message.includes(`max_frame ${reg.MIN_MAX_FRAME}`)
-      && e.message.includes(String(config.WIFI_MIN_MAX_FRAME)) && !e.message.includes('0123'));
-  assert.equal(sent.length, 0);
+// ---- the settings file (settings_file.json): export and import by names ------------------------------------------------
+
+const FILE = load('settings_file.json');
+
+/** A case's probe: fn 0's describe TLVs and each listed fn's. @param {any} probe */
+const vectorCatalog = (probe) => new settings.Catalog(m.splitTlvs(hx(probe.fn0_describe_tlvs_hex)),
+  probe.list.map((/** @type {any} */ e) => ({ fn: e.fn, name: e.name, instance: e.instance, tlvs: m.splitTlvs(hx(e.describe_tlvs_hex)) })));
+
+/** get's values back to back (fn number key origin len data). @param {string} h */
+function valuesOf(h) {
+  const data = hx(h);
+  let count = 0;
+  for (let at = 0; at + 8 <= data.length; at += 8 + getU16(data, at + 6)) count++;
+  return settings.splitValues(data, count)[0];
+}
+
+test('settings file: export writes the user values with the probe\'s names (settings file §2, §3)', () => {
+  for (const c of FILE.export) assert.deepEqual(settings.exportFile(vectorCatalog(c.probe), valuesOf(c.get_values_hex)), c.file, c.name);
+});
+
+test('settings file: import into a probe with other numbers (settings file §4)', () => {
+  for (const c of FILE.import) {
+    const plan = settings.planImport(vectorCatalog(c.probe), valuesOf(c.current_values_hex), c.file);
+    assert.deepEqual(plan.sets.map(([fn, n, k, d]) => [fn, n, k, hex(d)]),
+      c.expected_set.map((/** @type {any} */ r) => [r.fn, r.number, r.key, r.data_hex]), c.name);
+    assert.deepEqual(plan.unsets, c.expected_unset.map((/** @type {any} */ r) => [r.fn, r.number, r.key]), c.name);
+    assert.deepEqual(plan.secretWithoutValue, c.secret_without_value, c.name);
+    assert.deepEqual(plan.unresolved, c.unresolved, c.name);
+  }
 });
 
 test('ops: where this client has the op, its request is the case\'s and its reading gives the case\'s values', async () => {

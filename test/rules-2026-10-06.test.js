@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import * as reg from '../src/registry.js';
 import * as cobs from '../src/cobs.js';
 import * as m from '../src/message.js';
-import * as config from '../src/config.js';
+import * as settings from '../src/settings.js';
 import * as dump from '../src/dump.js';
 import { Writer } from '../src/bytes.js';
 import { NotOepProbe, NotUsable, Rejected, TransportFailed } from '../src/errors.js';
@@ -295,11 +295,11 @@ test('C-38: on a length link the resend\'s silence fails it too, after the resyn
   assert.equal(hst.link.failedTransport, '');                    // resynced already: nothing to recover
 });
 
-// ---- probe.config §3: the storage's state is one answer ------------------------------------------------------------
+// ---- core §13.7: the storage's state is one answer ------------------------------------------------------------
 
-test('probe.config state: storage_state saved_generation reason, one answer (probe.config §2, §3)', async () => {
-  const cfg = new config.ProbeConfig(/** @type {any} */ (null), 9, config.ProbeConfig.NAME);
-  const S = reg.PROBE_CONFIG.enum.storage_state, R = reg.PROBE_CONFIG.enum.storage_unreadable;
+test('settings state: storage_state saved_generation reason, one answer (core §13.7)', async () => {
+  const cfg = new settings.Settings(/** @type {any} */ (null));
+  const S = reg.CORE.enum.storage_state, R = reg.CORE.enum.storage_reason;
   const answers = [new Writer().u8(S.applied).u32(0x1234).u8(R.none).done(), new Writer().u8(S.partial).u32(0).u8(R.item).done()];
   let i = 0;
   cfg.call = /** @type {any} */ (async () => ({ payload: answers[i++] }));
