@@ -579,6 +579,10 @@ test('events of an earlier start are passed over (capture §3.4)', opts, () => w
   await lc.configure({ rate: 1_000_000, samples: 64 });
   await lc.subscribe();
   await lc.start();                                                    // generation 1: segment, stopped
+  // its end first (the virtual bench captures in real time: a start while it still captures is refused, cause 6);
+  // status takes no event
+  let st = await lc.status();
+  for (let i = 0; i < 200 && (st.state === c.STATE.waiting || st.state === c.STATE.capturing); i++) { await sleep(5); st = await lc.status(); }
   await lc.start();                                                    // generation 2: its events after 1's
   const seg = await lc.nextEvent(null, 2000);
   assert.deepEqual([seg?.kind, seg?.generation, lc.staleEvents], [c.EVENT_SEGMENT, 2, 2]);
