@@ -384,7 +384,7 @@ async function settingsOnClient(c) {
     } else {
       const { generation, values } = await st.get();
       assert.equal(generation, 2, name);
-      assert.deepEqual(values.map((v) => [v.fn, v.key, v.origin]), (name.includes('secret') ? [0, 0] : [4]).map((k) => [0, k, 'user']), name);
+      assert.deepEqual(values.map((v) => [v.fn, v.key]), (name.includes('secret') ? [0, 0] : [4]).map((k) => [0, k]), name);
     }
   } else if (name.startsWith('settings unset')) {
     /** @type {settings.KeyRow[]} */
@@ -634,15 +634,15 @@ const FILE = load('settings_file.json');
 const vectorCatalog = (probe) => new settings.Catalog(m.splitTlvs(hx(probe.fn0_describe_tlvs_hex)),
   probe.list.map((/** @type {any} */ e) => ({ fn: e.fn, name: e.name, instance: e.instance, tlvs: m.splitTlvs(hx(e.describe_tlvs_hex)) })));
 
-/** get's values back to back (fn number key origin len data). @param {string} h */
+/** get's values back to back (fn number key len data). @param {string} h */
 function valuesOf(h) {
   const data = hx(h);
   let count = 0;
-  for (let at = 0; at + 8 <= data.length; at += 8 + getU16(data, at + 6)) count++;
+  for (let at = 0; at + 7 <= data.length; at += 7 + getU16(data, at + 5)) count++;
   return settings.splitValues(data, count)[0];
 }
 
-test('settings file: export writes the user values with the probe\'s names (settings file §2, §3)', () => {
+test('settings file: export writes every value with the probe\'s names (settings file §2, §3)', () => {
   for (const c of FILE.export) assert.deepEqual(settings.exportFile(vectorCatalog(c.probe), valuesOf(c.get_values_hex)), c.file, c.name);
 });
 

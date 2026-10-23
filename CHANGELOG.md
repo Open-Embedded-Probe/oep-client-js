@@ -1,6 +1,17 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) **Names and initial values (oep-spec cc82b5e), as oep-client-python 6a58bd9.** A settings value has no origin: get's
+  value is fn number key len data (`Value.origin`, `show()`'s origin gone); export writes every value, import compares with
+  every value and unsets first; `unsetAll` takes every value; `changeable()`. Ports and lines (host guide §5.3): the label
+  `S.N` is port S's line N, compared ignoring ASCII case and shown as written - `findLine(source, name, { port })`,
+  `portsNamed`, `portLine`; `core.firmwareLabels` gone. The page's settings tab: no origin column, every value removable
+  when the probe lets values change, the form hidden on a probe of initial values only. Registry and test/vectors synced.
+- (JA) **名前と初期値（oep-spec cc82b5e）に oep-client-python 6a58bd9 と同じく合わせた。** 設定の値は出どころを持たない。get の値は
+  fn number key len data（`Value.origin` と `show()` の origin を無くした）。書き出しは全部の値、入れ直しは全部の値と比べ unset を先に。
+  `unsetAll` は全部の値を消す。`changeable()`。口と線（host ガイド §5.3）: label `S.N` が口 S の線 N で、大小文字を区別せずに比べ、
+  書いたとおりに見せる（`findLine(source, name, { port })`、`portsNamed`、`portLine`。`core.firmwareLabels` は無くした）。ページの設定の
+  タブは出どころの列を外し、値を変えられる probe ではどの値も消せる。初期値だけの probe では欄を出さない。registry と test/vectors を同期した。
 - (EN) **The settings follow the core (oep-spec core §13, 9fc6ad9 .. c4fbd6e), as oep-client-python.** `config`
   (`oep.probe.config`) is gone; `settings` (settings.js) has fn 0's get / set / unset / save / state / network, the names
   of a boot (`Catalog`: categories, items, choices, channel / route / netif names), values by name (`show`, `setNamed`,

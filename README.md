@@ -146,11 +146,13 @@ What is there:
 - the settings (oep-spec core §13; settings.js): fn 0's get / set / unset / save / state / network. Each owner - the core
   (fn 0) or an interface - declares its items in its describe; `new Settings(host)`: `catalog()` = the names of this
   boot (each fn's category `core` / `name/instance`, the items and their choices, the channel / route / netif names),
-  `show()` = every value as `{ category, name, value, origin }` (origin fixed / default / user), `setNamed(category,
+  `show()` = every value as `{ category, name, value }` (no origin: the firmware's initial values are values like any
+  other, core §13.4), `changeable()` (set / unset offered), `setNamed(category,
   { flat: value })` / `unsetNamed` / `unsetAll`, raw `set` / `unset` by [fn, number, key], `save()`, `state()`,
   `needsSave()`, `network()`; `export()` / `planImport(doc)` / `applyImport(plan)` = the settings file
-  (oep-client-python docs/oep-settings-file.ja.md); `findLine(source, name, { profile, single })` is host guide §5.3's
-  line lookup over every channel label (the firmware's fixed ones too). A secret (the Wi-Fi passphrase) is never read:
+  (oep-client-python docs/oep-settings-file.ja.md); `findLine(source, name, { port })` is host guide §5.3's line
+  lookup: port S's line N is the label `S.N`, compared ignoring ASCII case (without a port, the one port named);
+  `portsNamed(labels)` the ports as written. A secret (the Wi-Fi passphrase) is never read:
   get gives no data, `show()` and the file `{ secret: true }`; 0 bytes in a set keep it. The page's settings tab sets a
   secret in a password field that is cleared once read and never filled back (empty: keep).
 - capture: configure's TLVs follow core §2.3 (a value the probe does not handle is `Unsupported` with the tag as

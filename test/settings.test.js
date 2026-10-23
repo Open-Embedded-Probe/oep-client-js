@@ -24,7 +24,9 @@ async function withSettings(args, body) {
   const hst = await openTcp({ port: bench.port });
   try {
     await hst.open(3000);
-    await body(new Settings(hst), hst);
+    const st = new Settings(hst);
+    boots.set(st, await values(st));   // the profile's initial values (core §13.4)
+    await body(st, hst);
     await hst.end();
   } finally {
     await hst.link.close();
@@ -41,9 +43,16 @@ const ch = (n) => `GPIO${n}`;
 /** @param {number} n */ const idle = (n) => `channel.${ch(n)}.idle`;
 /** @param {number} n */ const disable = (n) => `channel.${ch(n)}.disable`;
 
-/** The user values as { "category name": value }. @param {Settings} st */
+/** Every value as { "category name": value }. @param {Settings} st @returns {Promise<Record<string, unknown>>} */
+async function values(st) {
+  return Object.fromEntries((await st.show()).map((r) => [`${r.category} ${r.name}`, r.value]));
+}
+/** @type {WeakMap<Settings, Record<string, unknown>>} */
+const boots = new WeakMap();
+/** The values that differ from the boot's (the profile's initial values) as { "category name": value }. @param {Settings} st */
 async function user(st) {
-  return Object.fromEntries((await st.show()).filter((r) => r.origin === 'user').map((r) => [`${r.category} ${r.name}`, r.value]));
+  const boot = boots.get(st) ?? {};
+  return Object.fromEntries(Object.entries(await values(st)).filter(([k, v]) => !(k in boot) || JSON.stringify(boot[k]) !== JSON.stringify(v)));
 }
 
 /** An item's number on the wire, by name. @param {Settings} st @param {string} name @param {number} [fn] */
@@ -89,20 +98,17 @@ function setting(name, form, kind, keys = 0, maxLen = 0) {
     .u8(maxLen).u8(0).done(), new TextEncoder().encode(name))];
 }
 
-test('the label convention: <port>.<name>, and the bare name while one port is named (host guide §5.3)', async () => {
+test('ports and lines: the label S.N, ignoring ASCII case; without a port the one named (host guide §5.3)', async () => {
   /** @type {[number, string][]} */
-  const labels = [[3, 'A.NRST'], [4, 'nrst'], [5, 'power_hi'], [6, 'b.power_hi']];
-  assert.equal(await settings.findLine(labels, 'nrst', { profile: 'a', single: false }), 3);
-  assert.equal(await settings.findLine(labels, 'nrst'), null);          // ports a and b named: "N" names nothing
-  assert.equal(await settings.findLine(labels, 'nrst', { single: true }), 4);   // the host says there is one target
-  assert.equal(await settings.findLine(labels, 'nrst', { profile: 'b', single: false }), null);
-  /** @type {[number, string][]} */
-  const two = [[7, 'a.swdio'], [8, 'b.swdio'], [9, 'nrst']];
-  assert.deepEqual(settings.portsNamed(two), ['a', 'b']);
-  assert.equal(await settings.findLine(two, 'nrst', { profile: 'a' }), null);
-  assert.equal(await settings.findLine([two[0], two[2]], 'nrst', { profile: 'a' }), 9);
-  assert.equal(await settings.findLine(labels, 'power_hi', { profile: 'b', single: false }), 6);
-  assert.equal(await settings.findLine([...labels, [7, 'NRST']], 'nrst', { single: true }), null);   // ambiguous
+  const labels = [[20, 'a.nrst'], [21, 'B.nrst'], [22, 'power_hi'], [23, 'My Port.swdio']];
+  assert.deepEqual(settings.portsNamed(labels), ['a', 'B']);           // as written; the others name no port
+  assert.equal(await settings.findLine(labels, 'nrst', { port: 'A' }), 20);
+  assert.equal(await settings.findLine(labels, 'NRST', { port: 'b' }), 21);
+  assert.equal(await settings.findLine(labels, 'nrst'), null);          // two ports: say which
+  assert.equal(await settings.findLine([[5, 'V003.NRST']], 'nrst'), 5); // one port: the tool's shortcut
+  assert.equal(await settings.findLine([[5, 'NRST']], 'nrst'), null);   // a bare name names no port's line
+  assert.deepEqual(settings.portLine('x035.swdio'), ['x035', 'swdio']);
+  for (const t of ['NRST', 'a.b.c', '1a.swdio', 'a.', 'abcdefghijklmnopq.swdio']) assert.equal(settings.portLine(t), null, t);
   assert.deepEqual([...settings.LINE_NAMES], Object.keys(C.line_names));   // from the registry
 });
 
@@ -149,14 +155,20 @@ test('forms and numbers: malformed, unsupported, unknown function (core §13.3, 
   assert.equal((await st.get()).generation, 1);
 }));
 
-test('fixed labels: shown, refused to set or unset, not exported; firmwareLabels (core §13.4)', { skip }, () => withSettings(['--profile', 'p4-x035'], async (st, hst) => {
-  const shown = (await st.show()).find((r) => r.name === label(2));
-  assert.deepEqual([shown?.value, shown?.origin], ['SWDIO', 'fixed']);
-  await assert.rejects(st.setNamed(CORE, { [label(2)]: 'other' }), Unsupported);
-  await assert.rejects(st.unsetNamed(CORE, [label(2)]), Unsupported);
-  assert.deepEqual((await st.export()).settings, {});
-  assert.deepEqual((await core.firmwareLabels(hst)).slice(0, 2), [[2, 'SWDIO'], [51, 'LED']]);
-  assert.equal(await settings.findLine(hst, 'swdio'), 2);               // the fixed labels count (host guide §5.3)
+test('initial values are values like any other; labels unique but for case, kept as written (core §13.4, §13.8)', { skip }, () => withSettings(['--profile', 'p4-x035'], async (st, hst) => {
+  const boot = await values(st);
+  assert.equal(boot[`core ${label(2)}`], 'x035.swdio');
+  assert.ok(!(`core ${label(51)}` in boot));                            // 51: the probe's own LED
+  assert.equal(await settings.findLine(hst, 'swdio', { port: 'X035' }), 2);
+  await st.setNamed(CORE, { [label(2)]: 'dut.swdio' });
+  await st.unsetNamed(CORE, [label(54)]);
+  assert.deepEqual((await st.export()).settings[CORE], { [label(2)]: 'dut.swdio' });
+  await st.setNamed(CORE, { [label(20)]: 'V003.nrst' });
+  await assert.rejects(st.setNamed(CORE, { [label(22)]: 'v003.NRST' }),
+    (e) => e instanceof Unavailable && e.cause === 'held_by_settings' && JSON.stringify(e.channels) === '[22]');
+  await st.setNamed(CORE, { [label(20)]: 'LED', [label(22)]: 'V003.nrst' });   // moved in one set
+  assert.equal((await values(st))[`core ${label(22)}`], 'V003.nrst');
+  assert.equal(await st.changeable(), true);
 }));
 
 test('save and state; needsSave; unset all then save empties the storage (core §13.7)', { skip }, () => withSettings(['--profile', 'p4-bench'], async (st) => {
@@ -228,8 +240,8 @@ test('export and import through another probe (settings file §3, §4)', { skip 
     await st.setNamed(CORE, { [label(14)]: 'NRST', [idle(14)]: 'pull-up', [disable(30)]: true });
     await st.setNamed('oep.wire.rvswd/0', { 'hold.GPIO2': false });
     doc = await st.export();
-    assert.deepEqual(doc.settings, { [CORE]: { [label(14)]: 'NRST', [idle(14)]: 'pull-up', [disable(30)]: true },
-      'oep.wire.rvswd/0': { 'hold.GPIO2': false } });
+    assert.deepEqual(doc.settings, { [CORE]: { [label(2)]: 'x035.swdio', [label(14)]: 'NRST', [label(54)]: 'x035.swclk',
+      [idle(14)]: 'pull-up', [disable(30)]: true }, 'oep.wire.rvswd/0': { 'hold.GPIO2': false } });   // every value
     assert.equal(doc.probe.unit_id, 'fafe00000035');
     first = await user(st);
   });

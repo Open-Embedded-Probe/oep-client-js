@@ -315,16 +315,16 @@ test('C-07: the first confirm on a length-prefixed port waits for 50 ms of quiet
 
 // ---- PC-1 / PC-2 / PC-5: the line search and labels ---------------------------------------------------------------
 
-test('PC-1: findLine: <profile>.<name>, then for a single target the bare name (host guide §5.3)', async () => {
-  assert.equal(await settings.findLine([[23, 'NRST']], 'nrst'), 23);
-  assert.equal(await settings.findLine([[23, 'NRST'], [24, 'nrst']], 'nrst'), null);   // two at one step
-  assert.equal(await settings.findLine([[23, 'NRST']], 'nrst', { profile: 'b', single: false }), null);   // several targets: (b) not
-  assert.equal(await settings.findLine([[5, 'B.NRST']], 'nrst', { profile: 'b', single: false }), 5);
+test('PC-1: findLine: port S\'s line N is the label S.N; a bare name names no port\'s line (host guide §5.3)', async () => {
+  assert.equal(await settings.findLine([[23, 'dut.NRST']], 'nrst', { port: 'DUT' }), 23);
+  assert.equal(await settings.findLine([[23, 'NRST']], 'nrst'), null);
+  assert.equal(await settings.findLine([[23, 'a.nrst'], [24, 'b.nrst']], 'nrst'), null);   // two ports: say which
+  assert.equal(await settings.findLine([[5, 'B.NRST']], 'nrst', { port: 'b' }), 5);
   assert.deepEqual([...settings.LINE_NAMES], Object.keys(reg.CORE.line_names));   // from the registry (PC-2)
 });
 
-test('PC-1: findLine on a Host reads every label, the firmware\'s fixed ones too', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
-  assert.equal(await settings.findLine(hst, 'nrst'), 23);
+test('PC-1: findLine on a Host reads every label, the firmware\'s initial ones too', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
+  assert.equal(await settings.findLine(hst, 'nrst', { port: 'v003' }), 23);
 }));
 
 test('PC-5: a label the probe would refuse is refused there (core §13.3: a text value is checked for its length)', { skip: !haveVirtualBench }, () => withBench(['--profile', 'p4-bench'], async (hst) => {

@@ -138,11 +138,12 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   `status()` は `{ baud, format, configured }`（baud 0 は設定前）
 - 設定（oep-spec core §13、settings.js）: fn 0 の get / set / unset / save / state / network。持ち主（core の fn 0 か
   interface）が自分の describe で項目を宣言する。`new Settings(host)`: `catalog()` はこの boot の名前（fn ごとのカテゴリ
-  `core` / `name/instance`、項目と選択肢、channel・経路・netif の名前）、`show()` は全部の値を `{ category, name, value,
-  origin }`（origin は fixed / default / user）で、`setNamed(category, { 平らな名前: 値 })` / `unsetNamed` / `unsetAll`、
+  `core` / `name/instance`、項目と選択肢、channel・経路・netif の名前）、`show()` は全部の値を `{ category, name, value }`
+  で（出どころは無い。firmware の初期値もほかの値と同じ、core §13.4）、`changeable()`（set / unset があるか）、`setNamed(category, { 平らな名前: 値 })` / `unsetNamed` / `unsetAll`、
   [fn, number, key] での `set` / `unset`、`save()`、`state()`、`needsSave()`、`network()`。`export()` / `planImport(doc)` /
-  `applyImport(plan)` は設定のファイル（oep-client-python docs/oep-settings-file.ja.md）。`findLine(source, name, { profile,
-  single })` は host ガイド §5.3 の線の探し方で、全部の channel の label（firmware の固定の値も）から探す。secret（Wi-Fi の
+  `applyImport(plan)` は設定のファイル（oep-client-python docs/oep-settings-file.ja.md）。`findLine(source, name, { port })`
+  は host ガイド §5.3 の線の探し方で、口 S の線 N は label `S.N`（ASCII の大小文字を区別しない。口を省くと名付けられた口が 1 つのとき
+  だけそれ）。`portsNamed(labels)` は口の名前を書いたとおりに。secret（Wi-Fi の
   passphrase）は読まない: get はデータを返さず、`show()` とファイルは `{ secret: true }`。set で 0 バイトなら今の値を保つ。
   ページの設定のタブは secret を password の欄で受け、読んだら消し、埋め戻さない（空: 保つ）
 - キャプチャ: configure の TLV は core §2.3 に従う（扱わない値は受け取ったままの tag で `Unsupported`）。データ形式 1 のロジック

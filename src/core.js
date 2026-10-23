@@ -1,6 +1,6 @@
 // @ts-check
 // The probe's core (fn 0, no name: never in list, core §0) as the other clients need it: finding interfaces by name,
-// describe (with the ops check of core §7.4), the probe's fixed labels and transports, taking the lock; the small probe
+// describe (with the ops check of core §7.4), the probe's transports, taking the lock; the small probe
 // interfaces found by name - oep.probe.plan (the pin plan), oep.probe.restart (its restart_max_ms), oep.probe.link (the
 // link test) - and `Interface`, the base every interface client shares.
 
@@ -11,7 +11,6 @@ import * as m from './message.js';
 import { OepError, rejection } from './errors.js';
 import { checkMaxOpMs } from './host.js';
 import * as names from './names.js';
-import * as settings from './settings.js';
 
 const D = reg.CORE.tlv.describe;
 export const TRANSPORT_KIND = reg.CORE.enum.transport_kind;
@@ -173,10 +172,6 @@ export async function restartMaxMs(hst) {
   const v = catalog.firstFixed(await describe(hst, fn), RESTART_MAX_MS, 4);   // the first copy only (core §2.3)
   return v ? getU32(v) : null;
 }
-
-/** The labels the firmware fixes (channel.{}.label of origin fixed, core §13.4) as [channel, text], in get's order.
- * A probe without the settings: none. @param {import('./host.js').Host} hst @returns {Promise<[number, string][]>} */
-export async function firmwareLabels(hst) { return settings.labels(hst, 'fixed'); }
 
 /**
  * fn 0's describe decoded (core §7.5). Text values are shown as core §2.1 says (control characters replaced).

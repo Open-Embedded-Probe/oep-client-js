@@ -63,7 +63,7 @@ test('the idle item set on the bench reads back as it was sent', { skip }, () =>
   const st = new settings.Settings(hst);
   await st.setNamed(settings.CORE_CATEGORY, { 'channel.GPIO21.idle': 'low' });
   const row = (await st.show()).find((r) => r.name === 'channel.GPIO21.idle');
-  assert.deepEqual([row?.value, row?.origin, row?.item.form], ['low', 'user', 'enum']);
+  assert.deepEqual([row?.value, row?.item.form], ['low', 'enum']);
 }));
 
 test('a host attach with the reset TLV wakes a target silent until a reset; scan does not see it', { skip },

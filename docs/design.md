@@ -75,7 +75,7 @@ docs/           this document, the release steps
    - RP2040 / RP2350: the steps to copy the UF2 to the BOOTSEL drive (a browser cannot write the drive).
    - Every image is checked against `firmware-<version>.json`'s sha256.
 2. **Connect and look**: pick a transport, connect, show everything describe declares (as `oep dump` does).
-3. **Settings** (core §13): show every value with its origin, set and unset by name, save, export to and import from a
+3. **Settings** (core §13): show every value, set and unset by name (when the probe lets them change), save, export to and import from a
    settings file. The form is built from what each owner's describe declares (its items, their keys and choices).
 4. **Simple operations**: GPIO read / write, a UART terminal, attach / halt / resume / reset a target, its console.
 

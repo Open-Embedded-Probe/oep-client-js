@@ -8,10 +8,10 @@
 // the value with references as names - are what a host keeps, shows and writes to a file.
 //
 //   const st = new Settings(hst);
-//   await st.show();                                     // [{ category, name, value, origin }]
-//   await st.setNamed('core', { 'channel.GPIO14.label': 'NRST', 'channel.GPIO14.idle': 'pull_up' });
+//   await st.show();                                     // [{ category, name, value }]
+//   await st.setNamed('core', { 'channel.GPIO14.label': 'V003.nrst', 'channel.GPIO14.idle': 'pull-up' });
 //   await st.save();
-//   const doc = await st.export();                       // the settings file (JSON), the user's values only
+//   const doc = await st.export();                       // the settings file (JSON), every value
 //   const plan = await st.planImport(doc); await st.applyImport(plan);
 //
 // Secrets (core §13.5) are never read: get gives no data, the file a { secret: true }.
@@ -28,7 +28,6 @@ export const OP = Object.freeze({ get: C.op.get, set: C.op.set, unset: C.op.unse
 const byValue = (e) => Object.fromEntries(Object.entries(e).map(([k, v]) => [v, k]));
 export const FORM = byValue(C.enum.setting_form);
 export const KEY_KIND = byValue(C.enum.setting_key_kind);
-export const ORIGIN = byValue(C.enum.setting_origin);
 export const SECRET = C.enum.setting_flag.secret;
 export const STORAGE_STATE = byValue(C.enum.storage_state);
 export const STORAGE_REASON = byValue(C.enum.storage_reason);
@@ -38,7 +37,7 @@ export const NET_REASON = byValue(C.enum.network_reason);
 export const ROUTE = byValue(C.enum.route_kind);
 const D = C.tlv.describe;
 const SETTING = reg.DESCRIBE_COMMON.setting, SETTING_CHOICE = reg.DESCRIBE_COMMON.setting_choice;
-const VALUE_HEADER = 8;                                             // fn number key origin len (core §13.5)
+const VALUE_HEADER = 7;                                             // fn number key len, get's and set's alike (core §13.5)
 /** A network's entry when none is tried or used (op network). */
 export const NO_ENTRY = 0xffff;
 /** The settings file's form (oep_settings). */
@@ -59,7 +58,7 @@ export class Item {
   get secret() { return (this.flags & SECRET) !== 0; }
 }
 
-/** One value as get gives it. @typedef {{ fn: number, number: number, key: number, origin: string, data: Uint8Array }} Value */
+/** One value as get gives it (no origin: core §13.4). @typedef {{ fn: number, number: number, key: number, data: Uint8Array }} Value */
 /** The storage's state (op state, lock-free; core §13.7). @typedef {{ storage: string, savedGeneration: number, reason: string | null }} State */
 /**
  * One netif (op network): state off / connecting / up / waiting, the wifi entry (null: none), the last failure's
@@ -254,7 +253,7 @@ export class Catalog {
   }
 }
 
-/** count values (fn number key origin len data) from get's answer, then the answer's own TLV tail.
+/** count values (fn number key len data) from get's answer, then the answer's own TLV tail.
  * @param {Uint8Array} data @param {number} count @returns {[Value[], Uint8Array]} */
 export function splitValues(data, count) {
   /** @type {Value[]} */
@@ -262,10 +261,9 @@ export function splitValues(data, count) {
   let at = 0;
   for (let i = 0; i < count; i++) {
     if (at + VALUE_HEADER > data.length) throw new m.ProtocolError('get: a value past the answer');
-    const n = getU16(data, at + 6);
+    const n = getU16(data, at + 5);
     if (at + VALUE_HEADER + n > data.length) throw new m.ProtocolError('get: a value\'s data past the answer');
-    out.push({ fn: getU16(data, at), number: data[at + 2], key: getU16(data, at + 3), origin: ORIGIN[data[at + 5]] ?? String(data[at + 5]),
-      data: data.slice(at + VALUE_HEADER, at + VALUE_HEADER + n) });
+    out.push({ fn: getU16(data, at), number: data[at + 2], key: getU16(data, at + 3), data: data.slice(at + VALUE_HEADER, at + VALUE_HEADER + n) });
     at += VALUE_HEADER + n;
   }
   return [out, data.slice(at)];
@@ -361,7 +359,7 @@ export class Settings {
     return generation;
   }
 
-  /** Save the user's values (a probe with storage). -> the current generation (completed failed throws: `state` says
+  /** Save the values (a probe with storage). -> the current generation (completed failed throws: `state` says
    * what is kept). Needs the lock. Its argument time is max_op_ms (core §13.7). */
   async save() { return generationOf(await this.call('save', undefined, { expectMs: await maxOpMs(this.host) })); }
 
@@ -402,8 +400,8 @@ export class Settings {
   }
 
   // -- by name --
-  /** Every value as { category, name (flat), value, origin }; a secret's value is { secret: true }.
-   * @returns {Promise<{ category: string, name: string, value: unknown, origin: string, item: Item }[]>} */
+  /** Every value as { category, name (flat), value }; a secret's value is { secret: true }.
+   * @returns {Promise<{ category: string, name: string, value: unknown, item: Item }[]>} */
   async show() {
     const cat = await this.catalog();
     const out = [];
@@ -411,7 +409,7 @@ export class Settings {
       const it = cat.item(v.fn, v.number);
       if (!it) continue;
       out.push({ category: cat.category.get(v.fn) ?? String(v.fn), name: cat.flat(it, v.key) ?? `${it.name}#${v.key}`,
-        value: it.secret ? { secret: true } : cat.toJson(it, v.data), origin: v.origin, item: it });
+        value: it.secret ? { secret: true } : cat.toJson(it, v.data), item: it });
     }
     return out;
   }
@@ -446,9 +444,13 @@ export class Settings {
     }));
   }
 
-  /** Every user value back to its default or none (then save to empty the storage: core §13.7). null: there was none. */
+  /** Whether the probe lets its values change: set / unset offered (a probe of initial values only has get alone,
+   * core §13.5). */
+  async changeable() { return (await this.offers('set')) && (await this.offers('unset')); }
+
+  /** Every value away (then save to empty the storage: core §13.7). null: there was none. */
   async unsetAll() {
-    const users = (await this.get()).values.filter((v) => v.origin === 'user').map((v) => /** @type {KeyRow} */ ([v.fn, v.number, v.key]));
+    const users = (await this.get()).values.map((v) => /** @type {KeyRow} */ ([v.fn, v.number, v.key]));
     return users.length ? this.unset(users) : null;
   }
 
@@ -468,12 +470,11 @@ export class Settings {
   }
 }
 
-/** The settings file of the user's values (settings file §3). @param {Catalog} cat @param {Value[]} values */
+/** The settings file of every value (settings file §3). @param {Catalog} cat @param {Value[]} values */
 export function exportFile(cat, values) {
   /** @type {Record<string, Record<string, unknown>>} */
   const out = {};
   for (const v of values) {
-    if (v.origin !== 'user') continue;                               // fixed and default stay with the firmware
     const it = cat.item(v.fn, v.number);
     const flat = it ? cat.flat(it, v.key) : null;
     if (!it || flat === null) continue;
@@ -496,7 +497,7 @@ export function checkFile(doc) {
   }
 }
 
-/** What making the file's user values the probe's takes (settings file §4).
+/** What making the file's values the probe's takes (settings file §4).
  * @param {Catalog} cat @param {Value[]} current @param {unknown} doc @returns {ImportPlan} */
 export function planImport(cat, current, doc) {
   checkFile(doc);
@@ -522,71 +523,84 @@ export function planImport(cat, current, doc) {
       let data;
       try { data = cat.fromJson(it, value); } catch { plan.unresolved.push([category, flat]); continue; }
       const now = have.get(id(it.fn, it.number, key));
-      if (!now || now.origin !== 'user' || !equal(now.data, data)) plan.sets.push([it.fn, it.number, key, data]);
+      if (!now || !equal(now.data, data)) plan.sets.push([it.fn, it.number, key, data]);
     }
   }
-  plan.unsets = current.filter((v) => v.origin === 'user' && !wanted.has(id(v.fn, v.number, v.key)))
+  plan.unsets = current.filter((v) => !wanted.has(id(v.fn, v.number, v.key)))
     .map((v) => /** @type {KeyRow} */ ([v.fn, v.number, v.key]));
   return plan;
 }
 
-// ---- the label convention (host guide §5.3) ---------------------------------------------------------------
-/** The line names of the label convention, the registry's standard names: `nrst` a target's reset, `power_hi` high
- * powers it, `power_lo` low powers it, and the debug / UART lines. With several targets, `<port>.<name>`. */
-export const LINE_NAMES = Object.freeze(Object.keys(C.line_names));
+// ---- ports and lines by label (host guide §5.3) -----------------------------------------------------------
+// A label "S.N" names port S's line N: S 1-16 of letters, digits and '-', a letter first; N letters, digits, '-' and '_';
+// one '.' between. Other labels are a pin's names only. Kept as written, compared ignoring ASCII case; a probe keeps its
+// labels unique that way (core §13.8).
 
-/** ASCII case folded (only A-Z: the convention compares ignoring ASCII case). @param {string} s */
+/** The registry's line names: `swdio`, `swclk`, `swio`, `rx`, `tx`, `nrst`, `power_hi`, `power_lo`. */
+export const LINE_NAMES = Object.freeze(Object.keys(C.line_names));
+const PORT = /^[A-Za-z][A-Za-z0-9-]{0,15}$/, LINE = /^[A-Za-z0-9_-]+$/;
+
+/** ASCII case folded (only A-Z): names compare ignoring ASCII case. @param {string} s */
 export function foldName(s) { return s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32)); }
 
-/** The ports the labels name (host guide §5.3): the distinct S of the "S.N" labels, folded, in order.
+/** [S, N] of a label that names a port's line, as written; null for any other label. @param {string} text
+ * @returns {[string, string] | null} */
+export function portLine(text) {
+  const dot = text.indexOf('.');
+  if (dot < 0) return null;
+  const port = text.slice(0, dot), line = text.slice(dot + 1);
+  return PORT.test(port) && LINE.test(line) ? [port, line] : null;
+}
+
+/** The ports the labels name (host guide §5.3): each S once (ignoring case), as written, in order.
  * @param {Iterable<[number, string]>} labels */
 export function portsNamed(labels) {
   /** @type {string[]} */
   const out = [];
   for (const [, t] of labels) {
-    const dot = t.indexOf('.');
-    if (dot > 0 && dot < t.length - 1 && !out.includes(foldName(t.slice(0, dot)))) out.push(foldName(t.slice(0, dot)));
+    const pl = portLine(t);
+    if (pl && !out.some((p) => foldName(p) === foldName(pl[0]))) out.push(pl[0]);
   }
   return out;
 }
 
 /**
- * Host guide §5.3 on bare data: labels as [channel, text] - every channel.{}.label value, whatever its origin. In
- * order, stopping at the first step that finds exactly one channel: (a) with a port name (`profile`), a label equal to
- * `<port>.<name>`; (b) only while at most one port is named (`single`; by default from the labels), a label equal to
- * `name`. A step that finds two or more ends the search with none. Texts compare ignoring ASCII case.
- * @param {Iterable<[number, string]>} labels @param {string} name
- * @param {{ profile?: string | null, single?: boolean | null }} [opts] @returns {number | null}
+ * The channel of port `port`'s line `name` among labels as [channel, text], or null (host guide §5.3). Without a port,
+ * the only port the labels name (a tool's shortcut when exactly one is there). Compared ignoring ASCII case.
+ * @param {Iterable<[number, string]>} labels @param {string} name @param {{ port?: string | null }} [opts]
+ * @returns {number | null}
  */
-export function lineFromLabels(labels, name, { profile = null, single = null } = {}) {
+export function lineFromLabels(labels, name, { port = null } = {}) {
   const all = [...labels];
-  const one = single ?? portsNamed(all).length <= 1;
-  const steps = [...(profile !== null && profile !== undefined ? [`${profile}.${name}`] : []), ...(one ? [name] : [])];
-  for (const t of steps) {
-    const want = foldName(t);
-    const found = new Set(all.filter(([, x]) => foldName(x) === want).map(([ch]) => ch));
-    if (found.size > 1) return null;                                 // ambiguous at this step: no such line
-    if (found.size) return [...found][0];
+  let p = port;
+  if (p === null || p === undefined) {
+    const ports = portsNamed(all);
+    if (ports.length !== 1) return null;
+    p = ports[0];
   }
-  return null;
+  const want = foldName(/** @type {string} */ (p)), line = foldName(name);
+  const found = new Set(all.filter(([, t]) => {
+    const pl = portLine(t);
+    return pl !== null && foldName(pl[0]) === want && foldName(pl[1]) === line;
+  }).map(([ch]) => ch));
+  return found.size === 1 ? [...found][0] : null;
 }
 
-/** Every channel label now (channel.{}.label, fixed / default / user) as [channel, text]. A probe without the settings
- * ops: none. @param {import('./host.js').Host} hst @param {string | null} [origin] only the labels of this origin
- * @returns {Promise<[number, string][]>} */
-export async function labels(hst, origin = null) {
+/** Every channel label now (channel.{}.label) as [channel, text]. A probe without the settings ops: none.
+ * @param {import('./host.js').Host} hst @returns {Promise<[number, string][]>} */
+export async function labels(hst) {
   if (!await offers(hst, m.CORE_FN, OP.get)) return [];
   const st = new Settings(hst);
   const cat = await st.catalog();
-  return (await st.get()).values.filter((v) => v.fn === m.CORE_FN && cat.item(v.fn, v.number)?.name === LABEL
-    && (origin === null || v.origin === origin)).map((v) => [v.key, m.shown(v.data)]);
+  return (await st.get()).values.filter((v) => v.fn === m.CORE_FN && cat.item(v.fn, v.number)?.name === LABEL)
+    .map((v) => [v.key, m.shown(v.data)]);
 }
 
 /**
- * The channel of the line `name` (LINE_NAMES) by the label convention (host guide §5.3), or null. source: a Host (its
- * labels read with get, no lock) or labels as [channel, text].
+ * The channel of the line `name` (LINE_NAMES) of port `port` by the labels (host guide §5.3), or null. source: a Host
+ * (its labels read with get, no lock) or labels as [channel, text].
  * @param {import('./host.js').Host | Iterable<[number, string]>} source @param {string} name
- * @param {{ profile?: string | null, single?: boolean | null }} [opts] @returns {Promise<number | null>}
+ * @param {{ port?: string | null }} [opts] @returns {Promise<number | null>}
  */
 export async function findLine(source, name, opts = {}) {
   const found = Symbol.iterator in Object(source) ? [.../** @type {Iterable<[number, string]>} */ (source)]

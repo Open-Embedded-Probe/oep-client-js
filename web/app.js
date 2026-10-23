@@ -15,7 +15,7 @@ const WORDS = {
     takeLock: 'Take the lock (to change things)', notConnected: 'Not connected.',
     tabDescribe: 'Probe', tabSettings: 'Settings', tabTools: 'Tools', tabFirmware: 'Firmware',
     describeRun: 'Read everything it declares', saveJson: 'Save as JSON', read: 'Read', saveToProbe: 'Save in the probe',
-    unsetAll: 'Unset all (save after it to empty the storage)', exportFile: 'Export to a file', importFile: 'Import a file',
+    unsetAll: 'Unset all (save after it to empty the storage)', fixedValues: 'values fixed by the probe (no set / unset)', exportFile: 'Export to a file', importFile: 'Import a file',
     importAsk: 'Make the probe\'s values this file\'s?', addItem: 'Set a value',
     secretHint: 'A secret: the probe never gives it back and this page never shows it. Left empty, the value it has is kept.',
     uart: 'UART', set: 'Set', remove: 'Remove', configure: 'Configure', send: 'Send',
@@ -37,7 +37,7 @@ const WORDS = {
     takeLock: 'ロックを取る（変更するとき）', notConnected: 'つながっていません。',
     tabDescribe: 'probe', tabSettings: '設定', tabTools: '操作', tabFirmware: 'firmware',
     describeRun: '宣言をすべて読む', saveJson: 'JSON で保存', read: '読む', saveToProbe: 'probe に保存',
-    unsetAll: 'すべて既定に戻す（その後に保存すると保存領域が空になる）', exportFile: 'ファイルに書き出す', importFile: 'ファイルを読み込む',
+    unsetAll: 'すべて消す（その後に保存すると保存領域が空になる）', fixedValues: 'probe が値を固定（変更不可）', exportFile: 'ファイルに書き出す', importFile: 'ファイルを読み込む',
     importAsk: 'probe の値をこのファイルの内容にしますか？', addItem: '値を設定する',
     secretHint: '秘密の値です。probe は返さず、このページも表示しません。空のままなら今の値を保ちます。',
     uart: 'UART', set: '設定', remove: '消す', configure: '設定', send: '送る',
@@ -200,6 +200,7 @@ function probeSettings() {
 }
 
 /** @type {import('../src/settings.js').Catalog | null} */ let catalog = null;
+let changeable = true;   // set / unset offered (a probe of initial values only has get alone, core §13.5)
 
 /** A value as shown (a secret never: the probe gives none). @param {unknown} v */
 const valueText = (v) => (typeof v === 'object' && v !== null ? '(secret)' : JSON.stringify(v));
@@ -209,24 +210,25 @@ const valueText = (v) => (typeof v === 'object' && v !== null ? '(secret)' : JSO
 async function readSettings() {
   const st = probeSettings();
   catalog = await st.catalog();
+  changeable = await st.changeable();
   const [rows, state, net] = await Promise.all([st.show(), (await st.offers('state')) ? st.state() : Promise.resolve(null),
     catalog.netif.size ? st.network() : Promise.resolve(null)]);
   const netifs = net ? [`TCP port ${net.tcpPort || 'none'}`, ...net.netifs.map((n) => `${n.netif} ${n.state}`
     + (n.entry !== null ? `, entry ${n.entry}` : '') + (n.reason !== 'none' ? `, reason ${n.reason}` : '')
     + (n.rssi ? `, rssi ${n.rssi} dBm` : '') + (n.address ? `, ${n.address}` : ''))] : [];
   $('settings-state').textContent = [state ? `storage ${state.storage}${state.reason ? ` (${state.reason})` : ''}` : 'no storage',
-    ...netifs].join(' · ');
+    ...(changeable ? [] : [t('fixedValues')]), ...netifs].join(' · ');
   const body = /** @type {HTMLTableSectionElement} */ ($('settings-items').querySelector('tbody'));
   body.replaceChildren();
   for (const r of rows) {
     const tr = document.createElement('tr');
-    for (const text of [r.category, r.name, valueText(r.value), r.origin]) {
+    for (const text of [r.category, r.name, valueText(r.value)]) {
       const td = document.createElement('td');
       td.textContent = text;
       tr.append(td);
     }
     const td = document.createElement('td');
-    if (r.origin === 'user') {
+    if (changeable) {
       const b = document.createElement('button');
       b.type = 'button';
       b.textContent = t('remove');
@@ -254,7 +256,7 @@ function fillSettingForm() {
   const form = /** @type {HTMLFormElement} */ ($('form-setting'));
   const el = (/** @type {string} */ n) => /** @type {HTMLSelectElement} */ (form.elements.namedItem(n));
   const cat = catalog;
-  form.hidden = !cat || ![...cat.items.values()].some((items) => items.length);
+  form.hidden = !cat || !changeable || ![...cat.items.values()].some((items) => items.length);
   if (!cat) return;
   setOptions(el('category'), [...cat.category].filter(([fn]) => cat.items.get(fn)?.length).map(([, c]) => [c, c]));
   const fn = cat.fnOf(el('category').value);
