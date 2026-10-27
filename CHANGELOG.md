@@ -1,6 +1,15 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) **I2C and SPI controllers (oep-spec 71f3feb, fixture §5, §6), as oep-client-python 9b76064.** `I2cController`:
+  `transfer` of segments joined by repeated STARTs (`stop` false keeps the bus), `write`, `read`, `writeRead`, `stop`, the
+  NACK / bus error / stretch timeout as the answer's `result`. `SpiController`: `transfer` of items run back to back with
+  CS's gap / setup / hold, the times the probe kept; `exchange`. `configure` returns the clock used; dump knows both.
+  The registry and test/vectors from oep-spec 71f3feb.
+- (JA) **I2C と SPI の controller（oep-spec 71f3feb、fixture §5、§6）。oep-client-python 9b76064 と同じ。** `I2cController`: repeated START で
+  つなぐ区切りの `transfer`（`stop` が false ならバスを持ったまま）、`write`、`read`、`writeRead`、`stop`。NACK・バスのエラー・stretch の打ち切りは
+  答えの `result`。`SpiController`: CS の gap / setup / hold を指定した転送を続けて行う `transfer`、probe が守った時間を返す。`exchange`。
+  `configure` は使う clock を返す。dump は両方を知る。registry と test/vectors は oep-spec 71f3feb。
 - (EN) **Names and initial values (oep-spec cc82b5e), as oep-client-python 6a58bd9.** A settings value has no origin: get's
   value is fn number key len data (`Value.origin`, `show()`'s origin gone); export writes every value, import compares with
   every value and unsets first; `unsetAll` takes every value; `changeable()`. Ports and lines (host guide §5.3): the label

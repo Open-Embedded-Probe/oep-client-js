@@ -1,9 +1,10 @@
 // @ts-check
-// oep.fixture.gpio, oep.fixture.uart, oep.fixture.i2c-target and oep.fixture.spi-target, revision 1 (oep-spec
-// oep-if-fixture). The capture is in `capture` (oep.fixture.logic / analog).
+// oep.fixture.gpio, oep.fixture.uart, oep.fixture.i2c-target, oep.fixture.spi-target, oep.fixture.i2c-controller and
+// oep.fixture.spi-controller, revision 1 (oep-spec oep-if-fixture). The capture is in `capture` (oep.fixture.logic /
+// analog).
 //
-// Plan roles: gpio 1 = line; uart 1 = RX, 2 = TX; i2c-target 1 = SDA, 2 = SCL; spi-target 1 = SCK, 2 = MOSI,
-// 3 = MISO, 4 = CS. Only channels the plan assigned can be used.
+// Plan roles: gpio 1 = line; uart 1 = RX, 2 = TX; i2c-target / i2c-controller 1 = SDA, 2 = SCL; spi-target /
+// spi-controller 1 = SCK, 2 = MOSI, 3 = MISO, 4 = CS. Only channels the plan assigned can be used.
 
 import * as reg from './registry.js';
 import { Writer, concat, getU16, getU32, getU64 } from './bytes.js';
@@ -14,6 +15,7 @@ import { decodeDescription, firstFixed } from './catalog.js';
 import { PositionStream, StreamIO } from './console.js';
 
 const GPIO = reg.FIXTURE_GPIO, UART = reg.FIXTURE_UART, I2C = reg.FIXTURE_I2C_TARGET, SPI = reg.FIXTURE_SPI_TARGET;
+const I2CC = reg.FIXTURE_I2C_CONTROLLER, SPIC = reg.FIXTURE_SPI_CONTROLLER;
 const MODE = GPIO.enum.mode;
 const TAG_INDEX = GPIO.tlv.unavailable_payload.index;   // 0x40: the list position of what was refused
 /** @param {number} ms */
@@ -406,6 +408,184 @@ export class SpiTarget extends Interface {
   async status() {
     const rd = new m.Reader((await this.call(SpiTarget.STATUS, new Uint8Array(), { locked: false })).payload);
     const s = { state: rd.u8(), mode: rd.u8(), bitOrder: rd.u8(), armed: rd.u8() !== 0, queued: rd.u8(), transactions: rd.u32(), errors: rd.u32() };
+    rd.tail();
+    return s;
+  }
+}
+
+/** @typedef {{ address: number, read?: boolean, data?: Uint8Array, count?: number }} I2cSegment
+ * One segment of an i2c-controller transfer (fixture §5): a write of `data` (empty: the address alone), or with
+ * `read` a read of `count` bytes (1 or more), to the 7-bit `address`. The segments are joined by repeated STARTs. */
+/** @typedef {{ result: number, at: number, index: number, data: Uint8Array, ok: boolean }} I2cTransfer
+ * result 0 done, 1 address NACK, 2 data NACK (at: the segment, index: the byte in it), 3 bus error / arbitration lost,
+ * 4 stretch timeout; data: the bytes read, the read segments' in order. */
+/** @typedef {{ state: number, held: boolean, transfers: number, errors: number }} I2cControllerStatus */
+
+/**
+ * oep.fixture.i2c-controller (fixture §5): the probe as the I2C controller. transfer() runs segments joined by repeated
+ * STARTs; with stop false the bus stays held and the next transfer starts with a repeated START. A NACK, a bus error
+ * or a stretch past the timeout is the answer's result (the probe sends a STOP there), not an exception.
+ */
+export class I2cController extends Interface {
+  static NAME = I2CC.name;
+  static REVISION = I2CC.revision;
+  static CONFIGURE = I2CC.op.configure;
+  static TRANSFER = I2CC.op.transfer;
+  static STATUS = I2CC.op.status;
+  static ROLE_SDA = I2CC.enum.role.sda;
+  static ROLE_SCL = I2CC.enum.role.scl;
+  static FLAG_STOP = I2CC.enum.transfer_flags.stop;
+  static WRITE = I2CC.enum.dir.write;
+  static READ = I2CC.enum.dir.read;
+  static DONE = I2CC.enum.result.done;
+  static ADDRESS_NACK = I2CC.enum.result.address_nack;
+  static DATA_NACK = I2CC.enum.result.data_nack;
+  static BUS_ERROR = I2CC.enum.result.bus_error;
+  static STRETCH_TIMEOUT = I2CC.enum.result.stretch_timeout;
+  static TAG_MAX_STRETCH_TIMEOUT_US = I2CC.tlv.describe.max_stretch_timeout_us;
+  static FEATURE_INTERNAL_PULLUPS = I2CC.enum.features.internal_pullups;
+
+  /** What the probe declares (describe): maxLength, maxClockHz, minClockHz (1 when not declared), features,
+   * maxStretchTimeoutUs, internalPullups. */
+  async declarations() {
+    const { d, own } = await targetDescribe(this);
+    const features = d.features ?? 0;
+    return { maxLength: d.maxLength, maxClockHz: d.maxClockHz, minClockHz: d.minClockHz ?? 1, features,
+      maxStretchTimeoutUs: ownU32(own, I2cController.TAG_MAX_STRETCH_TIMEOUT_US),
+      internalPullups: (features & I2cController.FEATURE_INTERNAL_PULLUPS) !== 0 };
+  }
+
+  /** @param {number} sda @param {number} scl @returns {[number, number, number][]} */
+  assignments(sda, scl) { return [[this.fn, I2cController.ROLE_SDA, sda], [this.fn, I2cController.ROLE_SCL, scl]]; }
+
+  /** -> the SCL the probe uses: the nearest it makes at or below clockHz (fixture §5).
+   * @param {number} clockHz @param {number} stretchTimeoutUs */
+  async configure(clockHz, stretchTimeoutUs) {
+    const rd = new m.Reader((await this.call(I2cController.CONFIGURE, new Writer().u32(clockHz).u32(stretchTimeoutUs).done())).payload);
+    const used = rd.u32();
+    rd.tail();
+    return used;
+  }
+
+  /** flags(u8) n(u8) n x (dir address count [data]). @param {I2cSegment[]} segments @param {boolean} stop */
+  static transferBody(segments, stop = true) {
+    const w = new Writer().u8(stop ? I2cController.FLAG_STOP : 0).u8(segments.length);
+    const parts = [];
+    for (const s of segments) {
+      const data = s.read ? new Uint8Array() : (s.data ?? new Uint8Array());
+      parts.push(new Writer().u8(s.read ? I2cController.READ : I2cController.WRITE).u8(s.address)
+        .u16(s.read ? (s.count ?? 0) : data.length).done(), data);
+    }
+    return concat(w.done(), ...parts);
+  }
+
+  /** @param {I2cSegment[]} segments @param {boolean} stop @returns {Promise<I2cTransfer>} */
+  async transfer(segments, stop = true) {
+    const rd = new m.Reader((await this.call(I2cController.TRANSFER, I2cController.transferBody(segments, stop))).payload);
+    const result = rd.u8(), at = rd.u8(), index = rd.u16(), data = rd.counted(2);
+    rd.tail();
+    return { result, at, index, data, ok: result === I2cController.DONE };
+  }
+
+  /** A STOP alone, if the bus is held (n 0 with the STOP flag). */
+  async stop() { return this.transfer([], true); }
+  /** @param {number} address @param {Uint8Array} data @param {boolean} stop */
+  async write(address, data, stop = true) { return this.transfer([{ address, data }], stop); }
+  /** @param {number} address @param {number} count @param {boolean} stop */
+  async read(address, count, stop = true) { return this.transfer([{ address, read: true, count }], stop); }
+  /** A register read: write `data`, a repeated START, read `count`, STOP. @param {number} address
+   * @param {Uint8Array} data @param {number} count */
+  async writeRead(address, data, count) { return this.transfer([{ address, data }, { address, read: true, count }]); }
+
+  /** Lock-free. @returns {Promise<I2cControllerStatus>} */
+  async status() {
+    const rd = new m.Reader((await this.call(I2cController.STATUS, new Uint8Array(), { locked: false })).payload);
+    const s = { state: rd.u8(), held: rd.u8() !== 0, transfers: rd.u32(), errors: rd.u32() };
+    rd.tail();
+    return s;
+  }
+}
+
+/** @typedef {{ tx?: Uint8Array, gapNs?: number, setupNs?: number, holdNs?: number }} SpiItem
+ * One CS-framed transfer of an spi-controller request (fixture §6): `tx` clocked out (empty: CS alone); gapNs from the
+ * previous transfer's CS rise (unused on a request's first), setupNs from CS active to the first SCK edge, holdNs from
+ * the last SCK edge to CS inactive. */
+/** @typedef {{ gapNs: number, setupNs: number, holdNs: number, rx: Uint8Array }} SpiDone
+ * A transfer as the probe ran it: the times it kept at least (ns) and the MISO bytes. */
+/** @typedef {{ state: number, mode: number, bitOrder: number, transfers: number }} SpiControllerStatus */
+
+/**
+ * oep.fixture.spi-controller (fixture §6): the probe as the SPI controller. transfer() runs its items back to back in
+ * one request, each CS time at least the one asked; the answer says the times kept.
+ */
+export class SpiController extends Interface {
+  static NAME = SPIC.name;
+  static REVISION = SPIC.revision;
+  static CONFIGURE = SPIC.op.configure;
+  static TRANSFER = SPIC.op.transfer;
+  static STATUS = SPIC.op.status;
+  static ROLE_SCK = SPIC.enum.role.sck;
+  static ROLE_MOSI = SPIC.enum.role.mosi;
+  static ROLE_MISO = SPIC.enum.role.miso;
+  static ROLE_CS = SPIC.enum.role.cs;
+  static MSB_FIRST = 0;
+  static LSB_FIRST = 1;
+  static FEATURE_LSB_FIRST = SPIC.enum.features.lsb_first;
+  static TAG_TIME_STEP_NS = SPIC.tlv.describe.time_step_ns;
+  static TAG_MODES = SPIC.tlv.describe.modes;
+  static TAG_MAX_DELAY_NS = SPIC.tlv.describe.max_delay_ns;
+
+  /** What the probe declares (describe): maxLength, maxClockHz, minClockHz (1 when not declared), features, timeStepNs,
+   * modes, maxDelayNs. */
+  async declarations() {
+    const { d, own } = await targetDescribe(this);
+    return { maxLength: d.maxLength, maxClockHz: d.maxClockHz, minClockHz: d.minClockHz ?? 1, features: d.features ?? 0,
+      timeStepNs: ownU32(own, SpiController.TAG_TIME_STEP_NS), modes: ownU8(own, SpiController.TAG_MODES) ?? 0,
+      maxDelayNs: ownU32(own, SpiController.TAG_MAX_DELAY_NS) };
+  }
+
+  /** @param {number} sck @param {number} mosi @param {number} miso @param {number} cs
+   * @returns {[number, number, number][]} */
+  assignments(sck, mosi, miso, cs) {
+    return [[this.fn, SpiController.ROLE_SCK, sck], [this.fn, SpiController.ROLE_MOSI, mosi],
+      [this.fn, SpiController.ROLE_MISO, miso], [this.fn, SpiController.ROLE_CS, cs]];
+  }
+
+  /** -> the SCK the probe uses: the nearest it makes at or below clockHz (fixture §6).
+   * @param {number} mode @param {number} bitOrder @param {number} clockHz */
+  async configure(mode = 0, bitOrder = 0, clockHz = 1000000) {
+    const rd = new m.Reader((await this.call(SpiController.CONFIGURE, new Writer().u8(mode).u8(bitOrder).u32(clockHz).done())).payload);
+    const used = rd.u32();
+    rd.tail();
+    return used;
+  }
+
+  /** n(u8) n x (gap_ns setup_ns hold_ns count tx). @param {SpiItem[]} items */
+  static transferBody(items) {
+    /** @type {Uint8Array[]} */
+    const parts = [Uint8Array.of(items.length)];
+    for (const it of items) {
+      const tx = it.tx ?? new Uint8Array();
+      parts.push(new Writer().u32(it.gapNs ?? 0).u32(it.setupNs ?? 0).u32(it.holdNs ?? 0).u16(tx.length).done(), tx);
+    }
+    return concat(...parts);
+  }
+
+  /** @param {SpiItem[]} items @returns {Promise<SpiDone[]>} */
+  async transfer(items) {
+    const rd = new m.Reader((await this.call(SpiController.TRANSFER, SpiController.transferBody(items))).payload);
+    const done = items.map(() => ({ gapNs: rd.u32(), setupNs: rd.u32(), holdNs: rd.u32(), rx: rd.counted(2) }));
+    rd.tail();
+    return done;
+  }
+
+  /** One transfer: the MISO bytes for `tx`. @param {Uint8Array} tx @param {number} setupNs @param {number} holdNs */
+  async exchange(tx, setupNs = 0, holdNs = 0) { return (await this.transfer([{ tx, setupNs, holdNs }]))[0].rx; }
+
+  /** Lock-free. @returns {Promise<SpiControllerStatus>} */
+  async status() {
+    const rd = new m.Reader((await this.call(SpiController.STATUS, new Uint8Array(), { locked: false })).payload);
+    const s = { state: rd.u8(), mode: rd.u8(), bitOrder: rd.u8(), transfers: rd.u32() };
     rd.tail();
     return s;
   }

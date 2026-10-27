@@ -151,6 +151,16 @@ export const KNOWN = {
       tags: tagsOf('oep.fixture.spi-target', ['queue_depth', 'queue depth', first],
         ['modes', 'modes', (v) => [0, 1, 2, 3].filter((k) => (v[0] >> k) & 1).join(', ')],
         ['cs_setup_ns', 'CS setup ns', (v) => `${u32(v)} (SCK sooner after CS: the first bit is not sure)`]) }),
+  'oep.fixture.i2c-controller': known('the probe as the I2C controller, for a DUT\'s target (open-drain only, fixture §5)',
+    { roles: rolesOf('oep.fixture.i2c-controller', 'role', { sda: 'SDA', scl: 'SCL' }),
+      features: bitsOf('oep.fixture.i2c-controller', { internal_pullups: 'internal pull-ups' }),
+      tags: tagsOf('oep.fixture.i2c-controller', ['max_stretch_timeout_us', 'max stretch timeout us', u32]) }),
+  'oep.fixture.spi-controller': known('the probe as the SPI controller, for a DUT\'s target (CS times as asked, fixture §6)',
+    { roles: rolesOf('oep.fixture.spi-controller', 'role', { sck: 'SCK', mosi: 'MOSI', miso: 'MISO', cs: 'CS' }),
+      features: bitsOf('oep.fixture.spi-controller', { lsb_first: 'LSB first' }),
+      tags: tagsOf('oep.fixture.spi-controller', ['time_step_ns', 'time step ns', u32],
+        ['modes', 'modes', (v) => [0, 1, 2, 3].filter((k) => (v[0] >> k) & 1).join(', ')],
+        ['max_delay_ns', 'max delay ns', u32]) }),
 };
 
 /** The ops of an ops tag by the registry's names for interface `name` ('': fn 0, the core) - an op it does not name:
