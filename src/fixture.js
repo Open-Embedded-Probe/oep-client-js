@@ -16,6 +16,7 @@ import { PositionStream, StreamIO } from './console.js';
 
 const GPIO = reg.FIXTURE_GPIO, UART = reg.FIXTURE_UART, I2C = reg.FIXTURE_I2C_TARGET, SPI = reg.FIXTURE_SPI_TARGET;
 const I2CC = reg.FIXTURE_I2C_CONTROLLER, SPIC = reg.FIXTURE_SPI_CONTROLLER;
+const PWM = reg.FIXTURE_PWM, CNT = reg.FIXTURE_COUNTER, DAC = reg.FIXTURE_DAC;
 const MODE = GPIO.enum.mode;
 const TAG_INDEX = GPIO.tlv.unavailable_payload.index;   // 0x40: the list position of what was refused
 /** @param {number} ms */
@@ -588,5 +589,139 @@ export class SpiController extends Interface {
     const s = { state: rd.u8(), mode: rd.u8(), bitOrder: rd.u8(), transfers: rd.u32() };
     rd.tail();
     return s;
+  }
+}
+
+/** @typedef {{ role: number, num: number, den: number, duty: number, hz: number }} PwmOutput
+ * An output as the probe makes it: the frequency num / den Hz (0 / 1: stopped, hz its value) and the duty (0 .. 65535). */
+
+/** @param {m.Reader} rd @param {number} n @returns {PwmOutput[]} */
+function pwmOutputs(rd, n) {
+  return Array.from({ length: n }, () => {
+    const role = rd.u8(), num = rd.u32(), den = rd.u32(), duty = rd.u16();
+    return { role, num, den, duty, hz: den ? num / den : 0 };
+  });
+}
+
+/**
+ * oep.fixture.pwm (fixture §7): a square wave on output k (role k). hz 0 stops an output (its line low); the duty is
+ * 0 (always low) .. 65535 (always high). The probe makes the nearest it can and says what.
+ */
+export class Pwm extends Interface {
+  static NAME = PWM.name;
+  static REVISION = PWM.revision;
+  static SET = PWM.op.set;
+  static STATUS = PWM.op.status;
+  static TAG_CHANNELS = PWM.tlv.describe.channels;
+  static TAG_DUTY_BITS = PWM.tlv.describe.duty_bits;
+
+  async declarations() {
+    const { d, own } = await targetDescribe(this);
+    return { maxClockHz: d.maxClockHz, minClockHz: d.minClockHz ?? 1, channels: ownU8(own, Pwm.TAG_CHANNELS) ?? 0,
+      dutyBits: ownU8(own, Pwm.TAG_DUTY_BITS) };
+  }
+
+  /** Output k on channels[k]. @param {...number} channels @returns {[number, number, number][]} */
+  assignments(...channels) { return channels.map((ch, k) => [this.fn, k, ch]); }
+
+  /** [role, hz, duty] each, in order -> what the probe made of each. @param {[number, number, number][]} outputs */
+  async set(outputs) {
+    const w = new Writer().u8(outputs.length);
+    for (const [role, hz, duty] of outputs) w.u8(role).u32(hz).u16(duty);
+    const rd = new m.Reader((await this.call(Pwm.SET, w.done())).payload);
+    const made = pwmOutputs(rd, outputs.length);
+    rd.tail();
+    return made;
+  }
+
+  /** @param {number} role @param {number} hz @param {number} duty */
+  async start(role, hz, duty = 32768) { return (await this.set([[role, hz, duty]]))[0]; }
+  /** @param {number} role */
+  async stop(role) { return (await this.set([[role, 0, 0]]))[0]; }
+
+  /** Lock-free. */
+  async status() {
+    const rd = new m.Reader((await this.call(Pwm.STATUS, new Uint8Array(), { locked: false })).payload);
+    const made = pwmOutputs(rd, rd.u8());
+    rd.tail();
+    return made;
+  }
+}
+
+/**
+ * oep.fixture.counter (fixture §8): the edges on input k (role k) within a gate. It only listens, so its pins may be
+ * another function's - an output's too (a Pwm counted on its own pin, no wiring).
+ */
+export class Counter extends Interface {
+  static NAME = CNT.name;
+  static REVISION = CNT.revision;
+  static MEASURE = CNT.op.measure;
+  static RISING = CNT.enum.edge.rising;
+  static FALLING = CNT.enum.edge.falling;
+  static BOTH = CNT.enum.edge.both;
+  static TAG_CHANNELS = CNT.tlv.describe.channels;
+  static TAG_MAX_GATE_US = CNT.tlv.describe.max_gate_us;
+
+  async declarations() {
+    const { d, own } = await targetDescribe(this);
+    return { maxClockHz: d.maxClockHz, channels: ownU8(own, Counter.TAG_CHANNELS) ?? 0,
+      maxGateUs: ownU32(own, Counter.TAG_MAX_GATE_US) };
+  }
+
+  /** @param {...number} channels @returns {[number, number, number][]} */
+  assignments(...channels) { return channels.map((ch, k) => [this.fn, k, ch]); }
+
+  /** -> windowNs (bigint: the time counted) and counts (role -> edges). @param {number} gateUs @param {number} edge */
+  async measure(gateUs, edge = 0) {
+    const rd = new m.Reader((await this.call(Counter.MEASURE, new Writer().u32(gateUs).u8(edge).done(),
+      { expectMs: Math.ceil(gateUs / 1000) + 1 })).payload);
+    const windowNs = rd.u64(), n = rd.u8();
+    /** @type {Map<number, number>} */
+    const counts = new Map();
+    for (let i = 0; i < n; ++i) { const role = rd.u8(); counts.set(role, rd.u32()); }
+    rd.tail();
+    return { windowNs, counts };
+  }
+}
+
+/**
+ * oep.fixture.dac (fixture §9): an analog value on output k (role k): 0 .. 2^bits - 1, nominally minMv .. maxMv
+ * (describe range).
+ */
+export class Dac extends Interface {
+  static NAME = DAC.name;
+  static REVISION = DAC.revision;
+  static SET = DAC.op.set;
+  static STATUS = DAC.op.status;
+  static TAG_CHANNELS = DAC.tlv.describe.channels;
+  static TAG_BITS = DAC.tlv.describe.bits;
+  static TAG_RANGE = DAC.tlv.describe.range;
+
+  async declarations() {
+    const { own } = await targetDescribe(this);
+    const r = own.get(Dac.TAG_RANGE);
+    const range = r && r.length === 8 ? [getU32(r) | 0, getU32(r, 4) | 0] : null;
+    return { channels: ownU8(own, Dac.TAG_CHANNELS) ?? 0, bits: ownU8(own, Dac.TAG_BITS), rangeMv: range };
+  }
+
+  /** @param {...number} channels @returns {[number, number, number][]} */
+  assignments(...channels) { return channels.map((ch, k) => [this.fn, k, ch]); }
+
+  /** [role, value] each, in order. @param {[number, number][]} values */
+  async set(values) {
+    const w = new Writer().u8(values.length);
+    for (const [role, value] of values) w.u8(role).u32(value);
+    await this.call(Dac.SET, w.done());
+  }
+
+  /** Lock-free. -> [role, value, on] each. */
+  async status() {
+    const rd = new m.Reader((await this.call(Dac.STATUS, new Uint8Array(), { locked: false })).payload);
+    const n = rd.u8();
+    /** @type {[number, number, boolean][]} */
+    const out = [];
+    for (let i = 0; i < n; ++i) out.push([rd.u8(), rd.u32(), rd.u8() !== 0]);
+    rd.tail();
+    return out;
   }
 }

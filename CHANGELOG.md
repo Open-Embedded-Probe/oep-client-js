@@ -1,6 +1,12 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) **PWM, counter and DAC (oep-spec 02c08c9, fixture §7-§9), as oep-client-python 77d8de1.** `Pwm` (`set` / `start` /
+  `stop` / `status`: the frequency num / den and the duty made), `Counter` (`measure`: the window and the edges a role),
+  `Dac` (`set` / `status`, the nominal range in `declarations`); dump knows all three. Registry and test/vectors from 02c08c9.
+- (JA) **PWM、counter、DAC（oep-spec 02c08c9、fixture §7〜§9）。oep-client-python 77d8de1 と同じ。** `Pwm`（`set` / `start` / `stop` /
+  `status`: 出した周波数 num / den とデューティ）、`Counter`（`measure`: 時間と role ごとのエッジの数）、`Dac`（`set` / `status`、公称の範囲は
+  `declarations`）。dump は 3 つとも知る。registry と test/vectors は 02c08c9。
 - (EN) **I2C and SPI controllers (oep-spec 71f3feb, fixture §5, §6), as oep-client-python 9b76064.** `I2cController`:
   `transfer` of segments joined by repeated STARTs (`stop` false keeps the bus), `write`, `read`, `writeRead`, `stop`, the
   NACK / bus error / stretch timeout as the answer's `result`. `SpiController`: `transfer` of items run back to back with

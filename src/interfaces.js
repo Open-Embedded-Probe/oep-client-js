@@ -161,6 +161,16 @@ export const KNOWN = {
       tags: tagsOf('oep.fixture.spi-controller', ['time_step_ns', 'time step ns', u32],
         ['modes', 'modes', (v) => [0, 1, 2, 3].filter((k) => (v[0] >> k) & 1).join(', ')],
         ['max_delay_ns', 'max delay ns', u32]) }),
+  'oep.fixture.pwm': known('a square wave of a frequency and duty on each output (fixture §7)',
+    { roles: Object.fromEntries([0, 1, 2, 3, 4, 5, 6, 7].map((k) => [k, `out${k}`])),
+      tags: tagsOf('oep.fixture.pwm', ['channels', 'channels', first], ['duty_bits', 'duty bits', first]) }),
+  'oep.fixture.counter': known('the edges on each input within a gate; it only listens (fixture §8)',
+    { roles: Object.fromEntries([0, 1, 2, 3, 4, 5, 6, 7].map((k) => [k, `in${k}`])),
+      tags: tagsOf('oep.fixture.counter', ['channels', 'channels', first], ['max_gate_us', 'max gate us', u32]) }),
+  'oep.fixture.dac': known('an analog value on each output (fixture §9)',
+    { roles: Object.fromEntries([0, 1, 2, 3, 4, 5, 6, 7].map((k) => [k, `out${k}`])),
+      tags: tagsOf('oep.fixture.dac', ['channels', 'channels', first], ['bits', 'bits', first],
+        ['range', 'range mV', (v) => `${getU32(v) | 0} .. ${getU32(v, 4) | 0}`]) }),
 };
 
 /** The ops of an ops tag by the registry's names for interface `name` ('': fn 0, the core) - an op it does not name:
