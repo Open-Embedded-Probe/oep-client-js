@@ -1,6 +1,9 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) The capture configure sends block_max without the critical bit: it is in §3.3's table, which every probe takes
+  (as oep-client-python).
+- (JA) capture の configure は block_max を critical なしで送る: §3.3 の表の TLV で、どの probe も受ける（oep-client-python と同じ）。
 - (EN) **PWM, counter and DAC (oep-spec 02c08c9, fixture §7-§9), as oep-client-python 77d8de1.** `Pwm` (`set` / `start` /
   `stop` / `status`: the frequency num / den and the duty made), `Counter` (`measure`: the window and the edges a role),
   `Dac` (`set` / `status`, the nominal range in `declarations`); dump knows all three. Registry and test/vectors from 02c08c9.

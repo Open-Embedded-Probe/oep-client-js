@@ -18,8 +18,8 @@
 // configure (§3.3's contract, checked before sending - RangeError): mode and rate always; samples in modes 1 and 2,
 // never in mode 3; segments in mode 2 only; pretrigger only with a trigger (type other than 0); rate, samples and
 // segments 1 or more; a type 0 trigger goes as role 0 value 0. The table's TLVs go without the critical bit (every
-// probe of the interface implements them); format, carriage, block_max and trigger_opts go critical. A value the probe
-// cannot honour is refused unsupported with the tag as received (core §2.3) - which one, when several apply, is the
+// probe of the interface implements them; block_max too); format, carriage and trigger_opts go critical. A value the
+// probe cannot honour is refused unsupported with the tag as received (core §2.3) - which one, when several apply, is the
 // probe's choice, so this client never relies on the order. The probe rounds samples down to its limit and the answer
 // (Config.samples / .segments) is what holds.
 //
@@ -524,7 +524,7 @@ export class CaptureDrops {
  * @property {Map<number, number> | Record<number, number>} [events]  format 1: role -> D for the channels carried as
  *   events (the others raw)
  * @property {number[]} [roles]             format 1: the plan's roles (to name the raw channels)
- * @property {number} [blockMax]            format 1: the longest block (critical)
+ * @property {number} [blockMax]            format 1: the longest block
  */
 
 /** Basic logic capture. Channels are the plan's roles 0..C-1. */
@@ -558,7 +558,7 @@ export class LogicCapture extends Interface {
 
   /** -> the probe's actual values. A value the probe cannot honour is refused: Unsupported, .tag = the TLV as sent
    * (§3.3; with several refusals the probe answers any one - nothing here relies on the order). The table's TLVs go
-   * without the critical bit; format, carriage, block_max and trigger_opts critical. Rate, samples and segments 1 or
+   * without the critical bit (block_max too); format, carriage and trigger_opts critical. Rate, samples and segments 1 or
    * more; a type 0 trigger goes as role 0 value 0; samples needed in one-shot and repeat and not taken in streaming;
    * segments repeat's only; a pretrigger needs a trigger (RangeError before sending otherwise). Read Config.samples /
    * .segments: the probe rounds samples down.
@@ -598,7 +598,7 @@ export class LogicCapture extends Interface {
     if (dataFormat) put(FORMAT, Uint8Array.of(dataFormat), true);   // critical: a probe without it refuses (§3.3)
     const eventD = pairs(events);
     for (const [role, d] of eventD) put(CARRIAGE, new Writer().u8(role).u8(LOGIC_CARRIAGE.events).u32(d).done(), true);
-    if (blockMax !== undefined) put(BLOCK_MAX, new Writer().u32(blockMax).done(), true);
+    if (blockMax !== undefined) put(BLOCK_MAX, new Writer().u32(blockMax).done(), false);
     if (triggerOpts !== undefined) {
       const { arm = 1, rearm = 0, when = 0, hysteresis = 0 } = triggerOpts;
       put(TRIGGER_OPTS, new Writer().u8(arm).u8(rearm).u8(when).u32(hysteresis).done(), true);
