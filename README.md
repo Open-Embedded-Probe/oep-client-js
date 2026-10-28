@@ -12,19 +12,9 @@ GitHub Pages: <https://open-embedded-probe.github.io/oep-client-js/>.
 
 **A first full port, ahead of the v1 freeze: expect it to be redone as the spec settles.**
 
-**The spec this implements: oep-spec commit `32724e4`** (no `v0.x` tag yet; oep-spec versioning §6 - before the freeze,
-revision 1 alone does not fix the forms, so an implementation names the spec it implements), the same as
-oep-client-python 0.0.36. Since `c6ab5d9` that brought: confirm without a flags byte; list entries without flags;
-reject reason `no_resource` (busy and accepted gone); the named extension TLV and TLV number 0 malformed; every request's
-processing bound (max_op_ms, fn 0's quick ops at most `core_quick_op_max_ms`; fn 0's describe read before
-state-changing requests); a session_id 0 request never moving the session's corr half the space; subscriptions kept per
-transport and made again after a reopen; a stale corr read past on every framing, a broken TCP closed and opened again,
-a COBS broken candidate resent at once; debug attach's pins and max_speed in the fixed part, a new connection every
-attach, connections u32, `holds`, rvswd's rest; console streams u32 and mechanisms by name; probe.config as named items
-numbered by describe (label, idle, disable, passthrough, console-passthrough, rvswd-rest, wire-hold, wifi, ipv4 and a
-probe's own), the generation and the network op; gpio without a strength selection; capture data formats 1 / 4 (multirate
-gone), trigger_opts, trigger records, stream_buffer, judge_latency_ns, the named capture-drops diagnostics, and the
-capture-group's trigger source (§4.4).
+**The spec this implements: the oep-spec commit `test/vectors` was copied from** (no `v0.x` tag yet; oep-spec versioning §6 -
+before the freeze, revision 1 alone does not fix the forms, so an implementation names the spec it implements). With an
+oep-spec checkout beside it, the tests compare the copy with it. The history is in [CHANGELOG.md](CHANGELOG.md).
 Until the freeze the Japanese text (`.ja.md`) is the specification's working text.
 
 What is there:
@@ -55,7 +45,7 @@ What is there:
   `core.require` throws, without sending, the same `Rejected` with detail unknown_operation the probe answers) / plan
   (`core.planApply` / `planRelease` / `planRoles` on oep.probe.plan, found by name);
 - the interfaces: the debug wires (rvswd, swio, swd) and riscv-dm, ARM ADI / MEM-AP / Cortex-M, the target console, the
-  fixtures (gpio, uart, i2c-target, spi-target), the captures (logic, analog, capture-group, sigrok .sr), the settings
+  fixtures (gpio, uart, i2c-target, spi-target, i2c-controller, spi-controller, pwm, counter, dac), the captures (logic, analog, capture-group, sigrok .sr), the settings
   (core §13) and the `oep dump` view;
 - the transports: WebSerial, WebUSB (vendor bulk), WebHID in the browser; TCP, serial ports (`serialport`) and USB (`usb`)
   in Node (the native packages optional); serial ports open 8N1 without flow control, DTR and RTS asserted (transports §4);
@@ -162,15 +152,12 @@ What is there:
   info (`Received.segments`); `read()` throws `ReadGap` for bytes the probe no longer has; status's named extensions
   (`CaptureDrops.of(status)`, the Arduino firmware's drop diagnostics). The capture-group binds tracks started at once,
   or with a `TriggerSource` of `Stage`s and `Cond`s (§4.4; `triggerCaps()` says what it takes).
-- the rule changes of 2026-10-02 (oep-spec `docs/v1-rule-change-proposal-2026-10-02.md`), host side: attach and scan
+- besides: attach and scan
   wait their budgets (`attachMs`, `scanMs`); `Unsupported.supported` (confirm's range); an `x-` unit_id names no USB
   device; text from an answer is shown without control characters (`message.shown`), open's owner is cut on a
   character (`ownerText`), a label the probe would refuse is not sent; `dump` names what core §1.2 requires and the
   probe did not give (`missing`); `riscv.StepError` (`stepLeft`).
 
-The wire is oep-spec's 2026-10-06 simplification of the zero-base rewrite of 2026-10-01 (one request header with
-session_id, one TLV form, sequences without element lengths, closed fixed forms, the `ops` tag, no resume; see the
-changelog), with the 2026-10-06 structure (the nameless core, the oep.probe interfaces, notifications per interface).
 Tested against oep-client-python's virtual bench (a probe, the targets behind it and the fixture wiring, modelled after
 the real jigs: `python -m oep_client.virtual_bench_serve`) and scripted devices (oep-spec's test vectors among them:
 sessions.json, ops.json, ops_encoding.json, capture_formats.json and logic_layout.json included); the browser transports, DFU and the page are not yet checked on
@@ -204,11 +191,11 @@ npm run serve       # the page at http://localhost:4173/
 
 ## Documents
 
-- Specification: [oep-spec](https://github.com/Open-Embedded-Probe/oep-spec) (the English text is authoritative) - start
-  with its [README](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/README.md) and [review guide](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/review-guide.md);
-  [getting started](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/getting-started.md) builds the smallest probe and host,
-  [docs/oep-core.md](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/oep-core.md) is the protocol core, and
-  [docs/conformance.md](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/conformance.md) says what a host must do to conform
+- Specification: [oep-spec](https://github.com/Open-Embedded-Probe/oep-spec) (in Japanese until the freeze) - start
+  with its [README](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/README.md) and [review guide](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/review-guide.ja.md);
+  [getting started](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/getting-started.ja.md) builds the smallest probe and host,
+  [docs/oep-core.ja.md](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/oep-core.ja.md) is the protocol core, and
+  [docs/conformance.ja.md](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/conformance.ja.md) says what a host must do to conform
 - [Design](docs/design.md): layers, transports, what the page does, tests, the registry, versions
 - [Releasing](docs/release.md)
 - [Changelog](CHANGELOG.md)

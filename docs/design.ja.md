@@ -2,7 +2,7 @@
 
 [English](design.md) | 日本語
 
-oep-client-js の構成と、何をどこに置くか、何を作らないか。実装はまだ無く、この文書が骨組みの目印です。
+oep-client-js の構成と、何をどこに置くか、何を作らないか。
 
 ## 1. 何のためのものか
 
@@ -18,7 +18,8 @@ oep-client-js の構成と、何をどこに置くか、何を作らないか。
 ```text
 src/            ライブラリ（環境に依らない核）         -> npm の "oep-client-js"（dist/oep-client.js にバンドル）
   index.js        入口。VERSION と、核の公開 API
-  (これから)      frame、message、session、core、describe、settings、各インターフェース、registry（生成物）
+  ほか            フレーム（cobs.js）、メッセージ、link、host、core、settings、各インターフェース（fixture.js、capture.js、riscv.js、arm.js、console.js など）、
+                  registry.js（生成物）
 src/browser/    ブラウザの経路                         -> npm の "./browser"
   index.js        WebSerial、WebUSB（vendor bulk、DFU）、WebHID
 src/node/       Node の経路                            -> npm の "./node"

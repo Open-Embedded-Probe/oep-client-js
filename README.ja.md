@@ -12,25 +12,9 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 
 **v1 の凍結の前に、ひととおり移した版です。仕様が固まるにつれて作り直す前提です。**
 
-**実装する仕様: oep-spec の commit `32724e4`**（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
-だけでは形が決まらないので、実装は実装する仕様を名乗る）。oep-client-python 0.0.36 と同じ仕様です。`c6ab5d9` からの主な変更:
-
-- confirm の答えと list の項目から flags が無くなった。
-- reject の理由に `no_resource` が入り、busy と accepted は無くなった。
-- 名前つきの拡張 TLV が入り、TLV の番号 0 は malformed になった。
-- どの要求にも処理の上限がある（max_op_ms。fn 0 の短い操作は `core_quick_op_max_ms` まで）。状態を変える要求の前に fn 0 の
-  describe を読む。
-- session_id 0 の要求で、セッションの corr を空間の半分まで動かさない。
-- 購読は経路ごとに持ち、開き直したら購読し直す。
-- 古い corr への答えはどの枠組みでも読み飛ばす。枠組みの壊れた TCP は閉じて開き直す。COBS の壊れた候補はすぐ送り直す。
-- debug: attach のピンと max_speed は固定部分に入った。attach は毎回新しい接続を作り、接続番号は u32 になった。`holds` と、
-  rvswd の休ませ方が入った。
-- console: ストリームは u32、mechanism は名前の並び。
-- probe.config: 項目は名前つきで、番号は describe が振る（label、idle、disable、passthrough、console-passthrough、rvswd-rest、
-  wire-hold、wifi、ipv4、probe 独自の項目）。世代と network の操作が入った。
-- gpio: 出力の強さの選択が無くなった。
-- capture: データ形式 1 / 4 が入った（multirate は無くなった）。trigger_opts、トリガの記録、stream_buffer、judge_latency_ns、
-  名前つきの capture-drops の診断、capture-group の出来事の元（§4.4）が入った。
+**実装する仕様: `test/vectors` の写し元の oep-spec の commit**（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
+だけでは形が決まらないので、実装は実装する仕様を名乗る）。隣に oep-spec の checkout があれば、試験がその写しと照らし合わせます。
+変更の履歴は [CHANGELOG.md](CHANGELOG.md) にあります。
 
 凍結までは日本語の文（`.ja.md`）が仕様の作業の文。
 
@@ -58,7 +42,7 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   （list は `first` だけで頁を送り、接頭辞の絞り込みはラベルの境で host が行う。fn ごとの `ops`: `core.ops` / `offers`、`Interface.ops()` / `.offers(op)`。`core.require` は送らずに、probe が答えるのと同じ
   detail unknown_operation の `Rejected` を投げる）/ plan（`core.planApply` / `planRelease` / `planRoles` は oep.probe.plan を名前で探す）
 - インターフェース: debug の線（rvswd、swio、swd）と riscv-dm、ARM の ADI / MEM-AP / Cortex-M、target のコンソール、
-  fixture（gpio、uart、i2c-target、spi-target）、キャプチャ（ロジック、アナログ、capture-group、sigrok の .sr）、設定（core §13）、
+  fixture（gpio、uart、i2c-target、spi-target、i2c-controller、spi-controller、pwm、counter、dac）、キャプチャ（ロジック、アナログ、capture-group、sigrok の .sr）、設定（core §13）、
   `oep dump` の表示
 - 経路: ブラウザは WebSerial、WebUSB（vendor bulk）、WebHID。Node は TCP、シリアルの口（`serialport`）、USB（`usb`）
   （ネイティブの package は任意）。シリアルの口は 8N1、フロー制御なし、DTR と RTS を立てて開く（transports §4）。USB の probe は
@@ -153,15 +137,12 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   バイトの `read()` は `ReadGap`。status の名前つきの拡張（`CaptureDrops.of(status)`、Arduino の firmware の落としの診断）。
   capture-group は即時に一緒に始めるトラックを束ねるか、`Stage` と `Cond` の `TriggerSource` で束ねる（§4.4。`triggerCaps()`
   で何を受けるかがわかる）
-- 2026-10-02 の規則の変更（oep-spec `docs/v1-rule-change-proposal-2026-10-02.ja.md`）の host の側: attach と scan は予算の分
+- そのほか: attach と scan は予算の分
   待つ（`attachMs`、`scanMs`）。`Unsupported.supported`（confirm の扱える範囲）。`x-` の unit_id では USB の機器を探さない。
   応答の文字列は制御文字を除いて見せ（`message.shown`）、open の owner は文字の境で切り（`ownerText`）、probe が断るラベルは
   送らない。`dump` は core §1.2 が求めるもので probe が出さなかったものを示す
   （`missing`）。`riscv.StepError`（`stepLeft`）
 
-wire は oep-spec の 2026-10-01 のゼロベース見直しを 2026-10-06 に単純化した形です（session_id を持つ要求の見出し 1 つ、
-TLV の形 1 つ、要素に長さを置かない並び、閉じた固定の形、`ops` tag、再開なし。変更履歴を参照）に、2026-10-06 の構造（名前の
-無い本体、oep.probe のインターフェース、インターフェースごとの通知）を加えたもの。
 oep-client-python の仮想ベンチ（probe とその先の target、治具の配線を実際の治具に合わせて作ったもの:
 `python -m oep_client.virtual_bench_serve`）と台本のデバイスで試しています（oep-spec の試験ベクタを含み、sessions.json、
 ops.json、ops_encoding.json、capture_formats.json、logic_layout.json も）。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
@@ -194,8 +175,7 @@ npm run serve       # http://localhost:4173/ でページ
 
 ## 文書
 
-- 仕様: [oep-spec](https://github.com/Open-Embedded-Probe/oep-spec)（英語の本文が正で、`.ja.md` はその訳。食い違えば英語が
-  正しい）。まず [README](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/README.ja.md) と [レビューの手引き](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/review-guide.ja.md) から。
+- 仕様: [oep-spec](https://github.com/Open-Embedded-Probe/oep-spec)（凍結までは日本語の文書が正。英語は凍結のときに作る）。まず [README](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/README.ja.md) と [レビューの手引き](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/review-guide.ja.md) から。
   [使い始める](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/getting-started.ja.md) が最小の probe と host を作り、
   [docs/oep-core.ja.md](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/oep-core.ja.md) がプロトコルの本体、
   [docs/conformance.ja.md](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/conformance.ja.md) が host の適合に要ること

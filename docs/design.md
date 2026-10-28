@@ -2,8 +2,7 @@
 
 English | [日本語](design.ja.md)
 
-How oep-client-js is laid out, what goes where and what it does not do. Nothing is implemented yet; this document is
-the map for the scaffold.
+How oep-client-js is laid out, what goes where and what it does not do.
 
 ## 1. What it is for
 
@@ -19,7 +18,8 @@ the map for the scaffold.
 ```text
 src/            the library (the core, no environment)   -> npm "oep-client-js" (bundled to dist/oep-client.js)
   index.js        the entry: VERSION and the core's public API
-  (to come)       frame, message, session, core, describe, settings, the interfaces, registry (generated)
+  the rest        frames (cobs.js), messages, the link, the host, core, settings, the interfaces (fixture.js, capture.js,
+                  riscv.js, arm.js, console.js and others), registry.js (generated)
 src/browser/    the browser's transports                 -> npm "./browser"
   index.js        WebSerial, WebUSB (vendor bulk, DFU), WebHID
 src/node/       Node's transports                        -> npm "./node"
