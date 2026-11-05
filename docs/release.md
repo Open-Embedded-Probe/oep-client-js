@@ -14,7 +14,7 @@ runs from a maintainer workstation.
    can:
    - one connection per transport (WebSerial, WebUSB, WebHID), and describe shown
    - settings shown, changed, saved and erased (put them back afterwards)
-   - a firmware update (the P4's DFU, the ESP32's esptool-js); writing the same version again is the safe way
+   - firmware updates (P4/P4X DFU and RP2040/RP2350 PICOBOOT); writing the same version again is the safe way
 5. After pushing `main`, open <https://open-embedded-probe.github.io/oep-client-js/> directly and repeat step 4 (WebUSB
    and the others work over HTTPS, no stale cache).
 
@@ -22,6 +22,7 @@ Automated checks:
 
 ```sh
 npm run check
+npm run test:browser
 npm run build
 npm run types
 npm run smoke:dist

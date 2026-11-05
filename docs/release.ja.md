@@ -12,7 +12,7 @@
 4. `npm run serve` でページを開き、Chromium 系のブラウザ（Chrome か Edge）で実機の probe につなぎます。できる範囲で確かめます:
    - 経路ごとに 1 つ（WebSerial、WebUSB、WebHID）でつながり、describe が出ること
    - 設定の表示、変更、保存、消去（書き換えた後に元に戻す）
-   - firmware の更新（P4 の DFU、ESP32 の esptool-js）。同じ版を書き直すのが安全です
+   - firmware の更新（P4/P4X の DFU、RP2040/RP2350 の PICOBOOT）。同じ版を書き直すのが安全です
 5. `main` を push したあと、<https://open-embedded-probe.github.io/oep-client-js/> を直接開き、4 を繰り返します（HTTPS で
    WebUSB などが使えること、古いキャッシュが残っていないこと）。
 
@@ -20,6 +20,7 @@
 
 ```sh
 npm run check
+npm run test:browser
 npm run build
 npm run types
 npm run smoke:dist

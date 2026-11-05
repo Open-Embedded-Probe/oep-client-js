@@ -62,12 +62,13 @@
     "build:site": "node scripts/build-site.js",
     "serve": "node scripts/serve.js",
     "types": "tsc -p tsconfig.types.json",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.web.json",
     "smoke:dist": "node scripts/smoke-dist.js",
     "check": "npm run test && npm run typecheck",
     "prepack": "npm run build && npm run types",
     "preversion": "npm run check && node scripts/check-releasable.js",
-    "version": "node scripts/sync-version.js"
+    "version": "node scripts/sync-version.js",
+    "test:browser": "node scripts/check-browser.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

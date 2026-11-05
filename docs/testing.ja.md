@@ -13,3 +13,12 @@ OEP_PYTHON="$PWD/test/virtual-bench/.venv/bin/python" OEP_REQUIRE_VIRTUAL_BENCH=
 CI、Pages、Release は共通 action でこの環境を用意し、仮想依存を必須にします。依存更新時は commit と lock を一緒に更新し、仮想結合・型検査・配布物検査を行います。固定した backend は今回検証した版であり、通常利用する実機 probe の最低 firmware 版を定めるものではありません。
 
 保証の責任と利用プロジェクトの手順は [OEP共通方針](https://github.com/Open-Embedded-Probe/oep-client-python/blob/main/docs/testing-policy.ja.md)と[汎用ガイド](https://github.com/Open-Embedded-Probe/oep-client-python/blob/main/docs/testing-consumers.ja.md)に従います。仮想結合試験の成功で実USBや実機転送の品質を保証しません。
+
+## ブラウザの作業画面
+
+`npm run test:browser` で専用のheadless Chromium、HTTPサーバー、Python仮想プローブを起動します。
+Chromiumのコマンドは `OEP_CHROME`（既定 `google-chrome`）、Pythonは `OEP_PYTHON`（既定は上記の専用環境）で指定できます。
+試験専用のHTTP byte経路でブラウザの実際のhostライブラリと仮想プローブを接続します。この経路を公開ページには含めません。
+
+直接URL、接続後の元画面への復帰、機能別フォーム、GPIO/PWM/UART/I2C/SPI/カウンタ/DAC、ターゲット操作、設定、言語、狭い画面、
+セッション解放を確認します。USB権限ダイアログ、電気的な信号、firmware書き込みは実機で確認します。
