@@ -1,6 +1,10 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) `SpiController.transfer` and `Pwm.set` read the answer's count n(u8) first and check it against what was asked
+  (oep-spec 98e7f5e, fixture §6 / §7; core §2.3), as oep-client-python 1b4e8fb. Registry and test/vectors from 98e7f5e.
+- (JA) `SpiController.transfer` と `Pwm.set` は応答の頭の件数 n(u8) を読み、要求した数と比べる（oep-spec 98e7f5e、fixture §6 / §7。core §2.3）。
+  oep-client-python 1b4e8fb と同じ。registry と test/vectors を 98e7f5e から写した。
 - (EN) The capture configure sends block_max without the critical bit: it is in §3.3's table, which every probe takes
   (as oep-client-python).
 - (JA) capture の configure は block_max を critical なしで送る: §3.3 の表の TLV で、どの probe も受ける（oep-client-python と同じ）。

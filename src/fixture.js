@@ -575,7 +575,9 @@ export class SpiController extends Interface {
   /** @param {SpiItem[]} items @returns {Promise<SpiDone[]>} */
   async transfer(items) {
     const rd = new m.Reader((await this.call(SpiController.TRANSFER, SpiController.transferBody(items))).payload);
-    const done = items.map(() => ({ gapNs: rd.u32(), setupNs: rd.u32(), holdNs: rd.u32(), rx: rd.counted(2) }));
+    const n = rd.u8();   // the answer's count (core §2.3)
+    if (n !== items.length) throw new m.ProtocolError(`spi-controller transfer: ${n} answered for ${items.length} asked`);
+    const done = Array.from({ length: n }, () => ({ gapNs: rd.u32(), setupNs: rd.u32(), holdNs: rd.u32(), rx: rd.counted(2) }));
     rd.tail();
     return done;
   }
@@ -629,7 +631,9 @@ export class Pwm extends Interface {
     const w = new Writer().u8(outputs.length);
     for (const [role, hz, duty] of outputs) w.u8(role).u32(hz).u16(duty);
     const rd = new m.Reader((await this.call(Pwm.SET, w.done())).payload);
-    const made = pwmOutputs(rd, outputs.length);
+    const n = rd.u8();   // the answer's count (core §2.3)
+    if (n !== outputs.length) throw new m.ProtocolError(`pwm set: ${n} answered for ${outputs.length} asked`);
+    const made = pwmOutputs(rd, n);
     rd.tail();
     return made;
   }
