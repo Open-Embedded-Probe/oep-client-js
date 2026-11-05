@@ -15,8 +15,9 @@
       <p data-i18n="tagline"></p>
     </div>
     <nav class="top-nav">
-      <a href="#home" data-i18n="navHome"></a>
+      <a href="#about" data-i18n="navAbout"></a>
       <a href="#boards" data-i18n="navBoards"></a>
+      <a href="#start" data-i18n="navStart"></a>
       <a href="#probe" data-i18n="navProbe"></a>
     </nav>
     <div class="top-actions">
@@ -29,41 +30,61 @@
   <p id="unsupported" class="warn" hidden data-i18n="unsupported"></p>
 
   <main>
-    <!-- 3.1 -->
-    <section class="view" data-view="home">
+    <!-- 3.1-3.4: the one page of what OEP is and how to start (docs/page.ja.md §2) -->
+    <section class="view landing" data-view="home">
       <div class="hero">
-        <h2 data-i18n="homeTitle"></h2>
-        <p data-i18n="homeLead"></p>
-        <div class="diagram" aria-hidden="true">
-          <span data-i18n="diagHost"></span><i>USB</i><span class="probe" data-i18n="diagProbe"></span><i data-i18n="diagWires"></i><span data-i18n="diagTarget"></span>
-        </div>
-        <div class="entries">
-          <a class="entry primary" href="#tutorial/1"><b data-i18n="entryTutorial"></b><span data-i18n="entryTutorialDesc"></span></a>
-          <a class="entry" href="#connect"><b data-i18n="entryConnect"></b><span data-i18n="entryConnectDesc"></span></a>
-          <a class="entry" href="#boards"><b data-i18n="entryBoards"></b><span data-i18n="entryBoardsDesc"></span></a>
+        <h2>Open Embedded Probe</h2>
+        <p class="lead" data-i18n="heroLead"></p>
+        <div class="row">
+          <a class="button big" href="#start" data-i18n="heroStart"></a>
+          <a class="button-secondary big" href="#probe" data-i18n="heroConnect"></a>
+          <a class="button-secondary big" href="https://github.com/Open-Embedded-Probe">GitHub</a>
         </div>
         <div id="home-probe" class="card" hidden></div>
       </div>
-    </section>
 
-    <!-- 3.2 -->
-    <section class="view" data-view="tutorial" hidden>
-      <ol id="tut-steps" class="stepper"></ol>
-      <div class="card tut-card">
-        <h2 id="tut-title"></h2>
-        <div id="tut-body"></div>
-      </div>
-      <div class="tut-nav">
-        <button id="tut-back" type="button" data-i18n="back"></button>
-        <a href="#home" data-i18n="leaveTutorial"></a>
-        <button id="tut-next" class="button" type="button" data-i18n="next"></button>
-      </div>
-    </section>
+      <section id="about" class="block">
+        <h2 data-i18n="aboutTitle"></h2>
+        <div class="points">
+          <div><b data-i18n="about1"></b><p data-i18n="about1Desc"></p></div>
+          <div><b data-i18n="about2"></b><p data-i18n="about2Desc"></p></div>
+          <div><b data-i18n="about3"></b><p data-i18n="about3Desc"></p></div>
+        </div>
+        <div class="diagram" aria-hidden="true">
+          <span data-i18n="diagHost"></span><i>USB</i><span class="probe" data-i18n="diagProbe"></span><i data-i18n="diagWires"></i><span data-i18n="diagTarget"></span>
+        </div>
+      </section>
 
-    <!-- 3.3 -->
-    <section class="view" data-view="boards" hidden>
-      <header class="view-header"><h2 data-i18n="boardsTitle"></h2><p data-i18n="boardsLead"></p></header>
-      <div id="boards-slot"></div>
+      <section id="features" class="block">
+        <h2 data-i18n="featuresTitle"></h2>
+        <div id="feature-cards" class="features"></div>
+      </section>
+
+      <section id="boards" class="block">
+        <h2 data-i18n="boardsTitle"></h2>
+        <p class="muted" data-i18n="boardsLead"></p>
+        <div id="boards-slot"></div>
+      </section>
+
+      <section id="start" class="block">
+        <h2 data-i18n="startTitle"></h2>
+        <ol class="steps">
+          <li id="st-1"><h3 data-i18n="st1"></h3><p class="muted" data-i18n="st1Desc"></p><div id="start-firmware"></div></li>
+          <li id="st-2"><h3 data-i18n="st2"></h3><div id="start-connect"></div></li>
+          <li id="st-3"><h3 data-i18n="st3"></h3><p class="muted" data-i18n="st3Desc"></p><div id="start-target"></div></li>
+          <li id="st-4"><h3 data-i18n="st4"></h3><p class="muted" data-i18n="st4Desc"></p><div id="start-use"></div></li>
+        </ol>
+      </section>
+
+      <section id="tools" class="block">
+        <h2 data-i18n="toolsTitle"></h2>
+        <div class="features">
+          <a class="entry" href="https://open-embedded-probe.github.io/wireskein-web/"><b>WireSkein</b><span data-i18n="toolWireskein"></span></a>
+          <a class="entry" href="https://github.com/Open-Embedded-Probe/oep-client-python"><b>oep-client-python</b><span data-i18n="toolPython"></span></a>
+          <a class="entry" href="https://github.com/Open-Embedded-Probe/oep-probe-arduino"><b>oep-probe-arduino</b><span data-i18n="toolArduino"></span></a>
+          <a class="entry" href="https://github.com/Open-Embedded-Probe/oep-spec"><b>OEP spec</b><span data-i18n="toolSpec"></span></a>
+        </div>
+      </section>
     </section>
 
     <!-- 3.4 -->
@@ -85,11 +106,6 @@
         <a class="entry" href="#try"><b data-i18n="actTry"></b><span data-i18n="actTryDesc"></span></a>
         <a class="entry" href="#details"><b data-i18n="actDetails"></b><span data-i18n="actDetailsDesc"></span></a>
       </div>
-    </section>
-
-    <section class="view" data-view="connect" hidden>
-      <header class="view-header"><h2 data-i18n="connectTitle"></h2></header>
-      <div id="connect-slot"></div>
     </section>
 
     <!-- 3.5 -->
@@ -228,6 +244,7 @@
       </div>
       <p class="muted" data-i18n="connectHint"></p>
       <div id="connect-result"></div>
+      <p id="lock-hint" class="hint" data-i18n="lockHint" hidden></p>
     </div>
 
     <!-- using it from the tools: WireSkein (capture), the cores, oep-client-python (docs/page.ja.md §3.7) -->

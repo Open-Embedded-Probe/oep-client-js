@@ -6,9 +6,10 @@
 /** @typedef {{ en: string, ja: string }} Text */
 /** @typedef {true | false | Text} Has  true: yes, false: no, a text: yes with that limit */
 /**
- * @typedef {{ id: string, name: Text, chip: string, models: string[], verified: boolean,
+ * @typedef {{ id: string, tier: 'release' | 'build', name: Text, chip: string, models: string[], verified: boolean | Text,
  *   write: { page: 'any' | 'dfu' | false, how: Text }, usb: Text, pins: Text, reserved: Text,
  *   features: Record<string, Has> }} Board
+ * tier: release - a released firmware runs on it; build - build an example for it yourself
  */
 
 /** The features in the order the page shows them, grouped (docs/page.ja.md §4.1). */
@@ -40,7 +41,7 @@ export const FEATURES = [
 /** @type {Board[]} */
 export const BOARDS = [
   {
-    id: 'pico', name: { en: 'Raspberry Pi Pico', ja: 'Raspberry Pi Pico' }, chip: 'RP2040', models: ['rp2040'], verified: true,
+    id: 'pico', tier: 'release', name: { en: 'Raspberry Pi Pico', ja: 'Raspberry Pi Pico' }, chip: 'RP2040', models: ['rp2040'], verified: true,
     write: { page: 'any', how: { en: 'Hold BOOTSEL while plugging it in; this page writes it over USB.', ja: 'BOOTSEL を押しながら挿します。このページが USB から書きます。' } },
     usb: { en: 'USB (CDC, vendor bulk, HID)', ja: 'USB（CDC、vendor bulk、HID）' },
     pins: { en: 'GP0-GP22, GP26-GP28', ja: 'GP0〜GP22、GP26〜GP28' },
@@ -53,7 +54,7 @@ export const BOARDS = [
     },
   },
   {
-    id: 'pico2', name: { en: 'Raspberry Pi Pico 2', ja: 'Raspberry Pi Pico 2' }, chip: 'RP2350', models: ['rp2350'], verified: true,
+    id: 'pico2', tier: 'release', name: { en: 'Raspberry Pi Pico 2', ja: 'Raspberry Pi Pico 2' }, chip: 'RP2350', models: ['rp2350'], verified: true,
     write: { page: 'any', how: { en: 'Hold BOOTSEL while plugging it in; this page writes it over USB.', ja: 'BOOTSEL を押しながら挿します。このページが USB から書きます。' } },
     usb: { en: 'USB (CDC, vendor bulk, HID)', ja: 'USB（CDC、vendor bulk、HID）' },
     pins: { en: 'GP0-GP22, GP26-GP28', ja: 'GP0〜GP22、GP26〜GP28' },
@@ -66,7 +67,7 @@ export const BOARDS = [
     },
   },
   {
-    id: 'p4', name: { en: 'ESP32-P4 board (WT9932P4-TINY, ...)', ja: 'ESP32-P4 のボード（WT9932P4-TINY など）' }, chip: 'ESP32-P4 (v1.x)', models: ['esp32p4'], verified: true,
+    id: 'p4', tier: 'release', name: { en: 'ESP32-P4 board (chip v1.x)', ja: 'ESP32-P4 のボード（チップ v1.x）' }, chip: 'ESP32-P4 (v1.x)', models: ['esp32p4'], verified: true,
     write: { page: 'dfu', how: { en: 'The first time with esptool (the .merged.bin at 0x0); after that this page updates it over USB (DFU).', ja: '初めは esptool で（.merged.bin を 0x0 に）。その後は、このページが USB（DFU）で更新します。' } },
     usb: { en: 'USB HS (vendor bulk, HID, CDC)', ja: 'USB HS（vendor bulk、HID、CDC）' },
     pins: { en: 'GPIO0-GPIO54 but 24, 25', ja: 'GPIO0〜GPIO54（24、25 以外）' },
@@ -79,7 +80,7 @@ export const BOARDS = [
     },
   },
   {
-    id: 'p4x', name: { en: 'ESP32-P4X board (WT9932P4X-TINY, ...)', ja: 'ESP32-P4X のボード（WT9932P4X-TINY など）' }, chip: 'ESP32-P4X (v3.x)', models: ['esp32p4x'], verified: true,
+    id: 'p4x', tier: 'release', name: { en: 'ESP32-P4X board (chip v3.x)', ja: 'ESP32-P4X のボード（チップ v3.x）' }, chip: 'ESP32-P4X (v3.x)', models: ['esp32p4x'], verified: true,
     write: { page: 'dfu', how: { en: 'The first time with esptool (the .merged.bin at 0x0); after that this page updates it over USB (DFU). The P4 and P4X images are not interchangeable.', ja: '初めは esptool で（.merged.bin を 0x0 に）。その後は、このページが USB（DFU）で更新します。P4 と P4X の画像は互換がありません。' } },
     usb: { en: 'USB HS (vendor bulk, HID, CDC)', ja: 'USB HS（vendor bulk、HID、CDC）' },
     pins: { en: 'GPIO0-GPIO54 but 24, 25', ja: 'GPIO0〜GPIO54（24、25 以外）' },
@@ -92,7 +93,7 @@ export const BOARDS = [
     },
   },
   {
-    id: 'esp32', name: { en: 'Classic ESP32 board (DevKitC, ATOM, ...)', ja: 'classic ESP32 のボード（DevKitC、ATOM など）' }, chip: 'ESP32', models: ['esp32'], verified: true,
+    id: 'esp32', tier: 'release', name: { en: 'Classic ESP32 board (ESP32-DevKitC, ...)', ja: 'classic ESP32 のボード（ESP32-DevKitC など）' }, chip: 'ESP32', models: ['esp32'], verified: true,
     write: { page: false, how: { en: 'With esptool: the .merged.bin at 0x0 (this page cannot yet).', ja: 'esptool で .merged.bin を 0x0 に書きます（このページではまだ書けません）。' } },
     usb: { en: 'its USB-UART bridge (115200); Wi-Fi TCP once set up', ja: 'USB-UART の変換チップ（115200）。設定すれば Wi-Fi の TCP も' },
     pins: { en: 'GPIO4, 5, 13, 14, 16-19, 21-23, 25-27, 32-36, 39 (34-39 input only)', ja: 'GPIO4、5、13、14、16〜19、21〜23、25〜27、32〜36、39（34〜39 は入力だけ）' },
@@ -106,7 +107,7 @@ export const BOARDS = [
     },
   },
   {
-    id: 'ch32', name: { en: 'WCH CH32 board', ja: 'WCH CH32 のボード' }, chip: 'CH32X035 / V307 / H417', models: ['ch32x035', 'ch32v307', 'ch32h417'], verified: false,
+    id: 'ch32', tier: 'release', name: { en: 'WCH CH32 board', ja: 'WCH CH32 のボード' }, chip: 'CH32X035 / V307 / H417', models: ['ch32x035', 'ch32v307', 'ch32h417'], verified: false,
     write: { page: false, how: { en: 'With WCH-LinkUtility or wlink, the .bin at the flash start (this page cannot).', ja: 'WCH-LinkUtility か wlink で、.bin を flash の先頭に書きます（このページでは書けません）。' } },
     usb: { en: 'USB (vendor bulk, HID)', ja: 'USB（vendor bulk、HID）' },
     pins: { en: 'see the board', ja: 'ボードによる' }, reserved: { en: 'see the board', ja: 'ボードによる' },
@@ -117,6 +118,19 @@ export const BOARDS = [
       dac: { en: 'V307, H417: 12 bits', ja: 'V307、H417: 12 bit' },
       logic: { en: '8 ch, 250 kS/s (not the X035)', ja: '8 ch、250 kS/s（X035 以外）' }, analog: { en: '4 ch (not the X035)', ja: '4 ch（X035 以外）' },
       settings: false, memo: false,
+    },
+  },
+  {
+    id: 'esp32s3', tier: 'build', name: { en: 'ESP32-S3 / C3 / C6 board', ja: 'ESP32-S3 / C3 / C6 のボード' }, chip: 'ESP32-S3, C3, C6', models: [],
+    verified: { en: 'RVSWD builds; not checked on hardware', ja: 'RVSWD のビルドのみ。実機では未確認' },
+    write: { page: false, how: { en: 'Build an example for it: arduino-cli compile --profile esp32s3 examples/04.Debug/RvswdDebugProbe (a CH32 debugger), then arduino-cli upload. The guide: oep-probe-arduino docs/guide/boards.md "Builds for other boards".', ja: 'example を自分でビルドします: arduino-cli compile --profile esp32s3 examples/04.Debug/RvswdDebugProbe（CH32 のデバッガ）、そのあと arduino-cli upload。手引き: oep-probe-arduino の docs/guide/boards.ja.md「ほかのボード向けのビルド」。' } },
+    usb: { en: 'USB-Serial/JTAG or USB CDC', ja: 'USB-Serial/JTAG か USB CDC' },
+    pins: { en: 'chosen in the build (leave out flash, PSRAM, USB and strap pins)', ja: 'ビルドで選ぶ（flash、PSRAM、USB、起動のストラップのピンを外す）' },
+    reserved: { en: 'flash, PSRAM, USB, boot straps', ja: 'flash、PSRAM、USB、起動のストラップ' },
+    features: {
+      rvswd: { en: 'builds, not checked', ja: 'ビルドのみ、未確認' }, swio: false, swd: false, console: true, gpio: true,
+      busTarget: { en: 'not checked', ja: '未確認' }, busController: false, pwm: false, counter: false, dac: false,
+      logic: false, analog: false, settings: true, memo: { en: 'not checked', ja: '未確認' },
     },
   },
 ];

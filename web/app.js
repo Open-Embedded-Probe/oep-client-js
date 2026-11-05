@@ -15,31 +15,61 @@ const WIRESKEIN_VIEWER = 'https://open-embedded-probe.github.io/wireskein-web/';
 
 const WORDS = {
   en: {
+    navAbout: 'What OEP is',
+    navStart: 'Get started',
+    heroLead: 'One protocol for development probes - debuggers, logic analyzers, test fixtures. Write the OEP firmware to a Raspberry Pi Pico or an ESP32 board, and every tool that speaks OEP can debug your target chip, drive its pins and capture its signals through it.',
+    heroStart: 'Get started',
+    heroConnect: 'Connect a probe',
+    aboutTitle: 'What OEP is',
+    about1: 'A probe says what it can do',
+    about1Desc: 'It lists its debug lines, pins and captures; a tool reads the list and needs no driver for that probe.',
+    about2: 'Every tool, the same way',
+    about2Desc: 'Debuggers, test scripts and waveform viewers use any OEP probe alike. The knowledge of your target chip stays in the tool.',
+    about3: 'A cheap board becomes a probe',
+    about3Desc: 'A Raspberry Pi Pico or an ESP32 board with the OEP firmware is a probe; this page writes it.',
+    featuresTitle: 'What a probe can do',
+    tierRelease: 'Released firmware',
+    tierBuild: 'Build it yourself',
+    pageBuild: 'build an example',
+    startTitle: 'Get started',
+    st1: '1. Write the firmware',
+    st1Desc: 'Pick your board in "Boards" above or here; the latest release is written. A board that is already an OEP probe: connect it (step 2) and update it.',
+    st2: '2. Connect the probe',
+    st3: '3. Wire and name your target',
+    st3Desc: 'Wire the target\'s debug lines to free pins, find it, and give the connection a name.',
+    st4: '4. Use it from your tools',
+    st4Desc: 'Capture with WireSkein, write and debug with the cores, script with Python - with the address.',
+    toolsTitle: 'Tools and documents',
+    toolWireskein: 'Capture, view and check signals (its own page).',
+    toolPython: 'The Python host: the library and the oep command.',
+    toolArduino: 'The probe firmware, and the library to build your own.',
+    toolSpec: 'The OEP specification.',
+    lockHint: 'To change the probe (find a target, save names), tick "Allow changes" at the top right.',
     tagline: 'Turn a board into an OEP probe, wire your target to it, and reach it from your tools.',
     unsupported: 'This browser has no WebUSB / Web Serial / WebHID. Use Chrome or Edge, over HTTPS or localhost.',
-    navHome: 'Start', navBoards: 'Boards', navProbe: 'My probe',
+     navBoards: 'Boards', navProbe: 'My probe',
     notConnected: 'Not connected', disconnect: 'Disconnect', takeLock: 'Allow changes', locked: 'changes allowed', noLock: 'read only',
-    homeTitle: 'OEP: one way for every tool to use a development probe',
-    homeLead: 'Open Embedded Probe (OEP) is a common protocol for development probes - debuggers, logic analyzers, test fixtures. A probe tells what it can do, and any tool on your computer uses it the same way. A cheap board such as a Raspberry Pi Pico or an ESP32-P4 becomes such a probe with the OEP firmware: it debugs and writes your target chip, drives and reads its pins, and captures its signals.',
+    
+    
     diagHost: 'your tools', diagProbe: 'OEP probe', diagWires: 'wires', diagTarget: 'your target chip',
-    entryTutorial: 'First time here', entryTutorialDesc: 'A walk from what OEP is to a target you can reach from your tools.',
-    entryConnect: 'I have a probe', entryConnectDesc: 'Connect it and see it, its targets and its firmware.',
-    entryBoards: 'Which boards can be probes', entryBoardsDesc: 'The boards, what each can do, and how to write them.',
-    back: 'Back', next: 'Next', leaveTutorial: 'Leave the walk-through', done: 'To my probe',
-    tut1: 'What OEP is', tut2: 'What a probe can do', tut3: 'Pick a board', tut4: 'Write the firmware', tut5: 'Connect it',
-    tut6: 'Wire and name your target', tut7: 'Use it from your tools',
-    tut1Body: 'A development probe sits between your computer and the chip you are developing (the target). Each probe has always had its own tools. OEP is one protocol for all of them: the probe lists what it offers - debug lines, pins, captures - and a tool that speaks OEP uses any OEP probe without knowing it beforehand. The knowledge of your target chip stays in the tool.\nThis page prepares a probe: it writes the OEP firmware to a board, connects it, finds the target you wired and gives it a name that every tool can use.',
-    tut2Lead: 'What an OEP probe offers, depending on the board (next step):',
-    tut3Lead: 'Boards with released OEP firmware. Pick the one you have; its details show what it can do and how it is written.',
-    tut4Lead: 'The latest release is picked for the board; nothing to choose.',
-    tut5Lead: 'Plug the probe into this computer by USB.',
-    tut6Lead: 'Wire the target to free pins, find it, and name the connection. Allow changes first (top right).',
-    tut7Lead: 'The page ends here: capturing, writing and debugging the target are done by the tools, with the address.',
+     
+     
+     
+       
+        
+     
+    
+    
+    
+    
+    
+    
+    
     feat_debug: 'Stop the target chip, read and write its memory and registers, write its flash.',
     feat_fixture: 'Drive and read the target\'s pins for tests: GPIO, UART, I2C / SPI, PWM, counting edges.',
     feat_capture: 'Record signals as waveforms - logic and analog - to view and check them in WireSkein.',
     feat_store: 'Keep the pin names and the tools\' records in the probe, so they go with it to any computer.',
-    boardsTitle: 'Boards that can be OEP probes', boardsLead: 'With the released firmware. Pick one for what it can do, its pins and how to write it.',
+    boardsTitle: 'Boards that can be OEP probes', boardsLead: 'Boards with released firmware, and boards you build an example for. Pick one for what it can do, its pins and how to write it.',
     compare: 'Compare the boards', verified: 'checked on hardware', notVerified: 'builds and host tests only',
     pageWrites: 'written from this page', pageUpdates: 'updated from this page', pageNot: 'written with its own tools',
     bChip: 'Chip', bUsb: 'Connects by', bPins: 'Pins for your target', bReserved: 'Pins it keeps', bWrite: 'Writing the firmware', bFeatures: 'What it can do',
@@ -51,7 +81,7 @@ const WORDS = {
     actSettings: 'Settings', actSettingsDesc: 'Read, change, save, back up and restore the probe\'s settings.',
     actTry: 'Try the pins', actTryDesc: 'GPIO, UART and the serial speed, by hand.',
     actDetails: 'Details', actDetailsDesc: 'Everything the probe declares, as text or JSON.',
-    connectTitle: 'Connect a probe',
+    
     connectLead: 'Plug the probe in by USB and press Connect; in the browser\'s list choose "OEP probe".',
     connectHint: 'Serial: a probe behind a USB-UART bridge (the classic ESP32). HID: where USB is not allowed.',
     connectUsb: 'Connect', connectSerial: 'Serial', connectHid: 'HID', connected: 'Connected:',
@@ -84,31 +114,61 @@ const WORDS = {
     speedTry: 'Try the rates',
   },
   ja: {
+    navAbout: 'OEP とは',
+    navStart: 'はじめ方',
+    heroLead: 'デバッガ、ロジックアナライザ、治具のような開発用のプローブのための、ひとつのプロトコルです。Raspberry Pi Pico や ESP32 のボードに OEP の firmware を書くと、OEP を話すどの道具からも、そのボードを通してターゲットのチップをデバッグし、ピンを動かし、信号を取れます。',
+    heroStart: 'はじめる',
+    heroConnect: 'プローブをつなぐ',
+    aboutTitle: 'OEP とは',
+    about1: 'プローブが、できることを名乗る',
+    about1Desc: 'デバッグの線、ピン、キャプチャを一覧で名乗ります。道具はその一覧を読むので、プローブごとのドライバが要りません。',
+    about2: 'どの道具も、同じ方法で',
+    about2Desc: 'デバッガ、試験のスクリプト、波形のビューアが、どの OEP のプローブも同じように使います。ターゲットのチップの知識は、道具の側にあります。',
+    about3: '安いボードがプローブになる',
+    about3Desc: 'Raspberry Pi Pico や ESP32 のボードに OEP の firmware を書けば、プローブになります。このページで書けます。',
+    featuresTitle: 'プローブでできること',
+    tierRelease: 'リリースの firmware があるボード',
+    tierBuild: '自分でビルドするボード',
+    pageBuild: 'example をビルド',
+    startTitle: 'はじめ方',
+    st1: '1. firmware を書く',
+    st1Desc: '上の「ボード」か、ここでボードを選びます。最新のリリースを書きます。もう OEP のプローブになっているボードは、つないで（2）更新します。',
+    st2: '2. プローブをつなぐ',
+    st3: '3. ターゲットを配線して名前を付ける',
+    st3Desc: 'ターゲットのデバッグの線を空いたピンに配線し、見つけて、接続に名前を付けます。',
+    st4: '4. 道具から使う',
+    st4Desc: 'アドレスを使って、WireSkein で信号を取り、コアで書き込みとデバッグをし、Python で試験を組みます。',
+    toolsTitle: '道具と文書',
+    toolWireskein: '信号を取り、見て、照合する（別のページ）。',
+    toolPython: 'Python の host: ライブラリと oep コマンド。',
+    toolArduino: 'プローブの firmware と、自分のボード向けに作るためのライブラリ。',
+    toolSpec: 'OEP の仕様。',
+    lockHint: 'プローブを変えるとき（ターゲットを探す、名前を保存する）は、右上の「変更を許可」にチェックを入れます。',
     tagline: 'ボードを OEP のプローブにして、ターゲットをつなぎ、手元の道具から使えるようにします。',
     unsupported: 'このブラウザには WebUSB / Web Serial / WebHID がありません。Chrome か Edge で、HTTPS か localhost で開いてください。',
-    navHome: 'はじめ', navBoards: 'ボード', navProbe: 'わたしのプローブ',
+     navBoards: 'ボード', navProbe: 'わたしのプローブ',
     notConnected: '未接続', disconnect: '切断', takeLock: '変更を許可', locked: '変更可', noLock: '読むだけ',
-    homeTitle: 'OEP: 開発用のプローブを、どの道具からも同じ方法で',
-    homeLead: 'Open Embedded Probe（OEP）は、デバッガ、ロジックアナライザ、治具のような開発用のプローブのための、共通のプロトコルです。プローブは自分のできることを名乗り、パソコンのどの道具も同じ方法で使えます。Raspberry Pi Pico や ESP32-P4 のような安いボードも、OEP の firmware を書けばこのプローブになります。ターゲットのチップをデバッグして書き込み、ピンを動かして読み、信号を取れます。',
+    
+    
     diagHost: 'パソコンの道具', diagProbe: 'OEP のプローブ', diagWires: '線', diagTarget: '開発中のチップ',
-    entryTutorial: 'はじめて使う', entryTutorialDesc: 'OEP とは何かから、道具から使えるターゲットになるまでを順に案内します。',
-    entryConnect: 'プローブを持っている', entryConnectDesc: 'つないで、プローブ、ターゲット、firmware の様子を見ます。',
-    entryBoards: 'プローブになれるボード', entryBoardsDesc: 'ボードごとにできることと、書き方を見ます。',
-    back: '戻る', next: '次へ', leaveTutorial: '案内を抜ける', done: 'わたしのプローブへ',
-    tut1: 'OEP とは', tut2: 'プローブでできること', tut3: 'ボードを選ぶ', tut4: 'firmware を書く', tut5: 'つなぐ',
-    tut6: 'ターゲットをつないで名前を付ける', tut7: '道具から使う',
-    tut1Body: '開発用のプローブは、パソコンと、開発中のチップ（ターゲット）の間に入ります。これまでは、プローブごとに専用の道具がありました。OEP は、そのすべてに共通のプロトコルです。プローブは持っているもの（デバッグの線、ピン、キャプチャ）を名乗り、OEP を話す道具は、どの OEP のプローブも前もって知らずに使えます。ターゲットのチップの知識は、道具の側にあります。\nこのページはプローブを準備します。ボードに OEP の firmware を書き、つなぎ、配線したターゲットを見つけ、どの道具でも使える名前を付けます。',
-    tut2Lead: 'OEP のプローブが持つもの（ボードによる違いは次の段）:',
-    tut3Lead: 'OEP の firmware がリリースされているボードです。手元のものを選ぶと、できることと書き方が出ます。',
-    tut4Lead: 'ボードに合う最新のリリースを自動で選びます。選ぶものはありません。',
-    tut5Lead: 'プローブを USB でこのパソコンにつなぎます。',
-    tut6Lead: 'ターゲットを空いたピンに配線し、見つけて、接続に名前を付けます。先に右上の「変更を許可」にチェックを入れます。',
-    tut7Lead: 'このページはここまでです。キャプチャ、ターゲットの書き込み、デバッグは、アドレスを使ってそれぞれの道具で行います。',
+     
+     
+     
+       
+        
+     
+    
+    
+    
+    
+    
+    
+    
     feat_debug: 'ターゲットのチップを止め、メモリとレジスタを読み書きし、flash に書きます。',
     feat_fixture: '試験のために、ターゲットのピンを動かし、読みます。GPIO、UART、I2C / SPI、PWM、エッジを数える。',
     feat_capture: '信号を波形（ロジックとアナログ）として取り、WireSkein で見て照合します。',
     feat_store: 'ピンの名前と道具の記録をプローブに持つので、どのパソコンにつないでもついて来ます。',
-    boardsTitle: 'OEP のプローブになれるボード', boardsLead: 'リリースされた firmware で使えるものです。選ぶと、できること、ピン、書き方が出ます。',
+    boardsTitle: 'OEP のプローブになれるボード', boardsLead: 'リリースの firmware があるボードと、example を自分でビルドするボードです。選ぶと、できること、ピン、書き方が出ます。',
     compare: 'ボードを比べる', verified: '実機で確認済み', notVerified: 'ビルドと host の試験のみ',
     pageWrites: 'このページで書ける', pageUpdates: 'このページで更新できる', pageNot: '専用の道具で書く',
     bChip: 'チップ', bUsb: 'つなぎ方', bPins: 'ターゲットに使えるピン', bReserved: 'ボードが使うピン', bWrite: 'firmware の書き方', bFeatures: 'できること',
@@ -120,7 +180,7 @@ const WORDS = {
     actSettings: '設定', actSettingsDesc: 'プローブの設定を読む、変える、保存する、ファイルに控える、戻す。',
     actTry: 'ピンを試す', actTryDesc: 'GPIO、UART、シリアルの速さを手で試します。',
     actDetails: '詳しい情報', actDetailsDesc: 'プローブの宣言をすべて、テキストか JSON で。',
-    connectTitle: 'プローブをつなぐ',
+    
     connectLead: 'プローブを USB で挿し、「接続」を押します。ブラウザの一覧で「OEP probe」を選びます。',
     connectHint: 'シリアル: USB-UART の変換チップを通すプローブ（classic ESP32）。HID: USB が許されない環境で。',
     connectUsb: '接続', connectSerial: 'シリアル', connectHid: 'HID', connected: 'つながりました:',
@@ -250,18 +310,17 @@ function place(part, slot) {
   if ($(part).parentElement !== s) s.append($(part));
 }
 
+const SECTIONS = new Set(['about', 'features', 'boards', 'start', 'tools']);
+
 function route() {
-  if (!$('tut-body').contains(document.activeElement)) {
-    for (const p of ['part-boards', 'part-firmware', 'part-connect', 'part-target', 'part-use']) $('parts').append($(p));
-  }
+  for (const p of ['part-boards', 'part-firmware', 'part-connect', 'part-target', 'part-use']) $('parts').append($(p));
   const [name, arg] = (location.hash.slice(1) || 'home').split('/');
-  const view = document.querySelector(`section.view[data-view="${name}"]`) ? name : 'home';
+  const section = SECTIONS.has(name) ? name : null;
+  const view = section ? 'home' : document.querySelector(`section.view[data-view="${name}"]`) ? name : 'home';
   for (const v of document.querySelectorAll('section.view')) /** @type {HTMLElement} */ (v).hidden = v.getAttribute('data-view') !== view;
-  for (const a of document.querySelectorAll('.top-nav a')) a.classList.toggle('active', a.getAttribute('href') === `#${view}`);
+  for (const a of document.querySelectorAll('.top-nav a')) a.classList.toggle('active', a.getAttribute('href') === `#${section ?? view}`);
+  if (name === 'boards' && arg && BOARDS.some((b) => b.id === arg)) chosenBoard = arg;
   if (view === 'home') showHome();
-  if (view === 'tutorial') showStep(Math.min(TUTORIAL.length, Math.max(1, Number(arg) || 1)));
-  if (view === 'boards') { if (arg && BOARDS.some((b) => b.id === arg)) chosenBoard = arg; place('part-boards', 'boards-slot'); showBoards(); }
-  if (view === 'connect') { place('part-connect', 'connect-slot'); showConnect(); }
   if (view === 'firmware') { place('part-firmware', 'firmware-slot'); showFirmware(); }
   if (view === 'probe') showProbeView();
   if (view === 'target') { place('part-target', 'target-slot'); showTarget(); }
@@ -272,6 +331,8 @@ function route() {
     showConnect();
   }
   refreshButtons();
+  const target = section ? document.getElementById(section) : null;
+  if (target) target.scrollIntoView({ block: 'start' }); else window.scrollTo(0, 0);
 }
 
 const go = (/** @type {string} */ hash) => { if (location.hash === hash) route(); else location.hash = hash; };
@@ -281,7 +342,16 @@ const go = (/** @type {string} */ hash) => { if (location.hash === hash) route()
 function showHome() {
   const box = $('home-probe');
   box.hidden = !host || !info;
-  if (host && info) box.replaceChildren(el('p', {}, `${t('connected')} ${probeTitle()}`), el('a', { href: '#probe', className: 'button' }, t('navProbe')));
+  if (host && info) box.replaceChildren(el('span', {}, `${t('connected')} ${probeTitle()}`), el('a', { href: '#probe', className: 'button' }, t('navProbe')));
+  showFeatures();
+  place('part-boards', 'boards-slot'); showBoards();
+  place('part-firmware', 'start-firmware'); showFirmware();
+  place('part-connect', 'start-connect'); showConnect();
+  if (host) { place('part-target', 'start-target'); showTarget(); }
+  else $('start-target').replaceChildren(el('p', { className: 'muted' }, t('needProbe')));
+  place('part-use', 'start-use'); showUse();
+  $('st-1').classList.toggle('done', !!host);
+  $('st-2').classList.toggle('done', !!host);
 }
 
 function probeTitle() {
@@ -290,53 +360,16 @@ function probeTitle() {
   return `${b ? tx(b.name) : info.model} · ${info.unitId}`;
 }
 
-// ---- 3.2 the walk-through -------------------------------------------------------------------------------------------
-
-/** @type {{ title: keyof typeof WORDS.en, show: (body: HTMLElement) => void }[]} */
-const TUTORIAL = [
-  { title: 'tut1', show: (b) => {
-    for (const p of t('tut1Body').split('\n')) b.append(el('p', {}, p));
-    b.append(diagram());
-  } },
-  { title: 'tut2', show: (b) => {
-    b.append(el('p', {}, t('tut2Lead')));
-    const list = el('div', { className: 'features' });
-    const what = /** @type {const} */ (['feat_debug', 'feat_fixture', 'feat_capture', 'feat_store']);
-    FEATURES.forEach((g, i) => list.append(el('div', { className: 'feature' }, el('b', {}, tx(g.group)), el('p', {}, t(what[i])),
-      el('p', { className: 'muted' }, g.items.map(([, n]) => tx(n)).join(' · ')))));
-    b.append(list);
-  } },
-  { title: 'tut3', show: (b) => { b.append(el('p', {}, t('tut3Lead'))); place('part-boards', b); showBoards(); } },
-  { title: 'tut4', show: (b) => { b.append(el('p', {}, t('tut4Lead'))); place('part-firmware', b); showFirmware(); } },
-  { title: 'tut5', show: (b) => { b.append(el('p', {}, t('tut5Lead'))); place('part-connect', b); showConnect(); } },
-  { title: 'tut6', show: (b) => {
-    b.append(el('p', {}, t('tut6Lead')));
-    if (!host) { place('part-connect', b); showConnect(); return; }
-    place('part-target', b); showTarget();
-  } },
-  { title: 'tut7', show: (b) => { b.append(el('p', {}, t('tut7Lead'))); place('part-use', b); showUse(); } },
-];
-
-let step = 1;
-
-/** @param {number} n */
-function showStep(n) {
-  step = n;
-  const list = $('tut-steps');
-  list.replaceChildren(...TUTORIAL.map((s, i) => el('li', { className: i + 1 === n ? 'current' : i + 1 < n ? 'done' : '' },
-    el('a', { href: `#tutorial/${i + 1}` }, `${i + 1}. ${t(s.title)}`))));
-  $('tut-title').textContent = `${n}. ${t(TUTORIAL[n - 1].title)}`;
-  const body = $('tut-body');
-  for (const p of ['part-boards', 'part-firmware', 'part-connect', 'part-target', 'part-use']) if (body.contains($(p))) $('parts').append($(p));
-  body.replaceChildren();
-  TUTORIAL[n - 1].show(body);
-  /** @type {HTMLButtonElement} */ ($('tut-back')).disabled = n === 1;
-  $('tut-next').textContent = n === TUTORIAL.length ? t('done') : t('next');
-}
-
 function diagram() {
   return el('div', { className: 'diagram' }, el('span', {}, t('diagHost')), el('i', {}, 'USB'), el('span', { className: 'probe' }, t('diagProbe')),
     el('i', {}, t('diagWires')), el('span', {}, t('diagTarget')));
+}
+
+/** The feature cards (docs/page.ja.md §3.2, §4.1). */
+function showFeatures() {
+  const what = /** @type {const} */ (['feat_debug', 'feat_fixture', 'feat_capture', 'feat_store']);
+  $('feature-cards').replaceChildren(...FEATURES.map((g, i) => el('div', { className: 'feature' }, el('b', {}, tx(g.group)),
+    el('p', {}, t(what[i])), el('p', { className: 'muted' }, g.items.map(([, n]) => tx(n)).join(' · ')))));
 }
 
 // ---- 3.3 boards ------------------------------------------------------------------------------------------------------
@@ -348,11 +381,13 @@ const hasText = (v) => (v === true ? t('yes') : v === false ? t('no') : tx(v));
 
 function showBoards() {
   const cards = $('board-cards');
-  cards.replaceChildren(...BOARDS.map((b) => el('button', { type: 'button', className: `board-card${b.id === chosenBoard ? ' chosen' : ''}`,
+  const card = (/** @type {import('./boards.js').Board} */ b) => el('button', { type: 'button', className: `board-card${b.id === chosenBoard ? ' chosen' : ''}`,
     onclick: () => { chosenBoard = b.id; showBoards(); } },
     el('b', {}, tx(b.name)), el('span', { className: 'muted' }, b.chip),
-    el('span', { className: `badge ${b.verified ? 'ok' : 'warn'}` }, b.verified ? t('verified') : t('notVerified')),
-    el('span', { className: 'badge' }, b.write.page === 'any' ? t('pageWrites') : b.write.page === 'dfu' ? t('pageUpdates') : t('pageNot')))));
+    el('span', { className: `badge ${b.verified === true ? 'ok' : 'warn'}` }, b.verified === true ? t('verified') : b.verified === false ? t('notVerified') : tx(b.verified)),
+    el('span', { className: 'badge' }, b.tier === 'build' ? t('pageBuild') : b.write.page === 'any' ? t('pageWrites') : b.write.page === 'dfu' ? t('pageUpdates') : t('pageNot')));
+  cards.replaceChildren(el('h3', {}, t('tierRelease')), el('div', { className: 'board-grid' }, ...BOARDS.filter((b) => b.tier === 'release').map(card)),
+    el('h3', {}, t('tierBuild')), el('div', { className: 'board-grid' }, ...BOARDS.filter((b) => b.tier === 'build').map(card)));
   const table = /** @type {HTMLTableElement} */ ($('board-table'));
   table.replaceChildren(el('tr', {}, el('th'), ...BOARDS.map((b) => el('th', {}, tx(b.name)))));
   for (const g of FEATURES) {
@@ -372,12 +407,13 @@ function showBoards() {
       el('dt', {}, t('bPins')), el('dd', {}, tx(b.pins)), el('dt', {}, t('bReserved')), el('dd', {}, tx(b.reserved)),
       el('dt', {}, t('bWrite')), el('dd', {}, tx(b.write.how))),
     el('h4', {}, t('bFeatures')), feats,
-    location.hash.startsWith('#tutorial') ? null : el('a', { className: 'button', href: '#firmware', onclick: () => { chosenBoard = b.id; } }, t('writeThis')));
+    b.tier === 'release' ? el('a', { className: 'button', href: '#start', onclick: () => { chosenBoard = b.id; } }, t('writeThis')) : null);
 }
 
 // ---- connect ---------------------------------------------------------------------------------------------------------
 
 function showConnect() {
+  $('lock-hint').hidden = !host || locked;
   $('connect-result').replaceChildren(...(host && info ? [el('p', { className: 'ok' }, `${t('connected')} ${probeTitle()}`)] : []));
 }
 
@@ -956,8 +992,6 @@ function main() {
     applyWords();
   };
   window.addEventListener('hashchange', route);
-  $('tut-back').onclick = () => go(`#tutorial/${Math.max(1, step - 1)}`);
-  $('tut-next').onclick = () => go(step === TUTORIAL.length ? '#probe' : `#tutorial/${step + 1}`);
   $('connect-usb').onclick = () => connectWith(() => openWebUsb());
   $('connect-serial').onclick = () => connectWith(() => openWebSerial());
   $('connect-hid').onclick = () => connectWith(() => openWebHid());
