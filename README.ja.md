@@ -176,7 +176,7 @@ npm run serve       # http://localhost:4173/ でページ
 npm run test:browser # ChromiumとPython仮想プローブで画面操作を確認
 ```
 
-ブラウザの主導線は新規書き込みです。ESP32・P4・P4XはUSBシリアルから配布画像を直接書き込み、完了後にOEPとして接続します。
+ブラウザの主導線は「導入 → 接続先の設定 → 使用」です。書き込み後は設定画面へ自動で進み、同じポートで再接続を試します。接続先の名前・相手の型番・メモ・配線は同じフォームで作成・編集できます。ESP32・P4・P4XはUSBシリアルから配布画像を直接書き込み、完了後にOEPとして接続します。
 S3/C3/C6は対応するmerged画像の持ち込みに対応します（OepProbe配布画像は未提供）。CH32の初回書き込みは未対応です。
 ESP書き込み用の固定版 `esptool-js` はサイトに同梱し、npmライブラリの実行時依存には加えません。
 `npm run serve` は初回に配布画像を取得し、`.cache/firmware` に保存します。再取得は `node scripts/fetch-firmware.js` で行えます。

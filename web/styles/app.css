@@ -821,3 +821,10 @@ h3 { font-size: 18px; }
   .actions > button, .actions > .button { flex: 1 1 160px; }
   .topbar .connection-bar button, .topbar .connection-bar .button { min-height: 46px; font-size: 14px; }
 }
+
+.setup-flow { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 24px; }
+.setup-flow a { flex: 1 1 180px; padding: 16px 20px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); text-decoration: none; font-weight: 600; }
+.setup-flow a[aria-current=step] { color: var(--accent); border-color: var(--accent); background: var(--soft); }
+.form-section { margin-bottom: 32px; }
+.form-section label { margin-top: 22px; }
+.form-section .muted { margin-top: 8px; }

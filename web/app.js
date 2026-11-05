@@ -1,7 +1,8 @@
+import { connectionChange } from './connections.js';
 import { flashEsp } from './esp-flash.js';
 import * as oep from './oep-client.js';
 import { BOARDS, FEATURES, boardOf } from './boards.js';
-import { integer, hexBytes, printable, parseRoute, connectionName, firmwareState, validateBindings } from './model.js';
+import { integer, hexBytes, printable, parseRoute, firmwareState, validateBindings } from './model.js';
 import { SIGNALS, valuesFor } from './signals.js';
 
 /** @param {string} id @returns {any} */
@@ -15,16 +16,17 @@ let lang = (() => {
 })();
 const L = (en, ja) => lang === 'ja' ? ja : en;
 const T = (text) => text?.[lang] ?? text?.en ?? String(text ?? '');
-const state = { granted: [], knownProbes: new Map(), returnRoute: null, host: null, info: null, caps: null, busy: false, firmwareBusy: false, dirty: false, epoch: 0,
+const state = { installation: null, portRecords: new Map(), edit: null, granted: [], knownProbes: new Map(), returnRoute: null, host: null, info: null, caps: null, busy: false, firmwareBusy: false, dirty: false, epoch: 0,
   catalog: null, settings: [], settingsState: null, network: null, changeable: false, saveable: false, labels: [], ports: [], memos: [], memo: null,
   release: null, releaseError: false, clients: new Map(), plans: new Map(), debug: null, console: null,
   drafts: new Map(), results: new Map(), events: [], importPlan: null,
   wizard: { step: 0, found: [], picked: 0, saved: null }, notices: [], keepalive: null };
 /** @type {[string, string, string, string, number][]} */
 const NAV = [
-  ['home', '⌂', 'Start', 'はじめる', 0], ['probe', '◈', 'My probe', 'プローブ', 0], ['targets', '⇄', 'Connections', '接続先', 1],
+  ['home', '⌂', 'Start', 'はじめる', 0], ['firmware', '↓', '1. Install', '1. 導入', 0], ['setup', '⚙', '2. Configure', '2. 接続先を設定', 0],
+  ['probe', '◈', '3. Use', '3. 使用する', 1],
   ['signals', '⌁', 'Signal I/O', '信号を操作', 1], ['debug', '◎', 'Target tools', 'ターゲット操作', 1], ['tools', '▤', 'Capture & tools', '波形・道具', 1],
-  ['settings', '⚙', 'Settings', '設定', 2], ['storage', '▣', 'Storage', '保存領域', 2], ['firmware', '↓', 'Firmware', 'firmware', 2],
+  ['settings', '⚙', 'Advanced settings', '本体の詳細設定', 2], ['storage', '▣', 'Storage', '保存領域', 2],
   ['diagnostics', '≡', 'Diagnostics', '診断', 2], ['help', '?', 'Guide & boards', '案内・ボード', 3],
 ];
 const NEEDS_HOST = new Set(['probe', 'targets', 'target', 'signals', 'debug', 'settings', 'storage', 'diagnostics']);
@@ -201,7 +203,7 @@ function writeGate() {
 }
 function connectionLink(label, primary = false) {
   return node('a', { href: '#connect', class: `button${primary ? ' primary' : ''}`, onclick: () => {
-    if (parseRoute(location.hash).view !== 'connect') state.returnRoute = parseRoute(location.hash).view === 'home' ? '#probe' : location.hash || '#probe';
+    if (parseRoute(location.hash).view !== 'connect') state.returnRoute = parseRoute(location.hash).view === 'home' ? '#setup' : location.hash || '#setup';
   } }, label);
 }
 function connectCard() {
@@ -246,17 +248,20 @@ function showConnect() {
       actions(link(L('Prepare a board', 'ボードをプローブにする'), '#firmware')))];
   return top;
 }
-async function connect(open) {
+async function connect(open, expected = null) {
   let h;
   try {
     h = await open();
     const [info, caps] = await Promise.all([oep.core.probeInfo(h), oep.dump.collect(h)]);
+    if (expected?.unitId && info.unitId?.toLowerCase() !== expected.unitId.toLowerCase()) throw new Error(L('This is a different probe. Select the programmed device.', '別のプローブです。書き込んだ個体を選んでください。'));
+    if (expected && ['esp32','esp32p4','esp32p4x','rp2040','rp2350'].includes(expected.model) && info.model !== expected.model) throw new Error(L('The device model does not match the board just programmed.', '接続した機器のモデルが、書き込んだボードと一致しません。'));
     if (!info.unitId) throw new Error('The probe did not declare a usable unit ID.');
+    if (state.installation && ((state.installation.unitId && state.installation.unitId !== info.unitId) || (['esp32','esp32p4','esp32p4x','rp2040','rp2350'].includes(state.installation.model) && state.installation.model !== info.model))) { state.installation = null; state.fwFinished = null; }
     state.host = h; state.info = info; state.caps = caps; state.epoch = h.epoch;
     state.notices = []; state.dirty = false;
     try { await refreshData(); } catch (error) { state.notices.push(errorText(error)); }
     state.knownProbes.set(info.unitId, { name: boardOf(info.model) ? T(boardOf(info.model).name) : info.model, features: `${info.firmware ?? '—'} · ${[...SIGNALS.filter((s) => offered(s.name).length).map((s) => T(s.title)), ...(offered('oep.fixture.logic').length ? [L('Logic capture', 'ロジック取得')] : []), ...(offered('oep.fixture.analog').length ? [L('Analog capture', 'アナログ取得')] : [])].join(' · ')}` });
-    if (['home', 'connect'].includes(parseRoute(location.hash).view)) location.hash = state.returnRoute ?? '#probe';
+    if (['home', 'connect'].includes(parseRoute(location.hash).view)) location.hash = state.returnRoute ?? '#setup';
   } catch (e) { if (h) await h.link.close().catch(() => {}); state.host = null; state.info = null; state.caps = null; throw e; }
 }
 async function disconnect() {
@@ -264,6 +269,7 @@ async function disconnect() {
   invalidateLive();
   state.host = null; state.info = null; state.caps = null; state.catalog = null; state.memo = null;
   state.labels = []; state.ports = []; state.settings = []; state.network = null; state.memos = []; state.importPlan = null;
+  state.edit = null; state.portRecords.clear();
   state.returnRoute = null; state.dirty = false; state.changeable = false; state.saveable = false; state.notices = []; state.fwUpdateDevice = null;
   state.wizard = { step: 0, found: [], picked: 0, saved: null }; state.results.clear();
   state.drafts.forEach((_, k) => { if (!k.startsWith('fw-')) state.drafts.delete(k); });
@@ -291,12 +297,17 @@ async function refreshData() {
   state.labels = await oep.settings.labels(state.host);
   state.settingsState = (await st.offers('state')) ? await st.state() : null;
   state.network = (await st.offers('network')) && state.catalog.netif.size ? await st.network() : null;
+  state.memo = null; state.memos = [];
   if (offered('oep.probe.memo').length) {
     state.memo = await oep.memo.Memo.open(state.host);
     state.memos = await state.memo.list();
   }
   state.ports = oep.settings.portsNamed(state.labels).map((name) => ({ name,
     lines: state.labels.filter(([, l]) => oep.settings.parseLabel(l)?.[0].toLowerCase() === name.toLowerCase()) }));
+  await Promise.all(state.ports.map(async (port) => {
+    const record = state.memo ? await state.memo.readPortRecord(port.name) : readLocalRecord(port.name);
+    state.portRecords.set(port.name.toLowerCase(), record && typeof record === 'object' && !Array.isArray(record) ? record : {});
+  }));
 }
 function renderChrome() {
   document.documentElement.lang = lang;
@@ -308,8 +319,8 @@ function renderChrome() {
   const current = parseRoute(location.hash).view;
   const nav = $('navigation'); nav.replaceChildren(); let group = -1;
   for (const [id, icon, en, ja, g] of NAV) {
-    if (group !== g) { nav.append(node('div', { class: 'nav-group' }, [L('Connect', '接続'), L('Work', '作業'), L('Manage', '管理'), L('Learn', '案内')][g])); group = g; }
-    nav.append(node('a', { href: `#${id}`, ...(current === id || (id === 'home' && current === 'connect') || (id === 'targets' && current === 'target') ? { 'aria-current': 'page' } : {}) }, node('span', { class: 'nav-icon', 'aria-hidden': 'true' }, icon), L(en, ja)));
+    if (group !== g) { nav.append(node('div', { class: 'nav-group' }, [L('Prepare', '準備'), L('Use', '使用'), L('Advanced', '詳細・保守'), L('Learn', '案内')][g])); group = g; }
+    nav.append(node('a', { href: `#${id}`, ...(current === id || (id === 'setup' && current === 'connect') || (id === 'setup' && ['target', 'targets'].includes(current)) ? { 'aria-current': 'page' } : {}) }, node('span', { class: 'nav-icon', 'aria-hidden': 'true' }, icon), L(en, ja)));
   }
   const bar = $('connection-bar');
   if (state.host) bar.replaceChildren(node('span', { class: 'status online' }, `${state.info.model ?? 'OEP'} · ${unit()}`),
@@ -325,20 +336,75 @@ function render() {
   renderChrome();
   const route = parseRoute(location.hash);
   const screen = $('screen'); screen.replaceChildren();
+  const phase = ['firmware', 'home'].includes(route.view) ? 0 : ['setup','connect','targets','target','settings'].includes(route.view) ? 1 : ['probe','signals','debug','tools'].includes(route.view) ? 2 : -1;
+  screen.append(node('nav', { class: 'setup-flow', 'aria-label': L('Setup progress', '準備の流れ') }, ...[['#firmware',L('1. Install firmware','1. 導入')],['#setup',L('2. Configure connections','2. 接続先を設定')],['#probe',L('3. Use your probe','3. 使用')]].map(([href,label],i)=>node('a',{href,...(i===phase?{'aria-current':'step'}:{})},label))));
   for (const n of state.notices) screen.append(notice(n, 'warn'));
   if (NEEDS_HOST.has(route.view) && !state.host) {
-    const n = NAV.find(([id]) => id === route.view || (id === 'targets' && route.view === 'target'));
+    const n = NAV.find(([id]) => id === route.view || (id === 'setup' && ['target','targets'].includes(route.view)));
     screen.append(header(n ? L(n[2], n[3]) : L('Connect first', '接続してください'), L('Connect a probe to open this workspace. You will return here after connecting.', 'プローブに接続すると、この作業画面を開きます。')), connectCard()); return;
   }
-  const renderers = { home: showHome, connect: showConnect, probe: showProbe, targets: showTargets, target: showWizard, signals: showSignals, debug: showDebug,
+  const renderers = { home: showHome, setup: showSetup, connect: showConnect, probe: showProbe, targets: showSetup, target: showConnection, signals: showSignals, debug: showDebug,
     tools: showTools, settings: showSettings, storage: showStorage, firmware: showFirmware, diagnostics: showDiagnostics, help: showHelp };
   try { screen.append(...renderers[route.view](route.arg).filter(Boolean)); }
   catch (e) { screen.append(notice(errorText(e), 'bad')); console.error(e); }
 }
+function readLocalRecord(name) {
+  try { return JSON.parse(localStorage.getItem(`oep-port:${unit()}:${name.toLowerCase()}`) ?? '{}'); }
+  catch { return {}; }
+}
+function metadataFields() {
+  return node('section', { class: 'form-section' }, node('h2', {}, L('1. What will you connect?', '1. 何をつなぎますか？')),
+    p(L('A connection is a reusable name for the target-side device and its wiring. You can prepare it while the target is disconnected.', '接続先は、プローブの先につなぐ相手と配線に付ける名前です。ターゲットが未接続の状態で準備できます。')),
+    field('wizard-name', L('Connection name — e.g. sensor or board-1', '接続名 — 例：sensor、board-1'), 'target'),
+    p(L('Used in addresses and pin labels. Start with a letter; use up to 16 letters, digits or hyphens. Renaming changes its OEP address.', 'アドレスとピン名に使います。英字で始まる16文字以内の英数字・ハイフンで指定します。名前を変更するとOEPアドレスも変わります。'), 'muted'),
+    field('wizard-part', L('Target IC / board part number (optional)', '相手のIC・基板の型番（任意）')),
+    p(L('For example CH32V003F4P6, STM32F103C8T6 or a sensor module name. This is a human-readable record; choose the signal interface and pins below yourself.', '例：CH32V003F4P6、STM32F103C8T6、センサーモジュール名。後から相手を識別するための記録です。使用する信号とピンは下で指定します。'), 'muted'),
+    field('wizard-note', L('Wiring notes (optional)', '配線・用途のメモ（任意）'), '', { multiline: true }),
+    p(L('Record connector pin numbers, target voltage, intended use or other details needed next time.', 'コネクタの端子番号、ターゲットの電圧、用途など、次に使うときに必要な情報を記録します。'), 'muted'),
+    notice(state.memo ? L('Part number and notes are stored in the probe’s memo area.', '型番とメモはプローブのメモ領域へ保存します。') : L('This probe has no memo area. Part number and notes are stored in this browser for this probe; wiring is stored on the probe.', 'このプローブにはメモ領域がないため、型番・メモはこのブラウザ内に個体別で保存します。配線はプローブへ保存します。')));
+}
+function showSetup() {
+  const title = header(L('Configure connections', '接続先を設定する'), L('Name the device you will connect, choose its signals and pins, then save. You can connect and operate the target afterwards.', 'つなぐ相手に名前を付け、使用する信号とピンを指定して保存します。ターゲットへの接続と操作は、その後に行います。'));
+  const completed = state.fwFinished ? notice(`${L('Firmware installed', 'firmwareの書き込み完了')}: ${state.fwFinished}`, 'good') : null;
+  if (!state.host) return [title, completed,
+    notice(state.installation?.phase === 'connecting' ? L('Starting the installed firmware and reconnecting to configure it…', '書き込んだfirmwareの起動を待ち、設定のために再接続しています…') : L('Connect the probe here to read its pins and saved connections. You will stay on this configuration page.', 'ここでプローブに接続すると、ピン候補と保存済みの接続先を読み込みます。そのままこの設定画面で続けられます。')),
+    state.installation?.model?.startsWith('esp32p4') ? p(L('If the programming connector was a UART bridge, use the native OEP USB connector or USB-Serial/JTAG connector.', '書き込みにUART変換端子を使った場合は、OEPのnative USB端子またはUSB-Serial/JTAG端子につないでください。')) : null,
+    state.installation?.error ? node('details', {}, node('summary', {}, L('Connection status', '再接続の状況')), p(state.installation.error)) : null,
+    ...showConnect().slice(1, -1)];
+  return [title, completed,
+    p(`${state.info.model} · ${unit()} · ${state.info.firmware ?? ''}`, 'muted'),
+    ...showTargets().slice(1),
+    node('details', { class: 'card' }, node('summary', {}, L('Probe-wide settings and maintenance', 'プローブ本体の設定・保守')),
+      p(L('Pin idle states, network settings and settings-file import affect the probe itself. Connection names and wiring are edited above.', 'ピンの待機状態、ネットワーク、設定ファイルの復元など、プローブ本体の設定を変更します。接続名と配線は上の接続先から編集します。')),
+      actions(link(L('Open advanced probe settings', '本体の詳細設定を開く'), '#settings'), link(L('Inspect probe capabilities', 'プローブの機能を確認'), '#diagnostics'))),
+    actions(link(L('Continue to use the probe', '使用する画面へ進む'), '#probe', true))];
+}
+async function continueSetup(model, { port = null, unitId = null, serialNumber = null } = {}) {
+  state.installation = { model, port, unitId, phase: 'connecting', error: null };
+  state.drafts.set('connect-method', port ? 'serial' : 'usb');
+  state.firmwareBusy = false;
+  location.hash = '#setup'; render();
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      try {
+        if (port) await connect(() => oep.openWebSerial(port, { timeoutMs: 3000, keepSession: false }), { model });
+        else {
+          const expected = unitId ?? serialNumber;
+          const devices = expected && deviceAPIs.usb ? (await oep.getUsbProbes()).filter((d) => d.serialNumber?.toLowerCase() === expected.toLowerCase()) : [];
+          if (!devices.length) continue;
+          await connect(() => oep.openWebUsb(devices[0], { keepSession: false }), { model, unitId });
+        }
+        state.installation.phase = 'connected'; state.installation.unitId = state.info.unitId; return;
+      } catch (error) { state.installation.error = errorText(error); }
+    }
+    state.installation.phase = 'permission';
+  } finally { render(); }
+}
 function showHome() {
   return [node('section', { class: 'intro' }, p('OPEN EMBEDDED PROBE', 'eyebrow'), node('h1', {}, L('A workspace for your development probe.', '開発プローブを、ブラウザから。')),
     p(L('Start by installing OEP on your board. Then connect it to configure pins, exchange signals and work with your target.', 'まずボードへOEPを書き込みます。そのあとプローブとして接続し、ピンの設定、信号の送受信、ターゲットの調査を行います。'))),
-    state.host ? entry(L('Continue with your probe', '接続中のプローブを使う'), `${state.info.model} · ${unit()}`, '#probe', 'CONNECTED') : card(L('Start with a new board', 'まずは新規書き込みから'), p(L('Install OEP, then connect and use your probe. Everything from serial installation to signal I/O runs in this browser.', 'OEPを書き込んでから、プローブとして接続して使います。シリアルからの初回導入も、導入後の操作も、このブラウザで行います。')), link(L('Install OEP on a new board', '新しいボードにOEPを書き込む'), '#firmware', true)),
+    state.host ? entry(L('Configure connections', '接続先を設定する'), `${state.info.model} · ${unit()}`, '#setup', 'CONNECTED') : card(L('Start with a new board', 'まずは新規書き込みから'), p(L('Install OEP, then connect and use your probe. Everything from serial installation to signal I/O runs in this browser.', 'OEPを書き込んでから、プローブとして接続して使います。シリアルからの初回導入も、導入後の操作も、このブラウザで行います。')), link(L('Install OEP on a new board', '新しいボードにOEPを書き込む'), '#firmware', true)),
     node('div', { class: 'grid' }, entry(L('Already installed? Connect your probe', '導入済みのプローブを接続する'), L('Use this if OEP firmware is already installed.', 'OEPのfirmwareを書き込み済みの場合はこちら。'), '#connect', '02 / CONNECT'),
       entry(L('Understand OEP & choose a board', 'OEPを知る・ボードを選ぶ'), L('Compare debug, I/O and capture capabilities.', 'デバッグ・入出力・取得機能の違いを比較します。'), '#help', '02 / EXPLORE')),
     p(L('Device data stays in your browser. Firmware is fetched from this site. No login needed.', '機器のデータはブラウザ内で扱います。firmwareはこのサイトから取得します。ログインは不要です。'), 'muted')];
@@ -351,9 +417,9 @@ function showProbe() {
       [L('Unit ID', '個体ID'), unit()], [L('Firmware', 'firmware'), info.firmware ?? '—'], [L('Connection', '接続経路'), state.host.link.transport.kind ?? '—'],
       [L('Pins', 'ピン'), String(info.channelNames.size)], [L('Registered connections', '登録済みの接続先'), String(state.ports.length)],
     ].flatMap(([a, b]) => [node('dt', {}, a), node('dd', {}, b)])),
-      actions(button(L('Refresh device data', '状態を読み直す'), refreshData), link(L('Update firmware', 'firmwareを更新'), '#firmware'))),
+      actions(link(L('Edit connections','接続先を設定・編集'),'#setup',true),button(L('Refresh device data', '状態を読み直す'), refreshData), link(L('Update firmware', 'firmwareを更新'), '#firmware'))),
     node('div', { class: 'grid' },
-      entry(L('Set up reusable wiring', '配線を登録して使う'), L('Save known wiring now and attach later. Scan unknown wiring only when needed.', '配線を先に保存して、ターゲットは後で接続します。不明な配線だけ必要に応じて探索できます。'), '#targets', '01 / CONNECT'),
+      entry(L('Set up reusable wiring', '配線を登録して使う'), L('Save known wiring now and attach later. Scan unknown wiring only when needed.', '配線を先に保存して、ターゲットは後で接続します。不明な配線だけ必要に応じて探索できます。'), '#setup', '01 / CONNECT'),
       entry(L('Control signals', '信号を操作する'), SIGNALS.filter((s) => offered(s.name).length).map((s) => T(s.title)).join(' · ') || L('No supported signal interfaces', '対応する信号機能はありません'), '#signals', '02 / I/O'),
       entry(L('Inspect a target', 'ターゲットを調べる'), L('Debug, memory, registers and target console.', 'デバッグ・メモリ・レジスタ・ターゲットコンソール。'), '#debug', '03 / DEBUG'),
       entry(L('Capture with WireSkein', 'WireSkeinで波形を取る'), L('Use this probe from capture and development tools.', 'このプローブをキャプチャや開発の道具から使います。'), '#tools', '04 / CAPTURE')),
@@ -461,17 +527,25 @@ function usePort(port, offer) {
 }
 function showTargets() {
   return [header(L('Connections', '接続先'), L('Names and wiring saved in this probe. Registration does not mean the target is connected or powered now.', 'このプローブに登録された名前と配線です。現在ターゲットが接続・通電されていることを示すものではありません。')),
-    actions(node('a', { href: '#target/new', class: 'button primary', onclick: () => resetWizard() }, L('Add a connection', '接続先を追加')), button(L('Refresh', '読み直す'), refreshData)),
+    actions(node('a', { href: '#target/new', class: 'button primary', onclick: () => newConnection() }, L('Add a connection', '接続先を追加')), button(L('Refresh', '読み直す'), refreshData)),
     !state.ports.length ? card('', p(L('No connections have been registered yet.', '接続先はまだ登録されていません。'), 'empty')) : null,
+    state.saveNotice ? notice(state.saveNotice,state.dirty?'warn':'good') : null,
     ...state.ports.map((port) => card(port.name,
+      p(`${L('Target part','相手の型番')}: ${state.portRecords.get(port.name.toLowerCase())?.part || L('not recorded','未記入')}`),
+      state.portRecords.get(port.name.toLowerCase())?.note ? p(state.portRecords.get(port.name.toLowerCase()).note,'muted') : null,
       p(port.lines.map(([ch, label]) => `${label} → ${pinName(ch)}`).join(' · '), 'muted'), addressBox(`oep://${unit()}/${port.name}`),
       p(L('Choose how to use this wiring. Loading it does not attach or drive pins.', 'この配線を使う機能を選びます。呼び出しただけではターゲット接続・ピン駆動は行いません。'), 'muted'),
-      actions(...registrationOffers().filter((o) => portBindings(port, o)).map((o) => button(L(`Use ${registrationTitle(o)}`, `${registrationTitle(o)}で使う`), async () => usePort(port, o))), link(L('Use from tools', '道具から使う'), '#tools'),
+      actions(link(L('Edit connection','接続先を編集'),`#target/edit/${port.name}`,true), ...registrationOffers().filter((o) => portBindings(port, o)).map((o) => button(L(`Use ${registrationTitle(o)}`, `${registrationTitle(o)}で使う`), async () => usePort(port, o))), link(L('Use from tools', '道具から使う'), '#tools'),
         state.memo ? button(L('Read notes', '記録を読む'), async () => { output(`port-${port.name}`, await state.memo.readPortRecord(port.name) ?? L('No notes.', '記録はありません。')); }) : null,
         state.changeable ? button(L('Remove registration', '登録を削除'), async () => {
-          if (!confirm(L(`Remove the saved pin names for ${port.name}? Its memo record is kept in Storage.`, `${port.name}のピン名の登録を削除します。メモは保存領域に残ります。`))) return CANCELLED;
-          await new oep.settings.Settings(state.host).unsetNamed('core', port.lines.map(([ch]) => `channel.${pinName(ch)}.label`));
-          state.dirty = true; await refreshData();
+          if (!confirm(L(`Remove ${port.name}, its saved wiring and its part number / notes?`, `${port.name}の接続名・配線・型番・メモを削除します。`))) return CANCELLED;
+          state.dirty = true;
+          try {
+            await new oep.settings.Settings(state.host).unsetNamed('core', port.lines.map(([ch]) => `channel.${pinName(ch)}.label`));
+            if (state.saveable){await new oep.settings.Settings(state.host).save();state.dirty=false;}
+            if (state.memo){try{await state.memo.delete(oep.memo.portRecordName(port.name));} catch (error){if (!(error instanceof oep.NoResource))throw error;}}
+            else localStorage.removeItem(`oep-port:${unit()}:${port.name.toLowerCase()}`);
+          } finally {await refreshData();}
         }, { write: true, danger: true }) : null), result(`port-${port.name}`))),
     state.dirty ? notice(L('Settings have changes not saved to persistent storage. Save them in Settings to keep them after restarting.', '永続保存していない設定変更があります。再起動後も残す場合は「設定」で保存してください。'), 'warn') : null];
 }
@@ -484,47 +558,114 @@ function registrationTitle(offer) {
   const tool = SIGNALS.find((s) => s.name === offer.entry.name);
   return `${tool ? T(tool.title) : offer.entry.name.replace('oep.wire.', '').toUpperCase()} · ${offer.entry.instance}`;
 }
+function editorExtras(offer) {
+  const roles = offer ? new Set([...roleChannels(offer).keys()].map((r) => roleLine(offer,r))) : new Set();
+  return [...(state.edit?.original.lines ?? []).filter(([,label]) => !roles.has(oep.settings.parseLabel(label)?.[1]?.toLowerCase())).map(([ch,label]) => ({ id: String(ch), ch, line: label.slice(state.edit.original.name.length).replace(/^\./,'') })), ...(state.wizard.additional ?? [])];
+}
+function selectedWiring(offer) {
+  const bindings = /** @type {[number,number][]} */ (offer ? [...roleChannels(offer).keys()].filter((r) => value(`registration-pin-${offer.entry.fn}-${r}`) !== '').map((r) => [r, num(`registration-pin-${offer.entry.fn}-${r}`, 0, 65534)]) : []);
+  if (offer) {
+    validateBindings(offer.description.roles, offer.description.groups, bindings);
+    if (offer.entry.name.startsWith('oep.wire.') && (!bindings.some(([r]) => r===1) || (offer.entry.name !== 'oep.wire.swio' && !bindings.some(([r]) => r===2)))) throw new Error(L('Specify each debug signal pin.', 'デバッグの各信号ピンを指定してください。'));
+  }
+  const desired = bindings.map(([r,ch]) => {
+    const line = roleLine(offer,r);
+    const old = state.edit?.original.lines.map(([,l]) => oep.settings.parseLabel(l)).find((l)=>l?.[1]?.toLowerCase()===line);
+    return [ch, `${line}${old?.[2] ? '@'+old[2] : ''}`];
+  });
+  for (const row of editorExtras(offer)) if (value(`extra-pin-${row.id}`) !== '') desired.push([num(`extra-pin-${row.id}`,0,65534),value(`extra-line-${row.id}`).trim()]);
+  return desired;
+}
+async function saveConnection(offer, desired) {
+  const name = value('wizard-name').trim();
+  const original = state.edit?.original ?? null;
+  await refreshData();
+  const plan = connectionChange({ name, labels: state.labels, original, desired });
+  const st = new oep.settings.Settings(state.host);
+  state.saveNotice = null;
+  let stage = L('applying wiring', '配線の適用');
+  try {
+    if (plan.unset.length || plan.set.length) state.dirty = true;
+    if (plan.unset.length) await st.unsetNamed('core', plan.unset.map((ch)=>`channel.${pinName(ch)}.label`));
+    if (plan.set.length) await st.setNamed('core', Object.fromEntries(plan.set.map(([ch,label])=>[`channel.${pinName(ch)}.label`,label])));
+    stage = L('saving probe settings', 'プローブへの永続保存');
+    if (state.saveable) { await st.save(); state.dirty = false; }
+    stage = L('saving part number and notes', '型番・メモの保存');
+    const previous = original ? state.portRecords.get(original.name.toLowerCase()) ?? {} : {};
+    const fields = { ...previous, part: value('wizard-part'), note: value('wizard-note'), ...((plan.unset.length || plan.set.length) ? { target: null } : {}) };
+    const renamed = original && original.name.toLowerCase() !== name.toLowerCase();
+    if (state.memo) {
+      await state.memo.updatePortRecord(name, fields);
+      if (renamed) { try { await state.memo.delete(oep.memo.portRecordName(original.name)); } catch(error) { if (!(error instanceof oep.NoResource)) throw error; } }
+    } else {
+      const record = Object.fromEntries(Object.entries(fields).filter(([,v])=>v !== null && v !== ''));
+      localStorage.setItem(`oep-port:${unit()}:${name.toLowerCase()}`, JSON.stringify(record));
+      if (renamed) localStorage.removeItem(`oep-port:${unit()}:${original.name.toLowerCase()}`);
+    }
+    state.saveNotice = state.saveable ? L(`Saved ${name}. Choose Edit to change it, or a tool to use its wiring.`, `${name}を保存しました。「編集」で変更でき、使用する機能を選ぶと配線を呼び出せます。`) : L(`Applied ${name}. This probe cannot save settings across restarts.`, `${name}を適用しました。このプローブは再起動後の永続保存に対応していません。`);
+    state.edit = null; resetWizard(); location.hash = '#setup';
+  } catch(error) {
+    throw new Error(L(`Could not complete ${stage}. Some changes may already be applied. Reload the connection before retrying. `, `${stage}を完了できませんでした。変更が一部適用されている可能性があります。接続先を読み直してから再試行してください。`) + errorText(error));
+  } finally { await refreshData(); }
+}
 function fixedRegistration(top) {
   const offers = registrationOffers();
-  if (!offers.length) return [...top, notice(L('No supported pin interface is declared.', '対応するピン機能が宣言されていません。'))];
-  const choices = choiceCards('registration-function', L('What will this connection be used for?', 'どの用途の配線を登録しますか？'), offers.map((offer) => ({
+  const choices = choiceCards('registration-function', L('2. Which signals will you use?', '2. どの信号を使いますか？'), [...offers.map((offer) => ({
     value: offer.entry.fn, title: registrationTitle(offer),
     description: ({ 'oep.wire.rvswd': L('WCH RISC-V debug connector: SWDIO + SWCLK.', 'WCHのRISC-V向けデバッグ端子。SWDIOとSWCLKを使います。'), 'oep.wire.swio': L('CH32V00x debug connector: one SWIO signal.', 'CH32V00x向けデバッグ端子。SWIOの1本を使います。'), 'oep.wire.swd': L('ARM debug connector: SWDIO + SWCLK.', 'ARM向けデバッグ端子。SWDIOとSWCLKを使います。') })[offer.entry.name] ?? T(SIGNALS.find((s) => s.name === offer.entry.name)?.description),
     facts: [Object.values(oep.interfaces.KNOWN[offer.entry.name]?.roles ?? {}).join(' / '), `${L('Pin candidates', 'ピン候補')}: ${[...new Set([...roleChannels(offer).values()].flat())].length}`],
-  })), offers[0].entry.fn);
-  const offer = offers.find((o) => o.entry.fn === +value('registration-function')) ?? offers[0];
+  })), { value:'custom', title:L('Other signal names','その他の信号名'), description:L('Name a custom connector or preserve signals already registered by another tool.','独自のコネクタや、他のツールで登録した信号名を編集します。'), facts:[] }], offers[0]?.entry.fn ?? 'custom');
+  const offer = offers.find((o) => o.entry.fn === +value('registration-function'));
   const labels = new Map(state.labels);
-  const fields = [...roleChannels(offer)].map(([role, pins]) => selectField(`registration-pin-${offer.entry.fn}-${role}`,
-    `${oep.interfaces.KNOWN[offer.entry.name]?.roles[role] ?? role}${offer.entry.name === 'oep.fixture.uart' ? role === 1 ? L(' ← target TX', ' ← ターゲットのTX') : L(' → target RX', ' → ターゲットのRX') : ''}`,
-    [['', L('Not assigned', '割り当てない')], ...pins.map((ch) => [ch, `${pinName(ch)}${labels.has(ch) ? ` · ${labels.get(ch)}` : ''}`])], pins.length === 1 && !labels.has(pins[0]) && role !== 3 ? String(pins[0]) : ''));
-  return [...top, card(L('Specify the fixed wiring', '固定の配線を指定する'),
-    p(L('Your probe must be connected; the target may be disconnected or unpowered. Choose roles and pins from the probe’s declarations.', 'プローブには接続しますが、ターゲットは未配線・未通電のままで構いません。プローブが宣言する候補から役割ごとのピンを指定します。')),
-    notice(L('Saving only registers names. It does not claim pins, drive signals or connect to a target.', '保存はピン名の登録だけです。ピンの占有・信号出力・ターゲットへの接続は行いません。')), choices, node('div', { class: 'fields' }, ...fields),
-    actions(button(L('Review wiring', '保存内容を確認'), async () => {
-      const bindings = /** @type {[number,number][]} */ ([...roleChannels(offer).keys()].filter((r) => value(`registration-pin-${offer.entry.fn}-${r}`) !== '').map((r) => [r, num(`registration-pin-${offer.entry.fn}-${r}`, 0, 65534)]));
-      validateBindings(offer.description.roles, offer.description.groups, bindings);
-      if (offer.entry.name.startsWith('oep.wire.') && (!bindings.some(([r]) => r === 1) || (offer.entry.name !== 'oep.wire.swio' && !bindings.some(([r]) => r === 2)))) throw new Error(L('Specify each debug signal pin.', 'デバッグの各信号ピンを指定してください。'));
-      for (const [, ch] of bindings) if (labels.has(ch)) throw new Error(L(`${pinName(ch)} is already named ${labels.get(ch)}. Edit or remove its registration in Settings first.`, `${pinName(ch)}には${labels.get(ch)}が登録済みです。先に「設定」で既存の登録を編集・削除してください。`));
-      state.wizard.fixed = { offer, bindings };
-      state.wizard.step = 2;
-    }, { primary: true })))];
+  const owned = new Set(state.edit?.original.lines.map(([ch])=>ch) ?? []);
+  const fields = offer ? [...roleChannels(offer)].map(([role,pins]) => selectField(`registration-pin-${offer.entry.fn}-${role}`,
+    `${oep.interfaces.KNOWN[offer.entry.name]?.roles[role] ?? role}${offer.entry.name==='oep.fixture.uart' ? role===1 ? L(' ← target TX',' ← 相手のTX') : L(' → target RX',' → 相手のRX') : ''}`,
+    [['',L('Not assigned','割り当てない')],...pins.map((ch)=>[ch,`${pinName(ch)}${labels.has(ch)?` · ${labels.get(ch)}`:''}`])], pins.length===1 && (!labels.has(pins[0]) || owned.has(pins[0])) && role!==3 ? String(pins[0]) : '')) : [];
+  const extras = editorExtras(offer);
+  return [...top, card('', metadataFields(), choices,
+    node('section',{class:'form-section'},node('h2',{},L('3. Which probe pin carries each signal?','3. プローブのどのピンを使いますか？')),
+      p(L('Choose the probe-side pins. The target may be disconnected or unpowered; saving does not drive these pins.','プローブ側のピンを指定します。相手は未配線・未通電で構いません。保存だけではピンを駆動しません。')),
+      node('div',{class:'fields'},...fields),
+      ...extras.map((row)=>node('div',{class:'fields'},field(`extra-line-${row.id}`,L('Signal name','信号名'),row.line),selectField(`extra-pin-${row.id}`,L('Probe pin (blank removes this signal)','プローブのピン（空欄でこの信号を削除）'),[['',L('Not assigned','割り当てない')],...[...state.info.channelNames].map(([ch,name])=>[ch,name])],row.ch===null?'':String(row.ch)))),
+      button(L('Add another signal','信号を追加'),async () => {state.wizard.additional??=[];state.wizard.additional.push({id:`new${state.wizard.additional.length}`,ch:null,line:''});}),
+      p(L('To move a registered signal, select its new pin. Clear the assignment to remove it. Pins used by another connection cannot be overwritten.','登録済みの信号はピンを選び直して変更できます。割当を空欄にすると削除します。他の接続先が使用するピンは上書きしません。'),'muted')),
+    state.dirty ? notice(L('Saving also preserves all other current probe settings.','保存すると、プローブの他の現在の設定もまとめて永続保存します。'),'warn') : null,
+    actions(button(state.edit ? L('Save changes','変更を保存') : L('Save connection','接続先を保存'),async () => {const desired=selectedWiring(offer);await enableChanges();await saveConnection(offer,desired);},{primary:true,disabled:!state.changeable}),node('a',{href:'#setup',class:'button',onclick:() => newConnection()},L('Cancel and return to configuration','キャンセルして設定へ戻る'))),
+    p(L('Save → return to configuration → choose a tool when you are ready. The target is not attached automatically.','保存時にプローブの設定変更権限を取得します。完了すると接続先の設定画面へ戻ります。使うときに操作画面を選び、明示的に接続・出力を開始します。'),'muted'))];
 }
+function showConnection(arg) {
+  if (arg.startsWith('edit/')) {
+    const name = arg.slice(5);
+    const port = state.ports.find((p)=>p.name.toLowerCase()===name.toLowerCase());
+    if (!port) return [header(L('Connection not found','接続先が見つかりません'),L('It may have been renamed or removed.','名前の変更または削除が行われた可能性があります。')),link(L('Back to configuration','設定へ戻る'),'#setup',true)];
+    if (state.edit?.original.name !== port.name) {
+      resetWizard(); clearConnectionDrafts();
+      state.edit = { original:{ name:port.name, lines:port.lines.map(([ch,label])=>[ch,label]) } };
+      const record = state.portRecords.get(port.name.toLowerCase()) ?? {};
+      state.drafts.set('wizard-name',port.name); state.drafts.set('wizard-part',typeof record.part==='string'?record.part:'');state.drafts.set('wizard-note',typeof record.note==='string'?record.note:'');
+      const compatible = registrationOffers().map((o)=>({o,bindings:portBindings(port,o)})).filter((x)=>x.bindings).sort((a,b)=>b.bindings.length-a.bindings.length);
+      const offer=compatible[0]?.o;
+      state.drafts.set('registration-function',offer?String(offer.entry.fn):'custom');
+      if (offer) for (const role of roleChannels(offer).keys()) state.drafts.set(`registration-pin-${offer.entry.fn}-${role}`,'');
+      if (offer) for (const [role,ch] of compatible[0].bindings) state.drafts.set(`registration-pin-${offer.entry.fn}-${role}`,String(ch));
+    }
+    return fixedRegistration([header(L(`Edit ${port.name}`,`${port.name}を編集`),L('Change its name, part number, notes or wiring in one place. Saving returns to configuration.','接続名・型番・メモ・配線をこの画面で変更できます。保存すると設定画面へ戻ります。'))]);
+  }
+  if (state.edit){state.edit=null;resetWizard();clearConnectionDrafts();}
+  return showWizard();
+}
+function clearConnectionDrafts() { state.drafts.forEach((_,key)=>{if (/^(wizard-|registration-pin-|registration-function|extra-)/.test(key))state.drafts.delete(key);}); }
+function newConnection() { state.edit=null;resetWizard();clearConnectionDrafts();state.drafts.set('registration-mode','fixed'); }
 function resetWizard() { state.wizard = { step: 0, found: [], picked: 0, saved: null }; }
 function showWizard() {
   const w = state.wizard;
   const offers = wireOffers().filter((o) => supports(o, oep.riscv.WireBase.SCAN));
   const manual = value('registration-mode') !== 'scan';
-  const steps = manual ? [L('1. Pins', '1. ピン指定'), L('2. Review & save', '2. 確認・保存'), L('3. Done', '3. 完了')] : [L('1. Wire', '1. 配線'), L('2. Find', '2. 探索'), L('3. Name', '3. 命名'), L('4. Done', '4. 完了')];
-  const activeStep = manual ? w.step === 0 ? 0 : w.step - 1 : w.step;
-  const top = [header(L('Add a connection', '接続先を追加'), L('Register known wiring without a target attached. Scan only when you need to discover unknown wiring.', '決まっている配線は、ターゲット未接続のまま登録できます。スキャンは配線を調べたい場合だけ使います。')),
+  const steps = [L('1. Candidates','1. 候補ピン'),L('2. Scan','2. 探索'),L('3. Save wiring','3. 配線を保存')];
+  const activeStep = w.step;
+  if (manual) return fixedRegistration([header(L('Add a connection','接続先を追加'),L('Describe the device, choose signals and pins, then save. A connected target is not required.','つなぐ相手、使用する信号、ピンを指定して保存します。ターゲットへの接続は不要です。')),node('details',{},node('summary',{},L('The debug wiring is unknown? Scan it (optional)','デバッグの配線が不明な場合は探索する（任意）')),p(L('Scanning tries selected pins against a powered target.','給電したターゲットに対して選んだ候補ピンの組を試します。')),button(L('Open optional scan','任意の探索を開く'),async () => {state.drafts.set('registration-mode','scan');resetWizard();}))]);
+  const top = [header(L('Find unknown debug wiring', '不明なデバッグ配線を探索'), L('Use a powered target to test selected pin pairs, then save the responding wiring.', '給電したターゲットに対して候補ピンの組を試し、応答のある配線を保存します。')),actions(button(L('Specify fixed wiring instead','固定ピン指定へ戻る'),async () => {state.drafts.set('registration-mode','fixed');resetWizard();})),
     node('ol', { class: 'wizard' }, ...steps.map((name, i) => node('li', { class: activeStep === i ? 'current' : activeStep > i ? 'done' : '', ...(activeStep === i ? { 'aria-current': 'step' } : {}) }, name))), writeGate()];
-  if (w.step === 0) {
-    top.push(choiceCards('registration-mode', L('How do you want to register the wiring?', 'どの方法で配線を登録しますか？'), [
-      { value: 'fixed', title: L('Specify known pins', '決まっているピンを指定'), description: L('For a connector, fixture or a wiring diagram. Save now and connect the target later.', '端子・治具・配線図のピンが決まっている場合。先に保存し、ターゲットは後でつなぎます。'), facts: [L('No scan or target power required', 'スキャン・ターゲットの給電は不要')] },
-      { value: 'scan', title: L('Find unknown debug wiring', '不明なデバッグ配線を探索'), description: L('Try selected candidate pins against a powered target.', '給電したターゲットに対して、選んだ候補ピンの組を試します。'), facts: [L('Optional; drives the selected pins', '必要な場合のみ。選んだピンを駆動します')] },
-    ], 'fixed', () => { resetWizard(); state.results.delete('scan'); }));
-    if (manual) return fixedRegistration(top);
-  }
   if (!manual && !offers.length) return [...top, notice(L('This probe has no supported scan operation. Choose known pins above to register wiring without scanning.', 'このプローブには対応する探索操作がありません。上の「決まっているピンを指定」で、探索せずに配線を登録できます。'))];
   if (w.step === 0) {
     const wire = wireChoices('wizard-wire', offers, () => {
@@ -562,39 +703,21 @@ function showWizard() {
     !w.found.length && state.results.has('scan') ? notice(L('No target responded. Check GND, power, line type and wiring before retrying.', 'ターゲットから応答がありません。GND・電源・線の種類・配線を確認してください。'), 'warn') : null,
     actions(button(L('Back to wiring', '配線に戻る'), async () => { w.step = 0; }), button(L('Name this connection', '名前を付ける'), async () => { w.step = 2; }, { disabled: !w.found.length, primary: true })))];
   if (w.step === 2) {
-    const f = w.fixed ?? w.found[w.picked];
-    const bindings = w.fixed ? w.fixed.bindings : [[1, f.pins[0]], ...(f.pins[1] === 65535 ? [] : [[2, f.pins[1]]])];
+    const f = w.found[w.picked];
+    const bindings = [[1, f.pins[0]], ...(f.pins[1] === 65535 ? [] : [[2, f.pins[1]]])];
     return [...top, card(L('Save the wiring', '配線を保存'), p(bindings.map(([r, ch]) => `${roleLine(f.offer, r)} → ${pinName(ch)}`).join(' · ')),
       notice(manual ? L('Wiring is not tested. Saving only changes labels; it does not scan, attach, or drive pins.', '配線は動作未確認です。保存はピン名の設定だけを変更し、スキャン・ターゲット接続・ピン駆動は行いません。') : L('The scan response confirms these pins at scan time only.', 'スキャン時点で応答のあったピンです。現在の接続状態を保証するものではありません。')),
-      node('div', { class: 'fields' }, field('wizard-name', L('Connection name (up to 16 characters)', '接続名（16文字まで）'), 'target'),
-        field('wizard-part', L('Part number', '型番')), field('wizard-note', L('Notes', 'メモ'), '', { multiline: true })),
+      metadataFields(),
       state.dirty ? notice(L('Saving this connection also saves all other current settings on the probe.', '接続先の保存時に、プローブの他の現在の設定もまとめて永続保存します。'), 'warn') : null,
       p(L('The connection name prefixes each signal label, such as target.swdio or sensor.sda. Notes are saved when memo storage is available.', '接続名と信号名からtarget.swdioやsensor.sdaなどのピン名を作ります。メモ領域があれば型番とメモも保存します。'), 'muted'),
       !state.changeable ? notice(L('This probe has no writable settings; connection names cannot be saved.', 'このプローブには変更可能な設定がなく、接続名を保存できません。'), 'warn') : null,
       actions(button(manual ? L('Back to pin selection', 'ピン指定へ戻る') : L('Back to results', '探索結果へ戻る'), async () => { w.step = manual ? 0 : 1; }), button(L('Save connection', '接続先を保存'), async () => {
-        const name = connectionName(value('wizard-name').trim(), state.ports.map((p) => p.name));
-        const named = Object.fromEntries(bindings.map(([r, ch]) => [`channel.${pinName(ch)}.label`, `${name}.${roleLine(f.offer, r)}`]));
-        for (const [, ch] of bindings) if (state.labels.some(([pin]) => pin === ch)) throw new Error(L('A selected pin already has a label. Review the current settings before replacing it.', '選択したピンには既に名前があります。置き換える前に現在の設定を確認してください。'));
-        w.saved = { name, persistent: false, notes: false };
-        await new oep.settings.Settings(state.host).setNamed('core', named); state.dirty = true;
-        try {
-          if (state.saveable) { await new oep.settings.Settings(state.host).save(); state.dirty = false; w.saved.persistent = true; }
-          if (state.memo) { await state.memo.updatePortRecord(name, { part: value('wizard-part'), note: value('wizard-note') }); w.saved.notes = true; }
-        } finally { w.step = 3; await refreshData(); }
+        await saveConnection(f.offer,bindings.map(([r,ch])=>[ch,roleLine(f.offer,r)]));
       }, { write: true, primary: true, disabled: !state.changeable })))];
   }
-  return [...top, card(L('Connection registered', '接続先を登録しました'), addressBox(`oep://${unit()}/${w.saved.name}`),
-    notice(w.saved.persistent ? L('Pin names saved to the probe.', 'ピン名をプローブに永続保存しました。') : L('Pin names are applied for now; persistent save was not completed.', 'ピン名は現在の設定へ適用しました。永続保存は完了していません。'), w.saved.persistent ? 'good' : 'warn'),
-    p(w.saved.notes ? L('Part number and notes were saved.', '型番とメモを保存しました。') : L('Notes were not saved. Check the probe capabilities or the operation error.', '型番とメモは保存していません。プローブの対応状況や操作エラーを確認してください。'), 'muted'),
-    p(L('Registration is saved wiring, not a live connection check. Attach or apply pins explicitly from the operation screen.', '登録は配線の設定であり、実際の接続確認ではありません。操作画面で接続・ピン割当を明示的に実行してください。'), 'muted'),
-    actions(link(L('View connections', '接続先一覧へ'), '#targets', true), button(L('Load wiring into its tool', 'この配線で操作画面を開く'), async () => {
-      const f = w.fixed ?? w.found[w.picked];
-      const port = state.ports.find((p) => p.name === w.saved.name);
-      if (!port) throw new Error(L('The saved registration was not found.', '保存した登録を確認できませんでした。'));
-      usePort(port, f.offer);
-    }), link(L('Use from tools', '道具から使う'), '#tools'),
-      button(L('Register another', '別の接続先を登録'), async () => { resetWizard(); state.results.delete('scan'); })))];
+  return [...top, link(L('Back to configuration','設定へ戻る'),'#setup',true)];
 }
+
 function debugOffer() { return wireOffers().find((o) => o.entry.fn === +value('debug-wire')); }
 async function memoryAccess() {
   const d = state.debug;
@@ -677,7 +800,7 @@ function showDebug() {
 function showSettings() {
   const st = () => new oep.settings.Settings(state.host);
   const cat = state.catalog;
-  const top = [header(L('Settings', '設定'), L('Apply changes to the running probe, then save them if they should survive a restart.', '現在のプローブへ変更を適用し、再起動後も残す場合は永続保存します。')), writeGate(),
+  const top = [header(L('Advanced probe settings', 'プローブ本体の詳細設定'), L('Apply changes to the running probe, then save them if they should survive a restart.', '現在のプローブへ変更を適用し、再起動後も残す場合は永続保存します。')), writeGate(),
     state.dirty ? notice(L('There are changes that have not been saved. Applying and saving are separate operations.', '永続保存していない変更があります。「適用」と「プローブに保存」は別の操作です。'), 'warn') : null,
     state.settingsState ? card(L('Storage state reported by the probe', 'プローブが報告する保存状態'), node('pre', {}, printable(state.settingsState))) : null,
     state.network ? card(L('Network status', 'ネットワークの状態'), node('pre', {}, printable(state.network))) : null,
@@ -842,6 +965,7 @@ function fwProgress(done, total, text) {
 }
 async function flashFirmware(model, update) {
   const device = update ? state.fwUpdateDevice : state.fwBoot;
+  const previousUnit = state.info?.unitId;
   if (!device || (!update && state.fwBootModel !== model)) throw new Error(L('Select the correct programming device first.', '先に書き込み対象の機器を選択してください。'));
   state.firmwareBusy = true; state.fwFinished = null;
   $('fw-status')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -868,6 +992,7 @@ async function flashFirmware(model, update) {
     fwProgress(1, 1, L('Firmware written. Reconnect the probe to check its version.', 'firmwareを書き込みました。プローブに再接続して版を確認してください。'));
     state.fwFinished = `${model} · ${state.release.version}`; state.fwFinishedModel = model;
   } finally { state.firmwareBusy = false; state.fwUpdateDevice = null; state.fwBoot = null; }
+  await continueSetup(model, { unitId: previousUnit, serialNumber: device.serialNumber });
 }
 async function installEsp(model) {
   if (!state.fwSerial || state.fwSerialBoard !== value('fw-board')) throw new Error(L('Select the serial port first.', '先にシリアルポートを選択してください。'));
@@ -898,6 +1023,7 @@ async function installEsp(model) {
     state.drafts.set('connect-method', ['esp32', 'esp32s3'].includes(value('fw-board')) ? 'serial' : 'usb');
     fwProgress(1, 1, L('Written. Reconnect the USB cable, then connect as an OEP probe.', '書き込み完了。USBを挿し直し、OEPプローブとして接続してください。'));
   } finally { state.firmwareBusy = false; state.fwSerial = null; }
+  await continueSetup(model, { port });
 }
 function showFirmware() {
   const current = state.info;
@@ -908,9 +1034,8 @@ function showFirmware() {
   const available = state.release && oep.pickFirmware(state.release, { model: b.models[0], kind: b.write.page === 'serial' ? 'merged' : IMAGE_KIND[b.models[0]] ?? '' });
   const status = firmwareState(current?.firmware, state.release?.version);
   const statusText = { current: L('The bundled release is already installed.', '同じリリースが導入済みです。'), update: L('A newer bundled release is available.', '新しいリリースがあります。'), newer: L('This probe has a newer version than the bundled release. Writing it would downgrade the probe.', 'このプローブは配布画像より新しい版です。書き込むと古い版になります。'), unknown: L('The version order could not be determined. Check both versions before writing.', '版の前後関係は判定できません。両方の版を確認してください。') };
-  return [header(L('Install OEP on a new board', '新しいボードにOEPを書き込む'), L('1. Choose a board → 2. Select its programming port → 3. Write firmware → 4. Connect as an OEP probe. No existing OEP connection is needed.', '①ボードを選ぶ → ②書き込み先を選ぶ → ③firmwareを書き込む → ④OEPプローブとして接続。初回書き込みの前にOEPとして接続する必要はありません。')),
+  return [header(L('Install OEP on a new board', '新しいボードにOEPを書き込む'), L('1. Choose a board → 2. Select its programming port → 3. Write firmware → 4. Continue automatically to configuration.', '①ボードを選ぶ → ②書き込み先を選ぶ → ③firmwareを書き込む → ④完了すると設定画面へ進みます。')),
     state.release ? notice(`OepProbe ${state.release.version} · ${L('bundled release', 'このサイトで配布するリリース')}`) : notice(L('Release images could not be loaded. Retry loading them here; ESP custom merged images can still be selected below.', '配布画像を読み込めませんでした。この画面で再取得できます。ESPの持ち込みmerged画像は下で選択できます。'), 'warn'),
-    state.fwFinished ? card(L('Written — reconnect next', '書き込み完了・再接続してください'), p(state.fwFinished), p(state.fwFinishedModel?.startsWith('esp32p4') ? L('For OEP, connect the board’s native USB connector (not its serial bridge connector). Restart the board if it is still in download mode.', 'OEP接続にはボードのnative USB端子を使います。シリアル変換用の端子から必要に応じて差し替えてください。downloadモードのままならボードを再起動します。') : L('Reconnect the USB cable and restart the board if it remains in boot mode. Then connect as an OEP probe.', 'USBケーブルを挿し直します。bootモードのままならボードを再起動し、OEPプローブとして接続してください。')), link(L('Connect and check the version', '接続して版を確認'), '#connect', true)) : null,
     current ? card(L('Update the connected probe', '接続中のプローブを更新'),
       node('dl', {}, node('dt', {}, L('Device', '機器')), node('dd', {}, `${model} · ${unit()}`), node('dt', {}, L('Installed', '導入済み')), node('dd', {}, current.firmware ?? '—'),
         node('dt', {}, L('Available release', '配布する版')), node('dd', {}, state.release?.version ?? '—')), p(statusText[status], 'muted'),

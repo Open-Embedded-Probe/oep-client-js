@@ -19,6 +19,8 @@ test('hex transfer fields accept explicit bytes and reject incomplete or invalid
 
 test('routes keep deep links and old entry points without interpreting hashes as selectors', () => {
   assert.deepEqual(parseRoute('#signals/spi-controller'), { view: 'signals', arg: 'spi-controller' });
+  assert.deepEqual(parseRoute('#target/edit/board-1'), {view:'target',arg:'edit/board-1'});
+  assert.deepEqual(parseRoute('#setup'), {view:'setup',arg:''});
   assert.deepEqual(parseRoute('#connect'), { view: 'connect', arg: '' });
   assert.deepEqual(parseRoute('#target'), { view: 'target', arg: 'new' });
   assert.deepEqual(parseRoute('#details'), { view: 'diagnostics', arg: '' });

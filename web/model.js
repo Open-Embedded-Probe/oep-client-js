@@ -20,13 +20,14 @@ export function printable(value) {
     : v instanceof Map ? Object.fromEntries(v) : v instanceof Set ? [...v] : v, 2) ?? 'OK';
 }
 const aliases = { target: 'target/new', try: 'signals/gpio', details: 'diagnostics', start: 'firmware', boards: 'help', about: 'help', features: 'help' };
-const views = new Set(['home', 'connect', 'probe', 'targets', 'target', 'signals', 'debug', 'tools', 'settings', 'storage', 'firmware', 'diagnostics', 'help']);
+const views = new Set(['home', 'setup', 'connect', 'probe', 'targets', 'target', 'signals', 'debug', 'tools', 'settings', 'storage', 'firmware', 'diagnostics', 'help']);
 /** @param {string} hash */
 export function parseRoute(hash) {
   const raw = hash.replace(/^#\/?/, '') || 'home';
   if (raw.startsWith('boards/')) return { view: 'help', arg: raw.slice(7) };
   const mapped = /** @type {Record<string, string>} */ (aliases)[raw] ?? raw;
-  const [view, arg = ''] = mapped.split('/');
+  const [view, ...rest] = mapped.split('/');
+  const arg = rest.join('/');
   return views.has(view) ? { view, arg } : { view: 'home', arg: '' };
 }
 /** @param {string} name @param {string[]} existing */

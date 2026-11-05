@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Unify the browser flow as install → configure connections → use. Move directly to configuration after flashing, reuse the programming serial port, and continue permission/reconnect handling inline. Add a shared create/edit form for names, target part numbers, notes and wiring, with collision-safe rename/move operations and explicit metadata storage.
+- (JA) ブラウザの導線を導入→接続先の設定→使用へ統一。書き込み後に設定画面へ自動遷移し、同じシリアルポートを再利用。再接続・使用許可待ちも設定画面内で継続。接続名・相手の型番・メモ・配線を同じフォームで作成/編集でき、名前変更・ピン移動の衝突検査と記録の保存先の説明を追加。
+
 - (EN) Register known debug and signal wiring without scanning or attaching a target; make discovery optional, validate declared pin groups, and load saved wiring into the relevant tool without starting it. Remove board-type selection from probe connection.
 - (JA) ターゲット未接続でもデバッグ・信号の固定配線を登録可能にし、探索を任意化。宣言されたピンの組を検証し、保存した配線を動作開始せず対応する操作画面に呼び出せるようにした。プローブ接続時のボード選択を廃止。
 

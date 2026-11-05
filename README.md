@@ -193,7 +193,7 @@ npm run serve       # the page at http://localhost:4173/
 npm run test:browser # Chromium UI verification against the Python virtual probe
 ```
 
-The main browser action installs OEP on a new board. ESP32 / P4 / P4X installation uses their serial ROM port and bundled release images,
+The browser flow is install → configure connections → use. Flashing opens configuration automatically and tries to reconnect on the same port. Create and edit connection names, target part numbers, notes and wiring in one form. ESP32 / P4 / P4X installation uses their serial ROM port and bundled release images,
 then offers an OEP connection. S3 / C3 / C6 accept a compatible merged image (no prebuilt OepProbe release); CH32 initial installation is unsupported.
 The site bundles a pinned `esptool-js`; the npm library gains no runtime dependency.
 `npm run serve` fetches release images on first use and caches them in `.cache/firmware`. Refresh with `node scripts/fetch-firmware.js`.
