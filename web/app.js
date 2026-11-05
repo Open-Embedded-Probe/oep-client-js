@@ -3,7 +3,7 @@
 // operations, update its firmware (docs/design.md §4). Everything goes through oep-client-js.
 import {
   VERSION, settings, core, dump, fixture, openWebHid, openWebSerial, openWebUsb, parseFirmwareManifest, pickFirmware,
-  requestDfuDevice, dfuUpdate, verifyFirmware, Rejected, Unavailable, raiseSpeed, speedText, riscv, arm, memo, rp2Bootsel, requestRp2Boot, rp2Write, rp2ResetToBoot, checkUf2, getUsbProbes, requestUsbProbe, RP2_BOOT_VID, RP2_BOOT_PID,
+  requestDfuDevice, dfuUpdate, verifyFirmware, Rejected, Unavailable, raiseSpeed, speedText, riscv, arm, memo, requestRp2Boot, rp2Write, rp2ResetToBoot, checkUf2, getUsbProbes, requestUsbProbe, RP2_BOOT_VID, RP2_BOOT_PID,
 } from './oep-client.js';
 
 // ---- words ---------------------------------------------------------------------------------------------------
@@ -39,7 +39,7 @@ const WORDS = {
     fwWrite: 'Choose the device and write', fwEsp32: 'ESP32 (USB-Serial/JTAG, UART bridge)',
     fwEsp32Hint: 'Write OepProbe-<model>-<version>.merged.bin at 0x0 with esptool (esptool.py or the web esptool). Not in this page yet.',
     fwRp2: 'RP2040 / RP2350',
-    fwRp2Hint: 'Pick OepProbe-<model>-<version>.uf2 (and, to check it, firmware-<version>.json), then Write. A connected probe goes into its boot ROM by itself (over USB; the first time the browser may ask for the probe and for "RP2 Boot", then remembers them); a board with no firmware yet: hold BOOTSEL while plugging it in. It is written over USB, read back and restarted; its settings stay. On Linux the boot ROM needs a udev rule for 2e8a:0003 / 2e8a:000f.',
+    fwRp2Hint: 'Pick OepProbe-<model>-<version>.uf2 (and, to check it, firmware-<version>.json), then Write. A connected probe goes into its boot ROM by itself (the first time the browser may ask for the probe and for "RP2 Boot", then remembers them); a board with no firmware yet: hold BOOTSEL while plugging it in. It is written over USB, read back and restarted; its settings stay. On Linux the boot ROM needs a udev rule for 2e8a:0003 / 2e8a:000f.',
     fwRp2Write: 'Write', fwUf2: 'image (.uf2)', fwRp2Hold: 'Hold BOOTSEL while plugging the board in, then choose "RP2 Boot".',
     locked: 'lock held', noLock: 'no lock',
     speedHint: 'A UART bridge (serial) probe that offers port_speed runs faster for this session: each candidate is tried, confirmed at the new rate and committed - the first that passes is kept (the probe goes back to 115200 when the lock is released); in use, a rate whose frames keep breaking is left for the session. Which rates pass depends on the bridge chip. The default is 500000: a faster rate is tried only when you enter it here, and is used only after full frames ran 1 s each way at it (host guide §17).',
@@ -75,7 +75,7 @@ const WORDS = {
     fwWrite: 'デバイスを選んで書く', fwEsp32: 'ESP32（USB-Serial/JTAG、UART bridge）',
     fwEsp32Hint: 'OepProbe-<model>-<version>.merged.bin を esptool（esptool.py か Web の esptool）で 0x0 に書きます。このページではまだできません。',
     fwRp2: 'RP2040 / RP2350',
-    fwRp2Hint: 'OepProbe-<model>-<version>.uf2 を選び（確かめるなら firmware-<version>.json も）、「書く」を押します。つないでいる probe は自分で boot ROM に入ります（USB で。初めの 1 回だけ、ブラウザが probe と「RP2 Boot」を選ばせ、その後は覚えます）。まだ firmware の無いボードは、BOOTSEL を押しながら挿します。USB から書き、読み戻して確かめ、再起動します。設定は残ります。Linux では boot ROM（2e8a:0003 / 2e8a:000f）に udev の規則が要ります。',
+    fwRp2Hint: 'OepProbe-<model>-<version>.uf2 を選び（確かめるなら firmware-<version>.json も）、「書く」を押します。つないでいる probe は自分で boot ROM に入ります（初めの 1 回だけ、ブラウザが probe と「RP2 Boot」を選ばせ、その後は覚えます）。まだ firmware の無いボードは、BOOTSEL を押しながら挿します。USB から書き、読み戻して確かめ、再起動します。設定は残ります。Linux では boot ROM（2e8a:0003 / 2e8a:000f）に udev の規則が要ります。',
     fwRp2Write: '書く', fwUf2: 'image（.uf2）', fwRp2Hold: 'BOOTSEL を押しながらボードを挿し、「RP2 Boot」を選びます。',
     locked: 'ロックあり', noLock: 'ロックなし',
     speedHint: 'port_speed を持つ UART bridge（シリアル）の probe は、このセッションの間速くできます。候補を順に試し、新しい速さで confirm して決め、最初に通った速さを使います（ロックを放すと probe は 115200 に戻る）。使っている間にフレームが壊れ続ける速さはそのセッションでは降ります。通る速さは変換チップで決まります。既定は 500000 で、それより速い速さはここに入れたときだけ試し、両方向それぞれ 1 秒、最大のフレームを流して通ったときだけ使います（oep-if-link §3 の義務 7）。',
@@ -590,17 +590,14 @@ async function grantedBoot(model) {
 }
 
 /** Into the boot ROM: the connected probe by its reset interface (its USB device: one the browser was given, or chosen
- * once), else a 1200 baud touch of its serial port (firmware without the reset interface); not connected: nothing (the
- * board comes up in BOOTSEL by its button). -> whether it was asked to. */
+ * once); not connected: nothing (a board with no firmware comes up in BOOTSEL by its button). -> whether it was asked. */
 async function rp2IntoBoot() {
   if (!host || !info) return false;
   const unitId = info.unitId;
-  const usb = /** @type {any} */ (navigator).usb;
-  let device = usb ? (await getUsbProbes({ unitId }))[0] ?? null : null;
+  let device = (await getUsbProbes({ unitId }))[0] ?? null;
   await disconnect();
-  if (!device && usb) device = await requestUsbProbe();
-  if (device && await rp2ResetToBoot(device)) return true;
-  await rp2Bootsel();                                   // no reset interface: the touch (choose its serial port)
+  if (!device) device = await requestUsbProbe();
+  if (!await rp2ResetToBoot(device)) throw new Error('this probe has no reset interface');
   return true;
 }
 

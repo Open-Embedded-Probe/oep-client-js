@@ -3,21 +3,21 @@
 ## Unreleased
 - (EN) `rp2ResetToBoot` restarts a running RP2 probe into its boot ROM through the firmware's reset interface (the
   pico-sdk's, a class-typed RESET_REQUEST_BOOTSEL as picotool sends). The page's RP2 update is one button: a connected
-  probe goes into its boot ROM by itself (a 1200 baud touch only for firmware without the reset interface), a board with
-  no firmware is asked for BOOTSEL, and devices the browser was given before are used without asking. On the bench an
+  probe goes into its boot ROM by itself, a board with no firmware is asked for BOOTSEL, and devices the browser was given
+  before are used without asking. On the bench an
   RP2040 and an RP2350 probe went from running to written and restarted in about 4 s each.
 - (JA) `rp2ResetToBoot` は、動いている RP2 の probe を、firmware の reset のインターフェース（pico-sdk のもの。picotool と同じ class の型の
-  RESET_REQUEST_BOOTSEL）で boot ROM に入れる。ページの RP2 の更新はボタン 1 つ: つないでいる probe は自分で boot ROM に入り（reset の
-  インターフェースの無い firmware だけ 1200 baud touch）、firmware の無いボードには BOOTSEL を頼み、前に許された機器は聞かずに使う。ベンチで
+  RESET_REQUEST_BOOTSEL）で boot ROM に入れる。ページの RP2 の更新はボタン 1 つ: つないでいる probe は自分で boot ROM に入り、firmware の
+  無いボードには BOOTSEL を頼み、前に許された機器は聞かずに使う。ベンチで
   RP2040 と RP2350 の probe が、動いている状態から書き終えて再起動するまで、それぞれ約 4 秒だった。
 - (EN) RP2040 / RP2350 firmware over USB: `rp2Write` writes a .uf2 over the boot ROM's PICOBOOT interface on a WebUSB
   device (per sector erase, write, read back and compare, then the restart; the flash past the image - the settings -
   kept), `checkUf2` checks the image for the model (the family, every block, the RP2350's absolute block first allowed),
-  and in the browser `rp2Bootsel` (a 1200 baud touch of the probe's CDC port) and `requestRp2Boot`. The page's firmware
+  and in the browser `requestRp2Boot`. The page's firmware
   tab writes an RP2 probe with them. Checked on the bench: an RP2040 and an RP2350 probe, 58 / 56 sectors in about 3 s.
 - (JA) RP2040 / RP2350 の firmware を USB から書く: `rp2Write` は .uf2 を boot ROM の PICOBOOT で WebUSB の機器に書く（セクタごとに消して書き、
   読み戻して比べ、再起動する。画像の外の flash ― 設定 ― は残す）。`checkUf2` は画像を型について確かめる（種類、すべてのブロック、RP2350 の
-  先頭の絶対番地のブロックは許す）。ブラウザでは `rp2Bootsel`（probe の CDC の口の 1200 baud touch）と `requestRp2Boot`。ページの firmware
+  先頭の絶対番地のブロックは許す）。ブラウザでは `requestRp2Boot`。ページの firmware
   のタブはこれで RP2 の probe を書く。ベンチで RP2040 と RP2350 の probe に書いた（58 / 56 セクタ、約 3 秒）。
 - (EN) The memo area: `memo.Memo` (list paged by prefix, read and write in parts at the route's max_frame, delete;
   `MemoTorn` for an object whose data does not match its crc), `portRecordName` and the port record

@@ -1,9 +1,9 @@
 // @ts-check
 // SPDX-License-Identifier: MIT
 // Writing an RP2040 / RP2350 straight over USB: the boot ROM's PICOBOOT interface (what picotool speaks), on a WebUSB
-// USBDevice (the browser's, or the `usb` package's WebUSB in Node). The probe gets to its boot ROM by a 1200 baud touch
-// of its CDC port (rp2Bootsel in src/browser); the image is a .uf2 (checkUf2), written sector by sector, read back and
-// compared, then the chip restarts into it. The flash past the image (the settings' LittleFS area) is left as it is.
+// USBDevice (the browser's, or the `usb` package's WebUSB in Node). A running probe gets to its boot ROM through its
+// reset interface (rp2ResetToBoot); the image is a .uf2 (checkUf2), written sector by sector, read back and compared,
+// then the chip restarts into it. The flash past the image (the settings' LittleFS area) is left as it is.
 import { checkUf2 } from './firmware.js';
 
 export const RP2_BOOT_VID = 0x2e8a;
@@ -153,7 +153,7 @@ export function rp2ResetInterface(device) {
 }
 
 /** Restart a running RP2 probe into its boot ROM through its reset interface (the RP2 firmware's; what picotool
- * reboot -f does): no 1200 baud touch, no button. The device leaves the bus. -> false when it has no such interface.
+ * reboot -f does). The device leaves the bus. -> false when it has no such interface.
  * @param {any} device a WebUSB USBDevice of the running probe */
 export async function rp2ResetToBoot(device) {
   const intf = rp2ResetInterface(device);
