@@ -8,119 +8,135 @@
   <link rel="stylesheet" href="styles/app.css">
 </head>
 <body>
+  <!-- the page's design: docs/page.ja.md -->
   <header class="topbar">
-    <div>
-      <h1>OEP Probe Tool</h1>
+    <div class="brand">
+      <h1><a href="#home">OEP Probe Tool</a></h1>
       <p data-i18n="tagline"></p>
     </div>
+    <nav class="top-nav">
+      <a href="#home" data-i18n="navHome"></a>
+      <a href="#boards" data-i18n="navBoards"></a>
+      <a href="#probe" data-i18n="navProbe"></a>
+    </nav>
     <div class="top-actions">
-      <span id="status" class="status-pill"><span class="dot"></span><span id="probe" data-i18n="notConnected"></span></span>
-      <button id="connect-usb" class="button" type="button" data-i18n="connectUsb"></button>
-      <button id="connect-serial" type="button" data-i18n="connectSerial"></button>
-      <button id="connect-hid" type="button" data-i18n="connectHid"></button>
-      <button id="disconnect" type="button" data-i18n="disconnect" disabled></button>
-      <label class="check"><input id="lock" type="checkbox" disabled> <span data-i18n="takeLock"></span></label>
+      <span id="status" class="status-pill"><span class="dot"></span><span id="probe-line" data-i18n="notConnected"></span></span>
+      <button id="disconnect" type="button" data-i18n="disconnect" hidden></button>
+      <label class="check" id="lock-box" hidden><input id="lock" type="checkbox"> <span data-i18n="takeLock"></span></label>
       <select id="lang-select" aria-label="language"><option value="en">English</option><option value="ja">日本語</option></select>
     </div>
   </header>
   <p id="unsupported" class="warn" hidden data-i18n="unsupported"></p>
-  <div class="layout">
-  <nav class="side">
-    <button type="button" data-tab="home" class="active"><span data-i18n="tabHome"></span><small data-i18n="tabHomeDesc"></small></button>
-    <button type="button" data-tab="setup"><span data-i18n="tabSetup"></span><small data-i18n="tabSetupDesc"></small></button>
-    <button type="button" data-tab="firmware"><span data-i18n="tabFirmware"></span><small data-i18n="tabFirmwareDesc"></small></button>
-    <button type="button" data-tab="settings"><span data-i18n="tabSettings"></span><small data-i18n="tabSettingsDesc"></small></button>
-    <button type="button" data-tab="tools"><span data-i18n="tabTools"></span><small data-i18n="tabToolsDesc"></small></button>
-    <button type="button" data-tab="describe"><span data-i18n="tabDescribe"></span><small data-i18n="tabDescribeDesc"></small></button>
-  </nav>
-  <section class="content">
-    <section id="tab-home" class="tab">
-      <header class="tab-header"><h2 data-i18n="homeTitle"></h2><p data-i18n="homeDesc"></p></header>
-      <div class="choices">
-        <button type="button" class="choice" data-go="setup"><b data-i18n="tabSetup"></b><span data-i18n="tabSetupDesc"></span></button>
-        <button type="button" class="choice" data-go="firmware"><b data-i18n="tabFirmware"></b><span data-i18n="tabFirmwareDesc"></span></button>
-        <button type="button" class="choice" data-go="settings"><b data-i18n="tabSettings"></b><span data-i18n="tabSettingsDesc"></span></button>
-        <button type="button" class="choice" data-go="tools"><b data-i18n="tabTools"></b><span data-i18n="tabToolsDesc"></span></button>
-        <button type="button" class="choice" data-go="describe"><b data-i18n="tabDescribe"></b><span data-i18n="tabDescribeDesc"></span></button>
+
+  <main>
+    <!-- 3.1 -->
+    <section class="view" data-view="home">
+      <div class="hero">
+        <h2 data-i18n="homeTitle"></h2>
+        <p data-i18n="homeLead"></p>
+        <div class="diagram" aria-hidden="true">
+          <span data-i18n="diagHost"></span><i>USB</i><span class="probe" data-i18n="diagProbe"></span><i data-i18n="diagWires"></i><span data-i18n="diagTarget"></span>
+        </div>
+        <div class="entries">
+          <a class="entry primary" href="#tutorial/1"><b data-i18n="entryTutorial"></b><span data-i18n="entryTutorialDesc"></span></a>
+          <a class="entry" href="#connect"><b data-i18n="entryConnect"></b><span data-i18n="entryConnectDesc"></span></a>
+          <a class="entry" href="#boards"><b data-i18n="entryBoards"></b><span data-i18n="entryBoardsDesc"></span></a>
+        </div>
+        <div id="home-probe" class="card" hidden></div>
       </div>
     </section>
-    <section id="tab-setup" class="tab" hidden>
-      <header class="tab-header"><h2 data-i18n="tabSetup"></h2><p data-i18n="tabSetupDesc"></p></header>
+
+    <!-- 3.2 -->
+    <section class="view" data-view="tutorial" hidden>
+      <ol id="tut-steps" class="stepper"></ol>
+      <div class="card tut-card">
+        <h2 id="tut-title"></h2>
+        <div id="tut-body"></div>
+      </div>
+      <div class="tut-nav">
+        <button id="tut-back" type="button" data-i18n="back"></button>
+        <a href="#home" data-i18n="leaveTutorial"></a>
+        <button id="tut-next" class="button" type="button" data-i18n="next"></button>
+      </div>
+    </section>
+
+    <!-- 3.3 -->
+    <section class="view" data-view="boards" hidden>
+      <header class="view-header"><h2 data-i18n="boardsTitle"></h2><p data-i18n="boardsLead"></p></header>
+      <div id="boards-slot"></div>
+    </section>
+
+    <!-- 3.4 -->
+    <section class="view" data-view="probe" hidden>
+      <header class="view-header"><h2 data-i18n="probeTitle"></h2></header>
+      <div id="probe-summary" class="card"></div>
       <div class="card">
-        <h3 data-i18n="setup1"></h3>
-        <p data-i18n="setup1Hint"></p>
-        <button id="setup-to-firmware" type="button" data-i18n="setup1Go"></button>
+        <h3 data-i18n="probeTargets"></h3>
+        <div id="probe-targets"></div>
       </div>
       <div class="card">
-        <h3 data-i18n="setup2"></h3>
-        <p data-i18n="setup2Hint"></p>
-        <button id="setup-pins" type="button" data-i18n="setupPins" data-needs="host"></button>
-        <table id="setup-pin-table" class="items"><tbody></tbody></table>
+        <h3 data-i18n="useTitle"></h3>
+        <div id="probe-use-slot"></div>
       </div>
+      <div class="actions-grid">
+        <a class="entry" href="#target"><b data-i18n="actTarget"></b><span data-i18n="actTargetDesc"></span></a>
+        <a class="entry" href="#firmware"><b data-i18n="actFirmware"></b><span data-i18n="actFirmwareDesc"></span></a>
+        <a class="entry" href="#settings"><b data-i18n="actSettings"></b><span data-i18n="actSettingsDesc"></span></a>
+        <a class="entry" href="#try"><b data-i18n="actTry"></b><span data-i18n="actTryDesc"></span></a>
+        <a class="entry" href="#details"><b data-i18n="actDetails"></b><span data-i18n="actDetailsDesc"></span></a>
+      </div>
+    </section>
+
+    <section class="view" data-view="connect" hidden>
+      <header class="view-header"><h2 data-i18n="connectTitle"></h2></header>
+      <div id="connect-slot"></div>
+    </section>
+
+    <!-- 3.5 -->
+    <section class="view" data-view="target" hidden>
+      <header class="view-header"><h2 data-i18n="targetTitle"></h2><p data-i18n="targetLead"></p></header>
+      <div id="target-slot"></div>
+    </section>
+
+    <!-- 3.6 -->
+    <section class="view" data-view="firmware" hidden>
+      <header class="view-header"><h2 data-i18n="firmwareTitle"></h2></header>
+      <div id="firmware-slot"></div>
+    </section>
+
+    <!-- 3.7 -->
+    <section class="view" data-view="settings" hidden>
+      <header class="view-header"><h2 data-i18n="actSettings"></h2><p data-i18n="actSettingsDesc"></p></header>
       <div class="card">
-        <h3 data-i18n="setup3"></h3>
-        <p data-i18n="setup3Hint"></p>
         <div class="row">
-          <label data-i18n-label="setupWire">wire <select id="setup-wire"></select></label>
-          <button id="setup-scan" type="button" data-i18n="setupScan" data-needs="lock"></button>
+          <button id="settings-read" type="button" data-i18n="read" data-needs="host"></button>
+          <button id="settings-save" type="button" data-i18n="saveToProbe" data-needs="lock"></button>
+          <button id="settings-unset-all" type="button" data-i18n="unsetAll" data-needs="lock"></button>
+          <button id="settings-export" type="button" data-i18n="exportFile" data-needs="host"></button>
+          <button id="settings-import-pick" type="button" data-i18n="importFile" data-needs="lock"></button>
+          <input id="settings-import" type="file" accept=".json,application/json" hidden>
         </div>
-        <table id="setup-found" class="items"><tbody></tbody></table>
+        <div id="settings-state" class="muted"></div>
+        <table id="settings-items" class="items"><tbody></tbody></table>
       </div>
       <div class="card">
-        <h3 data-i18n="setup4"></h3>
-        <p data-i18n="setup4Hint"></p>
-        <form id="setup-name" autocomplete="off">
-          <label data-i18n-label="setupPort">port <input id="setup-port" required pattern="[A-Za-z][A-Za-z0-9-]{0,15}" spellcheck="false"></label>
-          <label data-i18n-label="setupPart">part <input id="setup-part" spellcheck="false"></label>
-          <label data-i18n-label="setupNote">note <input id="setup-note"></label>
-          <p id="setup-preview" class="muted"></p>
-          <button type="submit" data-i18n="setupApply" data-needs="lock"></button>
+        <h3 data-i18n="addItem"></h3>
+        <form id="form-setting" autocomplete="off">
+          <label data-i18n-label="category">category <select name="category" required></select></label>
+          <label data-i18n-label="item">item <select name="item" required></select></label>
+          <label data-i18n-label="key">key <select name="key"></select></label>
+          <label data-i18n-label="value">value <select name="choice"></select><input id="setting-value" name="value" spellcheck="false"></label>
+          <p id="setting-hint" class="muted"></p>
+          <button type="submit" data-i18n="set" data-needs="lock"></button>
         </form>
       </div>
-      <div class="card">
-        <h3 data-i18n="setup5"></h3>
-        <p data-i18n="setup5Hint"></p>
-        <pre id="setup-address" class="out small"></pre>
-      </div>
-    </section>
-    <section id="tab-describe" class="tab" hidden>
-      <header class="tab-header"><h2 data-i18n="tabDescribe"></h2><p data-i18n="tabDescribeDesc"></p></header>
-      <div class="row">
-        <button id="describe-run" type="button" data-i18n="describeRun" data-needs="host"></button>
-        <button id="describe-save" type="button" data-i18n="saveJson" data-needs="dump"></button>
-      </div>
-      <pre id="describe-out" class="out"></pre>
     </section>
 
-    <section id="tab-settings" class="tab" hidden>
-      <header class="tab-header"><h2 data-i18n="tabSettings"></h2><p data-i18n="tabSettingsDesc"></p></header>
-      <div class="row">
-        <button id="settings-read" type="button" data-i18n="read" data-needs="host"></button>
-        <button id="settings-save" type="button" data-i18n="saveToProbe" data-needs="lock"></button>
-        <button id="settings-unset-all" type="button" data-i18n="unsetAll" data-needs="lock"></button>
-        <button id="settings-export" type="button" data-i18n="exportFile" data-needs="host"></button>
-        <button id="settings-import-pick" type="button" data-i18n="importFile" data-needs="lock"></button>
-        <input id="settings-import" type="file" accept=".json,application/json" hidden>
-      </div>
-      <div id="settings-state" class="muted"></div>
-      <table id="settings-items" class="items"><tbody></tbody></table>
-
-      <h3 data-i18n="addItem"></h3>
-      <form id="form-setting" class="card" autocomplete="off">
-        <label data-i18n-label="category">category <select name="category" required></select></label>
-        <label data-i18n-label="item">item <select name="item" required></select></label>
-        <label data-i18n-label="key">key <select name="key"></select></label>
-        <label data-i18n-label="value">value <select name="choice"></select><input id="setting-value" name="value" spellcheck="false"></label>
-        <p id="setting-hint" class="muted"></p>
-        <button type="submit" data-i18n="set" data-needs="lock"></button>
-      </form>
-    </section>
-
-    <section id="tab-tools" class="tab" hidden>
-      <header class="tab-header"><h2 data-i18n="tabTools"></h2><p data-i18n="tabToolsDesc"></p></header>
+    <section class="view" data-view="try" hidden>
+      <header class="view-header"><h2 data-i18n="actTry"></h2><p data-i18n="actTryDesc"></p></header>
       <div class="card">
         <h3>GPIO</h3>
-        <p class="muted" data-i18n="gpioHint"></p>
+        <p data-i18n="gpioHint"></p>
         <div class="row">
           <label>channel <input id="gpio-channel" type="number" min="0" value="0"></label>
           <button id="gpio-plan" type="button" data-i18n="gpioPlan" data-needs="lock"></button>
@@ -136,7 +152,7 @@
       </div>
       <div class="card">
         <h3>UART</h3>
-        <p class="muted" data-i18n="uartHint"></p>
+        <p data-i18n="uartHint"></p>
         <div class="row">
           <label>fn <select id="uart-fn"></select></label>
           <label>baud <input id="uart-baud" type="number" value="115200"></label>
@@ -151,8 +167,8 @@
         </div>
       </div>
       <div class="card">
-        <h3>port_speed</h3>
-        <p class="muted" data-i18n="speedHint"></p>
+        <h3 data-i18n="speedTitle"></h3>
+        <p data-i18n="speedHint"></p>
         <div class="row">
           <label>rates <input id="speed-rates" value="500000"></label>
           <button id="speed-try" type="button" data-i18n="speedTry" data-needs="lock"></button>
@@ -161,29 +177,97 @@
       </div>
     </section>
 
-    <section id="tab-firmware" class="tab" hidden>
-      <header class="tab-header"><h2 data-i18n="tabFirmware"></h2><p data-i18n="tabFirmwareDesc"></p></header>
+    <section class="view" data-view="details" hidden>
+      <header class="view-header"><h2 data-i18n="actDetails"></h2><p data-i18n="actDetailsDesc"></p></header>
       <div class="card">
-        <h3 data-i18n="fwLatest"></h3>
-        <p id="fw-release" class="muted"></p>
+        <div class="row">
+          <button id="describe-run" type="button" data-i18n="describeRun" data-needs="host"></button>
+          <button id="describe-save" type="button" data-i18n="saveJson" data-needs="dump"></button>
+        </div>
+        <pre id="describe-out" class="out"></pre>
+      </div>
+    </section>
+  </main>
+
+  <!-- the parts several screens show: moved into the screen that is showing (docs/page.ja.md §2) -->
+  <div id="parts" hidden>
+    <!-- the boards: cards, a comparison, one board's detail -->
+    <div id="part-boards">
+      <div id="board-cards" class="board-cards"></div>
+      <div id="board-detail" class="card" hidden></div>
+      <details class="card compare"><summary data-i18n="compare"></summary><div class="table-wrap"><table id="board-table" class="compare-table"></table></div></details>
+    </div>
+
+    <!-- writing the firmware -->
+    <div id="part-firmware">
+      <div class="card" id="fw-probe-card">
+        <h3 data-i18n="fwThisProbe"></h3>
         <p id="fw-probe"></p>
         <div class="row"><button id="fw-update" class="button" type="button" data-i18n="fwUpdate" disabled></button></div>
-        <progress id="fw-progress" max="1" value="0" hidden></progress>
-        <div id="fw-status" class="muted"></div>
       </div>
       <div class="card">
         <h3 data-i18n="fwNew"></h3>
-        <p data-i18n="fwNewHint"></p>
         <div class="row">
-          <label><span data-i18n="fwBoard"></span> <select id="fw-new-model">
-            <option value="rp2040">Raspberry Pi Pico (RP2040)</option><option value="rp2350">Raspberry Pi Pico 2 (RP2350)</option></select></label>
-          <button id="fw-new-write" type="button" data-i18n="fwNewWrite"></button>
+          <label><span data-i18n="fwBoard"></span> <select id="fw-board"></select></label>
         </div>
-        <p class="muted" data-i18n="fwOther"></p>
+        <p id="fw-how"></p>
+        <div class="row"><button id="fw-new-write" class="button" type="button" data-i18n="fwNewWrite"></button></div>
       </div>
-    </section>
-  </section>
+      <progress id="fw-progress" max="1" value="0" hidden></progress>
+      <p id="fw-status" class="muted"></p>
+      <p class="muted" id="fw-release"></p>
+    </div>
+
+    <!-- connecting -->
+    <div id="part-connect" class="card">
+      <p data-i18n="connectLead"></p>
+      <div class="row">
+        <button id="connect-usb" class="button" type="button" data-i18n="connectUsb"></button>
+        <button id="connect-serial" type="button" data-i18n="connectSerial"></button>
+        <button id="connect-hid" type="button" data-i18n="connectHid"></button>
+      </div>
+      <p class="muted" data-i18n="connectHint"></p>
+      <div id="connect-result"></div>
+    </div>
+
+    <!-- using it from the tools: WireSkein (capture), the cores, oep-client-python (docs/page.ja.md §3.7) -->
+    <div id="part-use"></div>
+
+    <!-- a target: wire, find, name, use -->
+    <div id="part-target">
+      <div class="card step-card">
+        <h3 data-i18n="tg1"></h3>
+        <p data-i18n="tg1Hint"></p>
+        <table id="setup-pin-table" class="items"><tbody></tbody></table>
+      </div>
+      <div class="card step-card">
+        <h3 data-i18n="tg2"></h3>
+        <p data-i18n="tg2Hint"></p>
+        <div class="row">
+          <label data-i18n-label="setupWire">wire <select id="setup-wire"></select></label>
+          <button id="setup-scan" class="button" type="button" data-i18n="setupScan" data-needs="lock"></button>
+        </div>
+        <table id="setup-found" class="items"><tbody></tbody></table>
+      </div>
+      <div class="card step-card">
+        <h3 data-i18n="tg3"></h3>
+        <p data-i18n="tg3Hint"></p>
+        <form id="setup-name" autocomplete="off">
+          <label data-i18n-label="setupPort">name <input id="setup-port" required pattern="[A-Za-z][A-Za-z0-9-]{0,15}" spellcheck="false" placeholder="x035"></label>
+          <label data-i18n-label="setupPart">part <input id="setup-part" spellcheck="false"></label>
+          <label data-i18n-label="setupNote">note <input id="setup-note"></label>
+          <p id="setup-preview" class="muted"></p>
+          <button type="submit" class="button" data-i18n="setupApply" data-needs="lock"></button>
+        </form>
+      </div>
+      <div class="card step-card">
+        <h3 data-i18n="tg4"></h3>
+        <p data-i18n="tg4Hint"></p>
+        <div id="setup-address"></div>
+      </div>
+    </div>
   </div>
+
   <footer>
     <span id="log"></span>
     <span><span id="version"></span> · <a href="https://github.com/Open-Embedded-Probe/oep-client-js">GitHub</a></span>

@@ -6,20 +6,20 @@
   parse_label.
 - (JA) 修正: ターゲットのピンを添えて口を名付ける label（`S.N@P` と `S@P`、host ガイド §5.3。例 `v208.swdio@pa13`）が、口を名付けていなかった
   （`portsNamed`、`portLine`、`lineFromLabels`）。`parseLabel` は 3 つの形を読む（oep-client-python の parse_label と同じ）。
-- (EN) OEP Probe Tool, reorganised in wireskein-web's layout: a top bar (the connection's state, connect, allow changes,
-  the language), a side menu of tasks each with a line of what it is, and a first screen asking what to do. The language
-  follows the browser's (navigator.languages) unless one is picked. The firmware is no longer picked by hand: the Pages
-  build puts the latest oep-probe-arduino Release's OepProbe images beside the page (scripts/fetch-firmware.js, their
-  sha256 checked; a Release's own files carry no CORS header for a browser), and the page writes the one for the
-  connected probe's model (ESP32-P4 / P4X over DFU, RP2040 / RP2350 over PICOBOOT), or for a new RP2 board in BOOTSEL.
-  The words: a "connection name" (the address's last part) and "pin names" for the labels; `#setup`, `#firmware`, ...
-  open a task.
-- (JA) OEP Probe Tool を wireskein-web の組み立てで整理した。上の帯（接続の様子、接続、変更の許可、言語）、作業ごとに 1 行の説明の付いた
-  左のメニュー、何をするかを聞く最初の画面。言語は、選ばない限りブラウザの言語（navigator.languages）に従う。firmware は手で選ばない:
-  Pages のビルドが、oep-probe-arduino の最新のリリースの OepProbe の画像をページの隣に置き（scripts/fetch-firmware.js。sha256 を確かめる。
-  リリースのファイルそのものはブラウザ向けの CORS のヘッダを持たない）、ページはつないだプローブの型に合うものを書く（ESP32-P4 / P4X は
-  DFU、RP2040 / RP2350 は PICOBOOT）。BOOTSEL の新しい RP2 のボードにも書く。用語は「接続名」（アドレスの最後の段）と、label は
-  「ピンの名前」。`#setup`、`#firmware` などで、その作業を開く。
+- (EN) OEP Probe Tool, rebuilt from its design (docs/page.ja.md): a first screen of what OEP is and three ways in (first
+  time, I have a probe, the boards); a walk-through - what OEP is, what a probe can do, picking a board, writing its
+  firmware, connecting it, wiring, finding and naming the target, using it from the tools; the boards with what each can
+  do and how it is written (web/boards.js, from oep-probe-arduino's board table); the probe's own screen with its targets
+  (the connections its pin names make and their memo records), and the way to the tools - WireSkein for capture (its own
+  page), the cores, oep-client-python. The firmware is the latest release's, picked for the board (the Pages build puts
+  it beside the page, scripts/fetch-firmware.js). The language follows the browser's unless picked. On the screens a
+  port is a "connection name" and a label a "pin name".
+- (JA) OEP Probe Tool を、その仕様（docs/page.ja.md）から作り直した。OEP とは何かと 3 つの入口（はじめて、プローブを持っている、ボード）の
+  最初の画面。案内（OEP とは、プローブでできること、ボードを選ぶ、firmware を書く、つなぐ、ターゲットを配線して見つけ名前を付ける、
+  道具から使う）。ボードごとのできることと書き方（web/boards.js。oep-probe-arduino のボードの表から）。プローブの画面（ピンの名前が作る
+  接続とメモ欄の記録）と、道具への入口（キャプチャは WireSkein の別のページ、コア、oep-client-python）。firmware はボードに合う最新の
+  リリースを選ぶ（Pages のビルドがページの隣に置く、scripts/fetch-firmware.js）。言語は、選ばない限りブラウザに従う。画面では、口は
+  「接続名」、label は「ピンの名前」。
 - (EN) `rp2ResetToBoot` restarts a running RP2 probe into its boot ROM through the firmware's reset interface (the
   pico-sdk's, a class-typed RESET_REQUEST_BOOTSEL as picotool sends). The page's RP2 update is one button: a connected
   probe goes into its boot ROM by itself, a board with no firmware is asked for BOOTSEL, and devices the browser was given

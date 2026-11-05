@@ -66,9 +66,9 @@ What is there:
   first announced one);
 - the firmware update: USB DFU (the ESP32-P4 / P4X), PICOBOOT over WebUSB (the RP2040 / RP2350: `rp2Write`, after
   `rp2ResetToBoot`) and the Release's firmware-<version>.json;
-- the page: a set-up walk for a new probe (firmware, pins, a scan of the pins checked, the port named: labels and the
-  memo's port record), connect, read what the probe declares, edit and save its settings, GPIO and UART, port_speed,
-  the firmware update (DFU, RP2 over USB);
+- the page (docs/page.ja.md): what OEP is, the boards that can be probes and what each can do, a walk-through from the
+  firmware to a named target, the probe's own screen (its targets, the firmware update, its settings, the pins by hand,
+  what it declares) and the way to the tools (WireSkein for capture, the cores, oep-client-python);
 - port_speed (oep-if-link §3 is the handshake, an op of the optional interface `oep.probe.link` that the probe offers when its
   ops set it; the procedure is the oep-spec host guide §17, opt-in):
   `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, record })` (or

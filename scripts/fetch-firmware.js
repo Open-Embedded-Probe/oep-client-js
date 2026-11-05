@@ -14,8 +14,8 @@ const out = join(root, 'site', 'firmware');
 const headers = { Accept: 'application/vnd.github+json', ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}) };
 
 /** @param {string} url */
-async function get(url, accept = '') {
-  const r = await fetch(url, { headers: accept ? { ...headers, Accept: accept } : headers });
+async function get(url) {
+  const r = await fetch(url, { headers });
   if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
   return r;
 }
@@ -24,8 +24,12 @@ const release = await (await get(`https://api.github.com/repos/${REPO}/releases/
 const assets = new Map(release.assets.map((/** @type {any} */ a) => [a.name, a]));
 const listing = [...assets.keys()].find((n) => /^firmware-.+\.json$/.test(n));
 if (!listing) throw new Error(`${REPO} ${release.tag_name}: no firmware-<version>.json`);
-const download = async (/** @type {string} */ name) =>
-  new Uint8Array(await (await get(assets.get(name).url, 'application/octet-stream')).arrayBuffer());
+// the files by their download URL (github.com, not the API: one API request in all, whatever the rate limit)
+const download = async (/** @type {string} */ name) => {
+  const r = await fetch(assets.get(name).browser_download_url);
+  if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`);
+  return new Uint8Array(await r.arrayBuffer());
+};
 const manifest = parseFirmwareManifest(new TextDecoder().decode(await download(listing)));
 manifest.firmware = manifest.firmware.filter((f) => f.example === 'Firmware/OepProbe');
 mkdirSync(out, { recursive: true });

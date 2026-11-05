@@ -62,8 +62,8 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   広告された最初のもの）
 - firmware の更新: USB の DFU（ESP32-P4 / P4X）、WebUSB での PICOBOOT（RP2040 / RP2350: `rp2ResetToBoot` の後に `rp2Write`）と、
   Release の firmware-<version>.json
-- ページ: 新しい probe のセットアップ（firmware、ピン、チェックしたピンのスキャン、口の名付け: label とメモ欄の口の記録）、つなぐ、probe の
-  宣言を読む、設定の編集と保存、GPIO と UART、port_speed、firmware の更新（DFU、RP2 は USB から）
+- ページ（docs/page.ja.md）: OEP とは、プローブになれるボードとそれぞれのできること、firmware から名前の付いたターゲットまでの案内、
+  プローブの画面（ターゲット、firmware の更新、設定、ピンを手で試す、宣言）、道具への入口（キャプチャは WireSkein、コア、oep-client-python）
 - port_speed（oep-if-link §3 は握手だけで、任意のインターフェース `oep.probe.link` の op。probe は ops が立てるときに持つ。手順は
   oep-spec の host 開発ガイド §17。使うときだけ）:
   `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, record })`（または
