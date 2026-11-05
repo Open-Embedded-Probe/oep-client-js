@@ -1,6 +1,15 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) `rp2ResetToBoot` restarts a running RP2 probe into its boot ROM through the firmware's reset interface (the
+  pico-sdk's, a class-typed RESET_REQUEST_BOOTSEL as picotool sends). The page's RP2 update is one button: a connected
+  probe goes into its boot ROM by itself (a 1200 baud touch only for firmware without the reset interface), a board with
+  no firmware is asked for BOOTSEL, and devices the browser was given before are used without asking. On the bench an
+  RP2040 and an RP2350 probe went from running to written and restarted in about 4 s each.
+- (JA) `rp2ResetToBoot` は、動いている RP2 の probe を、firmware の reset のインターフェース（pico-sdk のもの。picotool と同じ class の型の
+  RESET_REQUEST_BOOTSEL）で boot ROM に入れる。ページの RP2 の更新はボタン 1 つ: つないでいる probe は自分で boot ROM に入り（reset の
+  インターフェースの無い firmware だけ 1200 baud touch）、firmware の無いボードには BOOTSEL を頼み、前に許された機器は聞かずに使う。ベンチで
+  RP2040 と RP2350 の probe が、動いている状態から書き終えて再起動するまで、それぞれ約 4 秒だった。
 - (EN) RP2040 / RP2350 firmware over USB: `rp2Write` writes a .uf2 over the boot ROM's PICOBOOT interface on a WebUSB
   device (per sector erase, write, read back and compare, then the restart; the flash past the image - the settings -
   kept), `checkUf2` checks the image for the model (the family, every block, the RP2350's absolute block first allowed),

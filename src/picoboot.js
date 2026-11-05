@@ -138,6 +138,36 @@ export class Picoboot {
   }
 }
 
+const RESET_SUBCLASS = 0x00, RESET_PROTOCOL = 0x01, RESET_REQUEST_BOOTSEL = 0x01;
+
+/** The pico-sdk reset interface of a running RP2 device (vendor class, subclass 0, protocol 1), or null.
+ * @param {any} device @returns {number | null} */
+export function rp2ResetInterface(device) {
+  for (const c of device.configurations ?? (device.configuration ? [device.configuration] : [])) {
+    for (const i of c.interfaces) {
+      const a = i.alternates[0];
+      if (a.interfaceClass === 0xff && a.interfaceSubclass === RESET_SUBCLASS && a.interfaceProtocol === RESET_PROTOCOL) return i.interfaceNumber;
+    }
+  }
+  return null;
+}
+
+/** Restart a running RP2 probe into its boot ROM through its reset interface (the RP2 firmware's; what picotool
+ * reboot -f does): no 1200 baud touch, no button. The device leaves the bus. -> false when it has no such interface.
+ * @param {any} device a WebUSB USBDevice of the running probe */
+export async function rp2ResetToBoot(device) {
+  const intf = rp2ResetInterface(device);
+  if (intf === null) return false;
+  if (!device.opened) await device.open();
+  if (!device.configuration) await device.selectConfiguration(1);
+  await device.claimInterface(intf);
+  try {
+    await device.controlTransferOut({ requestType: 'class', recipient: 'interface', request: RESET_REQUEST_BOOTSEL, value: 0, index: intf }, new Uint8Array(0));
+  } catch { /* it may go before the status stage */ }
+  try { await device.close(); } catch { /* gone */ }
+  return true;
+}
+
 /** @typedef {{ phase: 'erase-write' | 'verify' | 'reboot', done: number, total: number }} Rp2Progress */
 
 /**

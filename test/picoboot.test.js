@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { checkUf2, UF2_FAMILIES } from '../src/firmware.js';
-import { PicobootError, RP2_BOOT_PID, RP2_BOOT_VID, rp2Write, uf2Sectors } from '../src/picoboot.js';
+import { PicobootError, RP2_BOOT_PID, RP2_BOOT_VID, rp2ResetToBoot, rp2Write, uf2Sectors } from '../src/picoboot.js';
 
 const FLASH = 0x10000000;
 
@@ -124,4 +124,21 @@ test('rp2Write refuses another chip\'s boot ROM, and a sector read back differen
   await assert.rejects(rp2Write(bootRom('rp2350'), uf2(100, UF2_FAMILIES.rp2040[0]), { model: 'rp2040' }), PicobootError);
   await assert.rejects(rp2Write(bootRom('rp2040', { corruptAt: FLASH + 1024 }), uf2(4096, UF2_FAMILIES.rp2040[0]), { model: 'rp2040' }),
     /read back differs/);
+});
+
+test('rp2ResetToBoot: the reset interface (vendor class, subclass 0, protocol 1) gets a class-typed RESET_REQUEST_BOOTSEL; none -> false', async () => {
+  /** @type {any[]} */
+  const sent = [];
+  const running = (/** @type {boolean} */ withReset) => ({
+    opened: true,
+    configuration: { interfaces: [
+      { interfaceNumber: 2, alternates: [{ interfaceClass: 0xff, interfaceSubclass: 0x4f, interfaceProtocol: 0x45, endpoints: [] }] },
+      ...(withReset ? [{ interfaceNumber: 4, alternates: [{ interfaceClass: 0xff, interfaceSubclass: 0, interfaceProtocol: 1, endpoints: [] }] }] : [])] },
+    async claimInterface(/** @type {number} */ n) { sent.push(['claim', n]); },
+    async controlTransferOut(/** @type {any} */ setup) { sent.push(['ctl', setup.requestType, setup.recipient, setup.request, setup.index]); throw new Error('gone'); },
+    async close() {},
+  });
+  assert.equal(await rp2ResetToBoot(running(false)), false);
+  assert.equal(await rp2ResetToBoot(running(true)), true);
+  assert.deepEqual(sent, [['claim', 4], ['ctl', 'class', 'interface', 1, 4]]);
 });

@@ -13,7 +13,7 @@ export { PROJECT_VID, PROJECT_PID, PROJECT_USB_FILTERS, PROJECT_SERIAL_FILTERS }
 export { webHidTransport, requestHidProbe, packHidReports, unpackHidReport, findVendorReports } from './webhid.js';
 export { requestDfuDevice, getDfuDevices, updateFirmware } from './dfu.js';
 export { rp2Bootsel, requestRp2Boot } from './rp2.js';
-export { rp2Write, uf2Sectors, Picoboot, PicobootError, RP2_BOOT_VID, RP2_BOOT_PID } from '../picoboot.js';
+export { rp2Write, rp2ResetToBoot, rp2ResetInterface, uf2Sectors, Picoboot, PicobootError, RP2_BOOT_VID, RP2_BOOT_PID } from '../picoboot.js';
 export { DfuClient, DfuError, openDfu, dfuUpdate, DFU_STATUS, DFU_STATE, dfuStatusName, dfuStateName } from '../dfu.js';
 export { sha256, parseFirmwareManifest, pickFirmware, fetchFirmwareManifest, fetchFirmware, verifyFirmware, firmwareFileUrl, checkUf2 } from '../firmware.js';
 export { connect } from '../open.js';
