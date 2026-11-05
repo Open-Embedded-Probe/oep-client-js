@@ -64,8 +64,11 @@ What is there:
   unit_id, 1 s per answer, no session opened - and `browse({ verify: true, onDropped })` keeps only those; `findUnit()`
   (and so `openTcp({ unitId })`) verifies by default and passes over an instance it cannot verify (`verify: false`: the
   first announced one);
-- the firmware update: USB DFU (the ESP32-P4) and the Release's firmware-<version>.json;
-- the page: connect, read what the probe declares, edit and save its settings, GPIO and UART, port_speed, a DFU update;
+- the firmware update: USB DFU (the ESP32-P4 / P4X), PICOBOOT over WebUSB (the RP2040 / RP2350: `rp2Write`, after a 1200
+  baud touch `rp2Bootsel`) and the Release's firmware-<version>.json;
+- the page: a set-up walk for a new probe (firmware, pins, a scan of the pins checked, the port named: labels and the
+  memo's port record), connect, read what the probe declares, edit and save its settings, GPIO and UART, port_speed,
+  the firmware update (DFU, RP2 over USB);
 - port_speed (oep-if-link §3 is the handshake, an op of the optional interface `oep.probe.link` that the probe offers when its
   ops set it; the procedure is the oep-spec host guide §17, opt-in):
   `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, record })` (or

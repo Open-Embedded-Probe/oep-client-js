@@ -48,3 +48,4 @@ export * as speed from './speed.js';
 export * as speedrecord from './speedrecord.js';
 export * as keptsession from './keptsession.js';
 export * as firmware from './firmware.js';
+export * as picoboot from './picoboot.js';

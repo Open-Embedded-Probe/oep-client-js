@@ -92,3 +92,55 @@ export async function fetchFirmware(manifestUrl, entry, { fetch = globalThis.fet
   if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
   return verifyFirmware(new Uint8Array(await r.arrayBuffer()), entry);
 }
+
+// ---- UF2 (RP2040 / RP2350: copied to the BOOTSEL drive) ---------------------------------------------------------------
+
+const UF2_MAGIC0 = 0x0a324655, UF2_MAGIC1 = 0x9e5d5157, UF2_MAGIC_END = 0x0ab16f30, UF2_FAMILY_FLAG = 0x2000;
+/** The UF2 family ids of a model's image (the RP2350 boot ROM takes Arm and RISC-V images). */
+export const UF2_FAMILIES = {
+  rp2040: [0xe48bff56],
+  rp2350: [0xe48bff59, 0xe48bff5a],
+};
+/** The absolute family (RP2350): arduino-pico puts one such block first (the RP2350-E10 work-around), numbered 0 of 2. */
+const UF2_ABSOLUTE = 0xe48bff57;
+
+/**
+ * Check a .uf2 before it is copied: every 512-byte block's magic numbers; the blocks in runs of one family, each run
+ * numbered in order from 0; one main run (not the absolute family) complete, 0..n-1 of n; and (with `model`) its family
+ * one that model's boot ROM takes. -> { blocks, family, start } of the main run (start: its first block's address).
+ * @param {Uint8Array} bytes @param {{ model?: string }} [opts]
+ */
+export function checkUf2(bytes, { model } = {}) {
+  if (!bytes.length || bytes.length % 512) throw new Error(`not a UF2 image: ${bytes.length} bytes, not whole 512-byte blocks`);
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  /** @type {{ family: number | null, first: number, count: number, total: number, start: number }[]} */
+  const runs = [];
+  for (let i = 0; i < bytes.length / 512; i++) {
+    const at = i * 512;
+    if (v.getUint32(at, true) !== UF2_MAGIC0 || v.getUint32(at + 4, true) !== UF2_MAGIC1 || v.getUint32(at + 508, true) !== UF2_MAGIC_END) {
+      throw new Error(`not a UF2 image: block ${i} has no UF2 magic`);
+    }
+    const family = v.getUint32(at + 8, true) & UF2_FAMILY_FLAG ? v.getUint32(at + 28, true) : null;
+    const no = v.getUint32(at + 20, true), total = v.getUint32(at + 24, true);
+    const run = runs[runs.length - 1];
+    if (!run || run.family !== family || no === 0) {
+      if (no !== 0) throw new Error(`UF2 block ${i}: a run that starts at block number ${no}`);
+      runs.push({ family, first: i, count: 1, total, start: v.getUint32(at + 12, true) });
+    } else {
+      if (no !== run.count || total !== run.total) throw new Error(`UF2 block ${i}: numbered out of order`);
+      run.count++;
+    }
+  }
+  const main = runs.filter((r) => r.family !== UF2_ABSOLUTE);
+  if (main.length !== 1) throw new Error(`a UF2 image with ${main.length} images in it, not one`);
+  const [image] = main;
+  if (image.count !== image.total) throw new Error(`UF2 image: ${image.count} of its ${image.total} blocks`);
+  if (model) {
+    const want = /** @type {Record<string, number[]>} */ (UF2_FAMILIES)[model];
+    if (!want) throw new Error(`no UF2 family known for ${model}`);
+    if (image.family === null || !want.includes(image.family)) {
+      throw new Error(`a UF2 image for family 0x${(image.family ?? 0).toString(16)}, not ${model}`);
+    }
+  }
+  return { blocks: image.count, family: image.family, start: image.start };
+}

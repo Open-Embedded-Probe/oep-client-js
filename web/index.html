@@ -169,6 +169,17 @@
       <div class="card">
         <h3 data-i18n="fwRp2"></h3>
         <p data-i18n="fwRp2Hint"></p>
+        <div class="row">
+          <label>model <select id="rp2-model"><option value="rp2040">rp2040</option><option value="rp2350">rp2350</option></select></label>
+          <label data-i18n-label="fwUf2">image (.uf2) <input id="rp2-image" type="file" accept=".uf2"></label>
+          <label data-i18n-label="fwManifest">firmware-*.json <input id="rp2-manifest" type="file" accept=".json"></label>
+        </div>
+        <div class="row">
+          <button id="rp2-bootsel" type="button" data-i18n="fwRp2Boot"></button>
+          <button id="rp2-write" type="button" data-i18n="fwRp2Write"></button>
+        </div>
+        <progress id="rp2-progress" max="1" value="0" hidden></progress>
+        <div id="rp2-status" class="muted"></div>
       </div>
     </section>
   </main>

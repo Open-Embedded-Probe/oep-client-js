@@ -60,8 +60,10 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   TXT の unit_id と同じかを見る（答え 1 つあたり 1 秒、session は開かない）。`browse({ verify: true, onDropped })` はそれで残った
   ものだけを返す。`findUnit()`（つまり `openTcp({ unitId })`）は既定で確かめ、確かめられない instance は飛ばす（`verify: false` なら
   広告された最初のもの）
-- firmware の更新: USB の DFU（ESP32-P4）と、Release の firmware-<version>.json
-- ページ: つなぐ、probe の宣言を読む、設定の編集と保存、GPIO と UART、port_speed、DFU での更新
+- firmware の更新: USB の DFU（ESP32-P4 / P4X）、WebUSB での PICOBOOT（RP2040 / RP2350: 1200 baud touch の `rp2Bootsel` の後に `rp2Write`）と、
+  Release の firmware-<version>.json
+- ページ: 新しい probe のセットアップ（firmware、ピン、チェックしたピンのスキャン、口の名付け: label とメモ欄の口の記録）、つなぐ、probe の
+  宣言を読む、設定の編集と保存、GPIO と UART、port_speed、firmware の更新（DFU、RP2 は USB から）
 - port_speed（oep-if-link §3 は握手だけで、任意のインターフェース `oep.probe.link` の op。probe は ops が立てるときに持つ。手順は
   oep-spec の host 開発ガイド §17。使うときだけ）:
   `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, record })`（または

@@ -3,7 +3,7 @@
 // operations, update its firmware (docs/design.md §4). Everything goes through oep-client-js.
 import {
   VERSION, settings, core, dump, fixture, openWebHid, openWebSerial, openWebUsb, parseFirmwareManifest, pickFirmware,
-  requestDfuDevice, dfuUpdate, verifyFirmware, Rejected, Unavailable, raiseSpeed, speedText, riscv, arm, memo,
+  requestDfuDevice, dfuUpdate, verifyFirmware, Rejected, Unavailable, raiseSpeed, speedText, riscv, arm, memo, rp2Bootsel, requestRp2Boot, rp2Write, checkUf2,
 } from './oep-client.js';
 
 // ---- words ---------------------------------------------------------------------------------------------------
@@ -39,7 +39,8 @@ const WORDS = {
     fwWrite: 'Choose the device and write', fwEsp32: 'ESP32 (USB-Serial/JTAG, UART bridge)',
     fwEsp32Hint: 'Write OepProbe-<model>-<version>.merged.bin at 0x0 with esptool (esptool.py or the web esptool). Not in this page yet.',
     fwRp2: 'RP2040 / RP2350',
-    fwRp2Hint: 'Hold BOOTSEL while plugging it in, then copy OepProbe-<profile>-<version>.uf2 to the drive that appears.',
+    fwRp2Hint: 'Pick OepProbe-<model>-<version>.uf2 (and, to check it, firmware-<version>.json). "Restart into BOOTSEL" restarts a running probe into its boot ROM (choose its serial port); a board with no firmware yet: hold BOOTSEL while plugging it in. Then "Write" (choose "RP2 Boot") writes it over USB, reads it back and restarts it; its settings stay. On Linux the boot ROM needs a udev rule for 2e8a:0003 / 2e8a:000f.',
+    fwRp2Boot: 'Restart into BOOTSEL', fwRp2Write: 'Choose the boot ROM and write', fwUf2: 'image (.uf2)',
     locked: 'lock held', noLock: 'no lock',
     speedHint: 'A UART bridge (serial) probe that offers port_speed runs faster for this session: each candidate is tried, confirmed at the new rate and committed - the first that passes is kept (the probe goes back to 115200 when the lock is released); in use, a rate whose frames keep breaking is left for the session. Which rates pass depends on the bridge chip. The default is 500000: a faster rate is tried only when you enter it here, and is used only after full frames ran 1 s each way at it (host guide §17).',
     speedTry: 'Try the rates',
@@ -74,7 +75,8 @@ const WORDS = {
     fwWrite: 'デバイスを選んで書く', fwEsp32: 'ESP32（USB-Serial/JTAG、UART bridge）',
     fwEsp32Hint: 'OepProbe-<model>-<version>.merged.bin を esptool（esptool.py か Web の esptool）で 0x0 に書きます。このページではまだできません。',
     fwRp2: 'RP2040 / RP2350',
-    fwRp2Hint: 'BOOTSEL を押しながら挿し、出てきたドライブに OepProbe-<profile>-<version>.uf2 をコピーします。',
+    fwRp2Hint: 'OepProbe-<model>-<version>.uf2 を選び、確かめるなら firmware-<version>.json も選びます。「BOOTSEL で再起動」で、動いている probe を boot ROM に入れます（そのシリアルの口を選ぶ）。まだ firmware の無いボードは、BOOTSEL を押しながら挿します。そのあと「書く」（「RP2 Boot」を選ぶ）で USB から書き、読み戻して確かめ、再起動します。設定は残ります。Linux では boot ROM（2e8a:0003 / 2e8a:000f）に udev の規則が要ります。',
+    fwRp2Boot: 'BOOTSEL で再起動', fwRp2Write: 'boot ROM を選んで書く', fwUf2: 'image（.uf2）',
     locked: 'ロックあり', noLock: 'ロックなし',
     speedHint: 'port_speed を持つ UART bridge（シリアル）の probe は、このセッションの間速くできます。候補を順に試し、新しい速さで confirm して決め、最初に通った速さを使います（ロックを放すと probe は 115200 に戻る）。使っている間にフレームが壊れ続ける速さはそのセッションでは降ります。通る速さは変換チップで決まります。既定は 500000 で、それより速い速さはここに入れたときだけ試し、両方向それぞれ 1 秒、最大のフレームを流して通ったときだけ使います（oep-if-link §3 の義務 7）。',
     speedTry: '速さを試す',
@@ -564,6 +566,44 @@ async function applyPort() {
   await listPins();
 }
 
+async function rp2Image() {
+  const model = /** @type {'rp2040' | 'rp2350'} */ (/** @type {HTMLSelectElement} */ ($('rp2-model')).value);
+  const file = input('rp2-image').files?.[0];
+  if (!file) throw new Error('pick the .uf2 image first');
+  const image = new Uint8Array(await file.arrayBuffer());
+  checkUf2(image, { model });
+  const manifestFile = input('rp2-manifest').files?.[0];
+  if (manifestFile) {
+    const manifest = parseFirmwareManifest(JSON.parse(await manifestFile.text()));
+    const entry = manifest.firmware.find((f) => f.file === file.name) ?? pickFirmware(manifest, { model, kind: 'uf2' });
+    if (!entry) throw new Error(`${manifestFile.name} lists no ${file.name}`);
+    await verifyFirmware(image, entry);
+    log(`sha256 matches ${entry.file}`);
+  }
+  return { model, image };
+}
+
+async function rp2Restart() {
+  if (host) await disconnect();
+  await rp2Bootsel();
+  $('rp2-status').textContent = 'restarting into the boot ROM: now choose it with the write button';
+}
+
+async function rp2WriteImage() {
+  const { model, image } = await rp2Image();
+  if (host) await disconnect();
+  const device = await requestRp2Boot(model);
+  const bar = /** @type {HTMLProgressElement} */ ($('rp2-progress'));
+  bar.hidden = false;
+  const t0 = performance.now();
+  const r = await rp2Write(device, image, { model, onProgress: (p) => {
+    bar.max = p.total;
+    bar.value = p.done;
+    $('rp2-status').textContent = p.phase === 'reboot' ? 'written and read back: restarting' : `${p.done} / ${p.total} sectors`;
+  } });
+  $('rp2-status').textContent = `${r.sectors} sectors written and read back in ${((performance.now() - t0) / 1000).toFixed(1)} s: the probe restarts into it`;
+}
+
 // ---- start ---------------------------------------------------------------------------------------------------------
 
 function main() {
@@ -598,6 +638,8 @@ function main() {
   settingForm.onchange = (e) => { if (/** @type {HTMLElement} */ (e.target).id !== 'setting-value') fillSettingForm(); };
   settingForm.onsubmit = (e) => { e.preventDefault(); act(setFromForm); };
   $('fw-dfu').onclick = () => act(writeFirmware);
+  $('rp2-bootsel').onclick = () => act(rp2Restart);
+  $('rp2-write').onclick = () => act(rp2WriteImage);
   $('setup-to-firmware').onclick = () => /** @type {HTMLButtonElement} */ (document.querySelector('nav.tabs button[data-tab=firmware]')).click();
   $('setup-pins').onclick = () => act(listPins);
   $('setup-scan').onclick = () => act(scanPins);
