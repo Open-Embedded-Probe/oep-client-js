@@ -43,7 +43,7 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   detail unknown_operation の `Rejected` を投げる）/ plan（`core.planApply` / `planRelease` / `planRoles` は oep.probe.plan を名前で探す）
 - インターフェース: debug の線（rvswd、swio、swd）と riscv-dm、ARM の ADI / MEM-AP / Cortex-M、target のコンソール、
   fixture（gpio、uart、i2c-target、spi-target、i2c-controller、spi-controller、pwm、counter、dac）、キャプチャ（ロジック、アナログ、capture-group、sigrok の .sr）、設定（core §13）、
-  `oep dump` の表示
+  メモ欄（`oep.probe.memo`。口の記録 `oep.probe.memo/port/<口>`）、`oep dump` の表示
 - 経路: ブラウザは WebSerial、WebUSB（vendor bulk）、WebHID。Node は TCP、シリアルの口（`serialport`）、USB（`usb`）
   （ネイティブの package は任意）。シリアルの口は 8N1、フロー制御なし、DTR と RTS を立てて開く（transports §4）。USB の probe は
   プロジェクトの USB の VID:PID `1209:4F45` だけで見つける（transports §3: WebUSB / WebHID の選択の既定の filter、Node の

@@ -3,13 +3,26 @@
 // operations, update its firmware (docs/design.md §4). Everything goes through oep-client-js.
 import {
   VERSION, settings, core, dump, fixture, openWebHid, openWebSerial, openWebUsb, parseFirmwareManifest, pickFirmware,
-  requestDfuDevice, dfuUpdate, verifyFirmware, Rejected, Unavailable, raiseSpeed, speedText,
+  requestDfuDevice, dfuUpdate, verifyFirmware, Rejected, Unavailable, raiseSpeed, speedText, riscv, arm, memo,
 } from './oep-client.js';
 
 // ---- words ---------------------------------------------------------------------------------------------------
 
 const WORDS = {
   en: {
+    tabSetup: 'Set up',
+    setup1: '1. Firmware', setup1Go: 'Open the firmware tab',
+    setup1Hint: 'Put the OEP firmware on the board first. ESP32-P4 / P4X: over DFU in the firmware tab. RP2040 / RP2350: hold BOOTSEL while plugging it in and copy the .uf2. Classic ESP32: the .merged.bin with esptool. Then connect it with the buttons above and take the lock.',
+    setup2: '2. Wire the target', setupPins: 'List the pins',
+    setup2Hint: 'Wire the target\'s debug lines and GND to free pins of the probe: SWDIO and SWCLK (two wires: RVSWD for WCH RISC-V, SWD for ARM) or SWIO (one wire). Pins with a label are in use already.',
+    setup3: '3. Scan', setupScan: 'Scan the pins checked', setupWire: 'wire', setupUse: 'use',
+    setup3Hint: 'Check the pins you wired in the list above. The scan drives only them, trying them as the line pair both ways round, and lists what answers.',
+    setup4: '4. Name the port', setupPort: 'port', setupPart: 'part', setupNote: 'note', setupApply: 'Set the labels and the record',
+    setup4Hint: 'A port name (a letter, then letters, digits or -, up to 16) names the pins in the probe\'s settings (S.swdio, S.swclk or S.swio) and is saved in the probe. The part number and note go to the probe\'s memo area (oep.probe.memo/port/<port>), for any host to read.',
+    setup5: '5. Use it',
+    setup5Hint: 'Tools that take OEP addresses (the cores, oep-client-python) reach the port with this address, from any host the probe is plugged into.',
+    setupNoScan: 'This probe has no scan on that wire.', setupNoPins: 'Check at least the pins of one line pair.',
+    setupNothing: 'nothing answered on those pins', setupPick: 'Pick a found target first.',
     unsupported: 'This browser has no WebUSB / WebSerial / WebHID. Use Chrome or Edge, over HTTPS or localhost.',
     connectUsb: 'Connect (USB)', connectSerial: 'Connect (serial)', connectHid: 'Connect (HID)', disconnect: 'Disconnect',
     takeLock: 'Take the lock (to change things)', notConnected: 'Not connected.',
@@ -32,6 +45,19 @@ const WORDS = {
     speedTry: 'Try the rates',
   },
   ja: {
+    tabSetup: 'セットアップ',
+    setup1: '1. firmware', setup1Go: 'firmware のタブを開く',
+    setup1Hint: '先にボードに OEP の firmware を書きます。ESP32-P4 / P4X は firmware のタブから DFU で。RP2040 / RP2350 は BOOTSEL を押しながら挿して .uf2 をコピー。classic ESP32 は .merged.bin を esptool で。書けたら上のボタンでつなぎ、ロックを取ります。',
+    setup2: '2. target の配線', setupPins: 'ピンを並べる',
+    setup2Hint: 'target のデバッグの線と GND を、probe の空いたピンにつなぎます。SWDIO と SWCLK（2 線: WCH の RISC-V は RVSWD、ARM は SWD）か、SWIO（1 線）です。label のあるピンはもう使われています。',
+    setup3: '3. スキャン', setupScan: 'チェックしたピンでスキャン', setupWire: '線', setupUse: '使う',
+    setup3Hint: '上の一覧で、配線したピンにチェックを付けます。スキャンはそのピンだけを、線の組として両方の向きで試し、答えたものを並べます。',
+    setup4: '4. 口の名付け', setupPort: '口', setupPart: '型番', setupNote: '注', setupApply: 'label と記録を設定する',
+    setup4Hint: '口の名前（英字で始まり、英字・数字・- で 16 文字まで）で、probe の設定のピンに名前を付けて（S.swdio、S.swclk か S.swio）probe に保存します。型番と注は probe のメモ欄（oep.probe.memo/port/<口>）に置き、どの host からも読めます。',
+    setup5: '5. 使う',
+    setup5Hint: 'OEP のアドレスを受ける道具（コア、oep-client-python）は、このアドレスでこの口に届きます。probe をどの host につないでも同じです。',
+    setupNoScan: 'この probe はその線のスキャンを持ちません。', setupNoPins: '少なくとも線の組 1 つ分のピンにチェックを付けます。',
+    setupNothing: 'そのピンでは何も答えなかった', setupPick: '先に見つかった target を選びます。',
     unsupported: 'このブラウザには WebUSB / WebSerial / WebHID がありません。Chrome か Edge で、HTTPS か localhost で開いてください。',
     connectUsb: '接続（USB）', connectSerial: '接続（シリアル）', connectHid: '接続（HID）', disconnect: '切断',
     takeLock: 'ロックを取る（変更するとき）', notConnected: 'つながっていません。',
@@ -418,6 +444,126 @@ async function writeFirmware() {
   $('fw-status').textContent = `${image.length} bytes in ${((performance.now() - t0) / 1000).toFixed(1)} s: the probe restarts into it`;
 }
 
+// ---- set up: wire, scan, name the port, record it (host guide §5.3, oep-if-memo §4.3) ------------------------------
+
+const WIRES = ['oep.wire.rvswd', 'oep.wire.swio', 'oep.wire.swd'];
+/** @type {{ kind: number, pins: [number, number], dmstatus: number, wire: string }[]} */ let found = [];
+/** @type {number | null} */ let picked = null;
+
+/** The wires this probe offers that can scan. @returns {Promise<{ name: string, wire: any }[]>} */
+async function scanWires() {
+  if (!host) return [];
+  const out = [];
+  for (const name of WIRES) {
+    let fn;
+    try { fn = await core.find(host, name); } catch { continue; }
+    const wire = name === 'oep.wire.swd' ? new arm.SwdWire(host, fn, name) : new riscv.WireBase(host, fn, name);
+    if (await core.offers(host, fn, riscv.WireBase.SCAN)) out.push({ name, wire });
+  }
+  return out;
+}
+
+async function listPins() {
+  if (!host || !info) return;
+  const labels = new Map(await settings.labels(host));
+  const body = /** @type {HTMLTableElement} */ ($('setup-pin-table')).tBodies[0];
+  body.replaceChildren();
+  for (const [ch, name] of [...info.channelNames.entries()].sort((a, b) => a[0] - b[0])) {
+    const row = body.insertRow();
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.dataset.channel = String(ch);
+    box.disabled = labels.has(ch);
+    row.insertCell().append(box);
+    row.insertCell().textContent = name;
+    row.insertCell().textContent = labels.get(ch) ?? '';
+  }
+  const sel = /** @type {HTMLSelectElement} */ ($('setup-wire'));
+  setOptions(sel, (await scanWires()).map((w) => [w.name, w.name]));
+  log(`${info.channelNames.size} pins, ${labels.size} labelled`);
+}
+
+function checkedPins() {
+  return [...document.querySelectorAll('#setup-pin-table input[type=checkbox]:checked')]
+    .map((b) => Number(/** @type {HTMLInputElement} */ (b).dataset.channel));
+}
+
+async function scanPins() {
+  const name = /** @type {HTMLSelectElement} */ ($('setup-wire')).value;
+  const w = (await scanWires()).find((x) => x.name === name);
+  if (!w) throw new Error(t('setupNoScan'));
+  const pins = checkedPins();
+  /** @type {[number, number][]} */
+  const pairs = w.wire.oneWire ? pins.map((p) => [p, 0xffff])
+    : pins.flatMap((a) => pins.filter((b) => b !== a).map((b) => /** @type {[number, number]} */ ([a, b])));
+  if (!pairs.length) throw new Error(t('setupNoPins'));
+  log(`${name}: scanning ${pairs.length} pin pairs`);
+  found = (await w.wire.scan(pairs)).map((f) => ({ ...f, wire: name }));
+  picked = found.length ? 0 : null;
+  showFound();
+  log(found.length ? `${found.length} found` : t('setupNothing'), !found.length);
+}
+
+/** @param {number} ch */
+const pinName = (ch) => (ch === 0xffff ? '' : info?.channelNames.get(ch) ?? `channel ${ch}`);
+
+function showFound() {
+  const body = /** @type {HTMLTableElement} */ ($('setup-found')).tBodies[0];
+  body.replaceChildren();
+  found.forEach((f, i) => {
+    const row = body.insertRow();
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'setup-found';
+    radio.checked = i === picked;
+    radio.onchange = () => { picked = i; preview(); };
+    row.insertCell().append(radio);
+    row.insertCell().textContent = f.wire.replace('oep.wire.', '');
+    row.insertCell().textContent = f.pins[1] === 0xffff ? `swio ${pinName(f.pins[0])}` : `swdio ${pinName(f.pins[0])}, swclk ${pinName(f.pins[1])}`;
+    row.insertCell().textContent = `id 0x${f.dmstatus.toString(16).padStart(8, '0')}`;
+  });
+  preview();
+}
+
+/** The labels the port name gives the picked target's pins. @returns {Record<string, string>} */
+function portLabels() {
+  const port = input('setup-port').value.trim();
+  if (picked === null || !port) return {};
+  const f = found[picked];
+  const out = {};
+  if (f.pins[1] === 0xffff) out[`channel.${pinName(f.pins[0])}.label`] = `${port}.swio`;
+  else {
+    out[`channel.${pinName(f.pins[0])}.label`] = `${port}.swdio`;
+    out[`channel.${pinName(f.pins[1])}.label`] = `${port}.swclk`;
+  }
+  return out;
+}
+
+function preview() {
+  $('setup-preview').textContent = Object.entries(portLabels()).map(([k, v]) => `${k} = ${v}`).join(', ');
+}
+
+async function applyPort() {
+  if (!host || !info) return;
+  if (picked === null) throw new Error(t('setupPick'));
+  const port = input('setup-port').value.trim();
+  if (!/^[A-Za-z][A-Za-z0-9-]{0,15}$/.test(port)) throw new Error(`port name ${JSON.stringify(port)}: a letter, then letters, digits or -, up to 16`);
+  const st = probeSettings();
+  await st.setNamed('core', portLabels());
+  if (await st.offers('save')) await st.save();
+  let mm = null;
+  try { mm = await memo.Memo.open(host); } catch { /* no memo area (an optional interface) */ }
+  let recorded = ' (no memo area on this probe: no record)';
+  if (mm) {
+    const record = await mm.updatePortRecord(port, { part: input('setup-part').value.trim(), note: input('setup-note').value.trim() });
+    recorded = `, ${memo.portRecordName(port)} = ${JSON.stringify(record)}`;
+  }
+  const address = `oep://${info.unitId}/${port}`;
+  $('setup-address').textContent = address;
+  log(`port ${port} set${recorded}`);
+  await listPins();
+}
+
 // ---- start ---------------------------------------------------------------------------------------------------------
 
 function main() {
@@ -452,6 +598,12 @@ function main() {
   settingForm.onchange = (e) => { if (/** @type {HTMLElement} */ (e.target).id !== 'setting-value') fillSettingForm(); };
   settingForm.onsubmit = (e) => { e.preventDefault(); act(setFromForm); };
   $('fw-dfu').onclick = () => act(writeFirmware);
+  $('setup-to-firmware').onclick = () => /** @type {HTMLButtonElement} */ (document.querySelector('nav.tabs button[data-tab=firmware]')).click();
+  $('setup-pins').onclick = () => act(listPins);
+  $('setup-scan').onclick = () => act(scanPins);
+  input('setup-port').oninput = preview;
+  const nameForm = /** @type {HTMLFormElement} */ ($('setup-name'));
+  nameForm.onsubmit = (e) => { e.preventDefault(); act(applyPort); };
   wireTools();
   applyWords();
   refreshButtons();

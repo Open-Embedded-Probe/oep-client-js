@@ -36,6 +36,7 @@ export * as names from './names.js';
 export * as interfaces from './interfaces.js';
 export * as dump from './dump.js';
 export * as settings from './settings.js';
+export * as memo from './memo.js';
 export * as riscv from './riscv.js';
 export * as arm from './arm.js';
 export * as targetConsole from './console.js';   // oep.target.console (not the global console)

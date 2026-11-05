@@ -1,6 +1,24 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) The memo area: `memo.Memo` (list paged by prefix, read and write in parts at the route's max_frame, delete;
+  `MemoTorn` for an object whose data does not match its crc), `portRecordName` and the port record
+  (`readPortRecord` / `updatePortRecord`: merged keeping the members it does not know, oep-if-memo §4), as
+  oep-client-python's oep_client.memo.
+- (EN) OEP Probe Tool: a "Set up" tab, first, for a new probe: the firmware, the pins and their labels, a scan of the
+  pins checked only (both ways round), and the port named from what answered - its labels set and saved, its part and
+  note in the memo's port record - ending with the port's `oep://<unit>/<port>` address.
+- (EN) DFU waits at least 50 ms between a block's status requests (`BLOCK_STATUS_GAP_MS`), however short the
+  bwPollTimeout: a device that asks for 1 ms got a GETSTATUS every millisecond through its flash write, and behind some
+  hubs one control transfer in a few hundred stalls.
+- (JA) メモ欄: `memo.Memo`（prefix で絞りページを送る list、経路の max_frame に合わせて分ける read と write、delete。データが crc と合わない
+  オブジェクトは `MemoTorn`）、`portRecordName` と口の記録（`readPortRecord` / `updatePortRecord`: 知らないメンバーを残して合わせる。
+  oep-if-memo §4）。oep-client-python の oep_client.memo と同じ。
+- (JA) OEP Probe Tool: 新しい probe のための「セットアップ」のタブを先頭に足した。firmware、ピンとその label、チェックしたピンだけの
+  スキャン（両方の向き）、答えたものからの口の名付け（label を設定して保存し、型番と注をメモ欄の口の記録に置く）、最後に口の
+  `oep://<unit>/<port>` のアドレス。
+- (JA) DFU は、ブロックの状態の問い合わせの間を、bwPollTimeout がどれだけ短くても 50 ms 以上あける（`BLOCK_STATUS_GAP_MS`）。1 ms を
+  求める機器には flash の書き込みの間ずっと 1 ms ごとに GETSTATUS が行っていた。ハブによっては、制御の転送が数百回に 1 回止まる。
 - (EN) `SpiController.transfer` and `Pwm.set` read the answer's count n(u8) first and check it against what was asked
   (oep-spec 98e7f5e, fixture §6 / §7; core §2.3), as oep-client-python 1b4e8fb. Registry and test/vectors from 98e7f5e.
 - (JA) `SpiController.transfer` と `Pwm.set` は応答の頭の件数 n(u8) を読み、要求した数と比べる（oep-spec 98e7f5e、fixture §6 / §7。core §2.3）。

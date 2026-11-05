@@ -46,7 +46,7 @@ What is there:
   (`core.planApply` / `planRelease` / `planRoles` on oep.probe.plan, found by name);
 - the interfaces: the debug wires (rvswd, swio, swd) and riscv-dm, ARM ADI / MEM-AP / Cortex-M, the target console, the
   fixtures (gpio, uart, i2c-target, spi-target, i2c-controller, spi-controller, pwm, counter, dac), the captures (logic, analog, capture-group, sigrok .sr), the settings
-  (core §13) and the `oep dump` view;
+  (core §13), the memo area (`oep.probe.memo`, with the port record `oep.probe.memo/port/<port>`) and the `oep dump` view;
 - the transports: WebSerial, WebUSB (vendor bulk), WebHID in the browser; TCP, serial ports (`serialport`) and USB (`usb`)
   in Node (the native packages optional); serial ports open 8N1 without flow control, DTR and RTS asserted (transports §4);
   a USB probe is found by the project's USB VID:PID `1209:4F45` alone (transports §3: the WebUSB / WebHID choosers' default

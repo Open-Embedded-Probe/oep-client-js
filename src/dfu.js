@@ -140,6 +140,9 @@ export function findDfuInterface(configuration) {
 /** @param {number} ms */
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** The least wait between a block's status requests (ms): a block's write is tens of ms. */
+export const BLOCK_STATUS_GAP_MS = 50;
+
 export class DfuClient {
   /**
    * @param {UsbControl} ctl
@@ -241,7 +244,9 @@ export class DfuClient {
         throw new DfuError(`block ${block}: unexpected ${dfuStateName(s.state)}`, { status: s.status, state: s.state, block });
       }
       if (waited > this.busyTimeoutMs) throw new DfuError(`block ${block}: the device stays busy`, { state: s.state, block });
-      const wait = Math.max(s.pollTimeout, 1);
+      // at least BLOCK_STATUS_GAP_MS: a device that asks for 1 ms (EspUsbDevice) would get a GETSTATUS every
+      // millisecond through its flash write, and behind some hubs one control transfer in a few hundred stalls
+      const wait = Math.max(s.pollTimeout, BLOCK_STATUS_GAP_MS);
       waited += wait;
       await this.sleep(wait);
     }

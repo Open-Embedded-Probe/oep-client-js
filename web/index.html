@@ -29,14 +29,53 @@
   </section>
 
   <nav class="tabs">
-    <button type="button" data-tab="describe" class="active" data-i18n="tabDescribe"></button>
+    <button type="button" data-tab="setup" class="active" data-i18n="tabSetup"></button>
+    <button type="button" data-tab="describe" data-i18n="tabDescribe"></button>
     <button type="button" data-tab="settings" data-i18n="tabSettings"></button>
     <button type="button" data-tab="tools" data-i18n="tabTools"></button>
     <button type="button" data-tab="firmware" data-i18n="tabFirmware"></button>
   </nav>
 
   <main>
-    <section id="tab-describe" class="tab">
+    <section id="tab-setup" class="tab">
+      <div class="card">
+        <h3 data-i18n="setup1"></h3>
+        <p data-i18n="setup1Hint"></p>
+        <button id="setup-to-firmware" type="button" data-i18n="setup1Go"></button>
+      </div>
+      <div class="card">
+        <h3 data-i18n="setup2"></h3>
+        <p data-i18n="setup2Hint"></p>
+        <button id="setup-pins" type="button" data-i18n="setupPins" data-needs="host"></button>
+        <table id="setup-pin-table" class="items"><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h3 data-i18n="setup3"></h3>
+        <p data-i18n="setup3Hint"></p>
+        <div class="row">
+          <label data-i18n-label="setupWire">wire <select id="setup-wire"></select></label>
+          <button id="setup-scan" type="button" data-i18n="setupScan" data-needs="lock"></button>
+        </div>
+        <table id="setup-found" class="items"><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h3 data-i18n="setup4"></h3>
+        <p data-i18n="setup4Hint"></p>
+        <form id="setup-name" autocomplete="off">
+          <label data-i18n-label="setupPort">port <input id="setup-port" required pattern="[A-Za-z][A-Za-z0-9-]{0,15}" spellcheck="false"></label>
+          <label data-i18n-label="setupPart">part <input id="setup-part" spellcheck="false"></label>
+          <label data-i18n-label="setupNote">note <input id="setup-note"></label>
+          <p id="setup-preview" class="muted"></p>
+          <button type="submit" data-i18n="setupApply" data-needs="lock"></button>
+        </form>
+      </div>
+      <div class="card">
+        <h3 data-i18n="setup5"></h3>
+        <p data-i18n="setup5Hint"></p>
+        <pre id="setup-address" class="out small"></pre>
+      </div>
+    </section>
+    <section id="tab-describe" class="tab" hidden>
       <div class="row">
         <button id="describe-run" type="button" data-i18n="describeRun" data-needs="host"></button>
         <button id="describe-save" type="button" data-i18n="saveJson" data-needs="dump"></button>

@@ -1,7 +1,7 @@
 // @ts-check
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { DFU_STATE, DFU_STATUS, DfuClient, DfuError, dfuUpdate, openDfu, parseConfigDescriptor } from '../src/dfu.js';
+import { BLOCK_STATUS_GAP_MS, DFU_STATE, DFU_STATUS, DfuClient, DfuError, dfuUpdate, openDfu, parseConfigDescriptor } from '../src/dfu.js';
 import { fetchFirmware, parseFirmwareManifest, pickFirmware, sha256, verifyFirmware } from '../src/firmware.js';
 
 const S = DFU_STATE;
@@ -126,13 +126,14 @@ test('DFU: a download with GETSTATUS polling honouring bwPollTimeout, the zero-l
   const dfu = await openDfu(d, { sleep: async (ms) => { sleeps.push(ms); } });
   const r = await dfu.download(image, { onProgress: (p) => progress.push(p) });
   assert.deepEqual(r, { blocks: 4, bytes: 200, state: S.dfuMANIFEST_WAIT_RESET, confirmed: true });
-  // 4 blocks of 64, 64, 64, 8; every block busy twice (bwPollTimeout 5), the manifestation once (250)
+  // 4 blocks of 64, 64, 64, 8; every block busy twice (bwPollTimeout 5, waited at least BLOCK_STATUS_GAP_MS), the
+  // manifestation once (250)
   assert.deepEqual(d.written.map((w) => w.length), [64, 64, 64, 8]);
   const joined = new Uint8Array(200);
   let at = 0;
   for (const w of d.written) { joined.set(w, at); at += w.length; }
   assert.deepEqual(joined, image);
-  assert.deepEqual(sleeps, [5, 5, 5, 5, 5, 5, 5, 5, 250]);
+  assert.deepEqual(sleeps, [...Array(8).fill(Math.max(5, BLOCK_STATUS_GAP_MS)), 250]);
   assert.deepEqual(d.log.filter((l) => l.startsWith('DNLOAD')), ['DNLOAD 0 64', 'DNLOAD 1 64', 'DNLOAD 2 64', 'DNLOAD 3 8', 'DNLOAD 4 0']);
   assert.deepEqual(progress.map((p) => [p.phase, p.written]), [['download', 64], ['download', 128], ['download', 192], ['download', 200], ['manifest', 200]]);
 });
