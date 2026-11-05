@@ -63,20 +63,18 @@ docs/           この文書、リリースの手順
   `PROJECT_SERIAL_FILTERS` で probe だけに絞れる。Node では `findUsbProbes` と `findSerialProbes` が、この VID:PID の device と CDC の口を
   並べ、`findProbes` は口の種類にかかわらず device ごとに 1 つを並べる。何も指定しない `openUsb()` はそこにプローブがちょうど 1 つならそれを（vendor bulk、無ければその CDC の口）開き、2 つ以上なら何も開かず `SeveralProbesError` が各プローブ（unit id、口）を並べるので 1 つを指定する。iProduct はどこも見ない。probe の中の口は interface の値で選ぶ（registry の `usb`）。
 
-## 4. Web ページでできること（順番）
+## 4. Web ページ
 
-1. **probe の firmware の更新**（OEP の外。仕様の変更に巻き込まれない）
-   - ESP32-P4: WebUSB で DFU（`OepProbe-esp32p4-<version>.bin`）。
-   - ESP32（USB-Serial/JTAG、UART bridge）: esptool-js で merged.bin を 0x0 に。
-   - RP2040 / RP2350: BOOTSEL のドライブにコピーする手順の案内（ブラウザからドライブには書けない）。
-   - どの firmware も `firmware-<version>.json` の sha256 で照合します。
-2. **つなぐ、見る**: 経路を選んでつなぎ、describe を全部見せる（`oep dump` と同じ）。
-3. **設定**（core §13）: 全部の値と出どころの表示、名前での設定と解除、保存、設定のファイルへの書き出しと読み込み。欄は
-   各持ち主の describe の宣言（項目、key、選択肢）から組み立てます。
-4. **簡単な操作**: GPIO の読み書き、UART の端末、target の attach / halt / resume / reset、target のコンソール。
+画面の目的、機能の範囲、遷移と受入れ条件は [ページの要件と画面設計](page.ja.md) を参照します。
 
-作らないもの: キャプチャの表示（[WireSkein](https://github.com/Open-Embedded-Probe/wireskein) の担当）、target への書き込み
-（ch32rv などの担当）。
+ページは接続後の作業を中心に構成します。接続先の登録、GPIO/UART/I2C/SPI/PWM/カウンタ/DAC、ターゲットの調査・操作、
+設定とメモ領域の管理、プローブ自身の firmware 更新を扱います。キャプチャは WireSkein へ、ターゲット固有の flash 書き込みは
+対応する外部ツールへ進む導線を用意します。
+
+- `web/app.js`: 接続・セッションと各作業画面。`web/signals.js`: 宣言された入出力機能の操作フォーム。
+- `web/model.js`: 入力検証、ルーティング、表示用の値の変換。`web/boards.js`: ボードの案内。
+- `web/oep-client.js`: ソース上の公開 API 入口。サイトビルド時に `site/src/` を参照する入口へ置き換えます。
+- `tsconfig.web.json` で画面のコードも検査し、`npm run test:browser` で Chromium と Python 仮想プローブによる操作を確認します。
 
 ## 5. 気を付けること
 

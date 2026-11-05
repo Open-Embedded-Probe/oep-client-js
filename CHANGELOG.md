@@ -1,6 +1,10 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+
+- (EN) Rebuild the browser page as a task-oriented probe workspace: guided setup and connections, capability-driven signal I/O, target debug tools, settings and memo storage, firmware maintenance, and WireSkein handoff. Add browser type checks and virtual-probe UI verification.
+- (JA) ブラウザのページを用途別のプローブ作業画面として再構成。導入と接続先登録、宣言に沿った信号入出力、ターゲット操作、設定とメモ領域、firmware保守、WireSkeinへの導線を追加。画面コードの検査と仮想プローブによるブラウザ試験も追加。
+
 - (EN) Fixed: labels naming a port with a target pin - `S.N@P` and `S@P` (host guide §5.3), e.g. `v208.swdio@pa13` - named
   no port (`portsNamed`, `portLine`, `lineFromLabels`). `parseLabel` reads all three forms, as oep-client-python's
   parse_label.

@@ -67,20 +67,16 @@ docs/           this document, the release steps
   lists them (unit id, ways in) - name one. Nothing looks at iProduct. Inside a probe the ports are chosen by the interface values
   (registry `usb`).
 
-## 4. What the page does (in this order)
+## 4. Browser workspace
 
-1. **Update a probe's firmware** (outside OEP: untouched by spec changes)
-   - ESP32-P4: DFU over WebUSB (`OepProbe-esp32p4-<version>.bin`).
-   - ESP32 (USB-Serial/JTAG, UART bridge): esptool-js, the merged image at 0x0.
-   - RP2040 / RP2350: the steps to copy the UF2 to the BOOTSEL drive (a browser cannot write the drive).
-   - Every image is checked against `firmware-<version>.json`'s sha256.
-2. **Connect and look**: pick a transport, connect, show everything describe declares (as `oep dump` does).
-3. **Settings** (core §13): show every value, set and unset by name (when the probe lets them change), save, export to and import from a
-   settings file. The form is built from what each owner's describe declares (its items, their keys and choices).
-4. **Simple operations**: GPIO read / write, a UART terminal, attach / halt / resume / reset a target, its console.
+The [page requirements and navigation](page.ja.md) define the workspace. It supports probe setup, named target connections,
+GPIO/UART/I2C/SPI/PWM/counter/DAC operations, target debugging, settings and memo storage, and probe firmware updates.
+Capture acquisition and viewing lead to WireSkein; device-specific target flash programming leads to the appropriate external tools.
 
-Not done here: showing captures ([WireSkein](https://github.com/Open-Embedded-Probe/wireskein)'s), writing a target's
-flash (ch32rv and the like).
+`web/app.js` owns connection/session state and screens. `web/signals.js` defines I/O forms using the public library APIs.
+`web/model.js` validates input and handles routes and display values; `web/boards.js` holds board guidance.
+`web/oep-client.js` is the source entry, replaced with site-relative library exports by the site build.
+`tsconfig.web.json` checks the browser code, and `npm run test:browser` exercises Chromium with the Python virtual probe.
 
 ## 5. Things to mind
 

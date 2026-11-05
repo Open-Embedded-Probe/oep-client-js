@@ -66,9 +66,9 @@ What is there:
   first announced one);
 - the firmware update: USB DFU (the ESP32-P4 / P4X), PICOBOOT over WebUSB (the RP2040 / RP2350: `rp2Write`, after
   `rp2ResetToBoot`) and the Release's firmware-<version>.json;
-- the page (docs/page.ja.md): what OEP is, the boards that can be probes and what each can do, a walk-through from the
-  firmware to a named target, the probe's own screen (its targets, the firmware update, its settings, the pins by hand,
-  what it declares) and the way to the tools (WireSkein for capture, the cores, oep-client-python);
+- the [browser workspace](docs/page.ja.md): setup and named connections, GPIO/UART/I2C/SPI/PWM/counter/DAC, target debugging,
+  memory and console, settings and memo storage, firmware updates and diagnostics. Capture leads to WireSkein; target-specific
+  flash programming leads to the appropriate development tools;
 - port_speed (oep-if-link §3 is the handshake, an op of the optional interface `oep.probe.link` that the probe offers when its
   ops set it; the procedure is the oep-spec host guide §17, opt-in):
   `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, record })` (or
@@ -190,6 +190,7 @@ npm install
 npm test            # explicit virtual backend setup: docs/testing.md
 npm run typecheck
 npm run serve       # the page at http://localhost:4173/
+npm run test:browser # Chromium UI verification against the Python virtual probe
 ```
 
 ## Documents
