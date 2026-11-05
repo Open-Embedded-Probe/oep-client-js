@@ -1,6 +1,7 @@
 // Real Chromium UI tests against the Python virtual probe. The HTTP transport below is test-only;
 // production pages still use WebUSB / WebSerial / WebHID. No runtime or npm dependency is added.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { connect as tcpConnect } from 'node:net';
@@ -29,9 +30,22 @@ function start(command, args, pattern, stream = 'stdout') {
 try {
   let benchPort = Number(await start(python, ['-m', 'oep_client.virtual_bench_serve', '--tcp', '0', '--profile', 'p4-x035', '--uart-rx', 'browser test'], /PORT (\d+)/));
   function flush() { if (waiting && chunks.length) { waiting.end(Buffer.concat(chunks)); chunks = []; waiting = null; } }
+  const flashImage = Buffer.alloc(0x20000);
+  flashImage[0x1000] = 0xe9; flashImage[0x8000] = 0xaa; flashImage[0x8001] = 0x50;
+  const flashManifest = { schema: 1, version: '0.0.47', firmware: [{ model: 'esp32', kind: 'merged', flash_offset: 0,
+    file: 'test-esp32.merged.bin', example: 'Firmware/OepProbe', sha256: createHash('sha256').update(flashImage).digest('hex') }] };
   server = createServer(async (req, res) => {
     try {
       const path = new URL(req.url, 'http://localhost').pathname;
+      if (path === '/firmware/firmware.json') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(flashManifest)); return; }
+      if (path === '/firmware/test-esp32.merged.bin') { res.end(flashImage); return; }
+      if (path === '/esp-loader.js') {
+        res.setHeader('Content-Type', 'text/javascript');
+        res.end(`export class Transport { constructor(port){globalThis.__flashPort=port;} async disconnect(){globalThis.__flashClosed=true;} }
+          export class ESPLoader { chip={CHIP_NAME:'ESP32'}; async main(){return 'ESP32 test ROM';}
+            async writeFlash(o){globalThis.__flashWrite={address:o.fileArray[0].address,size:o.fileArray[0].data.length,eraseAll:o.eraseAll};o.reportProgress(0,o.fileArray[0].data.length,o.fileArray[0].data.length);}
+            async after(mode){globalThis.__flashReset=mode;} }`); return;
+      }
       if (path === '/_test/open') {
         chunks = [];
         socket = tcpConnect({ host: '127.0.0.1', port: benchPort });
@@ -60,7 +74,7 @@ try {
             },{keepSession:false});
           }`); return;
       }
-      const file = resolve(root, 'site', path === '/' ? 'index.html' : path.slice(1));
+      const file = resolve(root, 'site', path === '/' ? 'index.html' : path === '/esp-loader-real.js' ? 'esp-loader.js' : path.slice(1));
       if (!file.startsWith(resolve(root, 'site') + '/')) { res.writeHead(403).end(); return; }
       const data = await readFile(file);
       res.setHeader('Content-Type', ({ '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json' })[extname(file)] ?? 'application/octet-stream');
@@ -109,13 +123,31 @@ try {
   await send('Runtime.enable'); await send('Page.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: base });
-  await until('[...document.querySelectorAll("#screen a")].some(a=>a.hash==="#connect")'); await snapshot('01-start');
+  await until('[...document.querySelectorAll("#screen a")].some(a=>a.hash==="#firmware")'); await snapshot('01-start');
+  assert.deepEqual(await evaluate('(async()=>{const m=await import("/esp-loader-real.js");return [typeof m.ESPLoader,typeof m.Transport]})()'), ['function','function']);
   assert.equal(await evaluate('getComputedStyle(document.querySelector("#screen .button")).minHeight'), '50px');
   for (const hash of ['connect', 'probe', 'targets', 'target/new', 'signals/pwm', 'debug', 'tools', 'settings', 'storage', 'firmware', 'diagnostics', 'help', 'details', 'try', 'unknown']) {
     await route(hash); assert.ok(await heading(), hash); assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, hash);
   }
   await route('home');
   assert.equal(await evaluate('document.querySelectorAll("#screen button").length'), 0, 'the first screen does not ask users to choose a transport');
+  assert.equal(await evaluate('document.querySelector("#screen .button").hash'), '#firmware', 'fresh installation is the primary action');
+  await evaluate('document.querySelector("#screen .button").click()'); await delay(100);
+  assert.match(await heading(), /Install OEP/);
+  await evaluate('Object.defineProperty(navigator.serial,"requestPort",{configurable:true,value:async()=>({testPort:true})})');
+  await evaluate('document.querySelector("input[name=fw-board][value=esp32]").click()');
+  await until('document.querySelector("#screen").textContent.includes("test-esp32.merged.bin")');
+  await click('Select serial programming port'); await succeeded();
+  await click('Write OEP firmware'); await succeeded();
+  assert.deepEqual(await evaluate('globalThis.__flashWrite'), { address: 0, size: flashImage.length, eraseAll: false });
+  assert.equal(await evaluate('globalThis.__flashClosed'), true);
+  assert.equal(await evaluate('globalThis.__flashReset'), 'hard_reset');
+  assert.equal(await evaluate('location.hash'), '#firmware', 'stay on installation until the user reconnects');
+  assert.match(await evaluate('document.getElementById("fw-status").textContent'), /Written/);
+  await snapshot('01c-initial-install');
+  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.textContent==="Connect and check the version").click()'); await delay(100);
+  assert.equal(await evaluate('document.querySelector("input[name=connect-board]:checked").value'), 'esp32');
+  await send('Page.navigate', { url: base }); await until('document.querySelector("#screen .button")?.hash==="#firmware"');
   await route('settings');
   await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.hash==="#connect").click()'); await delay(100);
   assert.equal(await evaluate('document.getElementById("connect-selected").disabled'), true, 'choose a board before connecting');
@@ -205,7 +237,7 @@ try {
   assert.equal(await evaluate('globalThis.__selectedProbe'),'fafe00000035','the exact chosen device is passed to the transport');
   await click('Disconnect'); await succeeded();
   assert.deepEqual(exceptions, []);
-  console.log('Browser workspace: navigation, deep-link connect, GPIO, PWM, UART, I2C/SPI peers and controllers, counter, DAC, debug and console, settings, capabilities, language, mobile and session cleanup passed.');
+  console.log('Browser workspace: ESP initial install, bundled ROM loader, navigation, deep-link connect, GPIO, PWM, UART, I2C/SPI peers and controllers, counter, DAC, debug and console, settings, capabilities, language, mobile and session cleanup passed.');
 } finally {
   browserSocket?.close(); socket?.destroy(); if (waiting) waiting.end(); server?.closeAllConnections(); server?.close();
   for (const child of children) { child.stdin?.end(); child.kill(); }

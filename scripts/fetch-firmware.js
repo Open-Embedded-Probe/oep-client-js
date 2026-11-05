@@ -3,14 +3,14 @@
 // A browser cannot fetch a Release's files itself (release-assets.githubusercontent.com sends no CORS header), so the
 // Pages deploy copies them: site/firmware/firmware.json (the Release's firmware-<version>.json, the OepProbe entries)
 // and each file it lists, its sha256 checked. GITHUB_TOKEN, when set, lifts the API's rate limit.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseFirmwareManifest, sha256 } from '../src/firmware.js';
 
 const REPO = process.env.OEP_FIRMWARE_REPO ?? 'Open-Embedded-Probe/oep-probe-arduino';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const out = join(root, 'site', 'firmware');
+const out = join(root, '.cache', 'firmware');
 const headers = { Accept: 'application/vnd.github+json', ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}) };
 
 /** @param {string} url */
@@ -40,4 +40,5 @@ for (const f of manifest.firmware) {
   writeFileSync(join(out, f.file), bytes);
 }
 writeFileSync(join(out, 'firmware.json'), JSON.stringify({ ...manifest, release: release.tag_name }, null, 2) + '\n');
+cpSync(out, join(root, 'site/firmware'), { recursive: true });
 console.log(`site/firmware: ${release.tag_name}, ${manifest.firmware.length} files`);

@@ -35,7 +35,7 @@ docs/           この文書、リリースの手順
 - `site/` は npm の配布物に入れません（Web ページは Pages から配ります）。`src/node/` も `site/` に入れません。
 - 型は JSDoc で書き、`// @ts-check` と `tsc --noEmit` で確かめます。TypeScript では書きません。型定義（`types/`）は `tsc` が
   JSDoc から作ります。
-- 依存は増やしません。Node の `serialport` と `usb` はネイティブのモジュールなので、使う人が入れる任意の依存にします
+- OEPライブラリの実行時依存は増やしません。サイトだけにESP ROM書き込み用の固定版esptool-jsをbundleします。Node の `serialport` と `usb` はネイティブのモジュールなので、使う人が入れる任意の依存にします
   （ブラウザだけで使う人には入らない）。
 
 ## 3. 経路

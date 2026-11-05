@@ -67,7 +67,7 @@ What is there:
 - the firmware update: USB DFU (the ESP32-P4 / P4X), PICOBOOT over WebUSB (the RP2040 / RP2350: `rp2Write`, after
   `rp2ResetToBoot`) and the Release's firmware-<version>.json;
 - the [browser workspace](docs/page.ja.md): setup and named connections, GPIO/UART/I2C/SPI/PWM/counter/DAC, target debugging,
-  memory and console, settings and memo storage, firmware updates and diagnostics. Capture leads to WireSkein; target-specific
+  memory and console, settings and memo storage, initial firmware installation and updates and diagnostics. Capture leads to WireSkein; target-specific
   flash programming leads to the appropriate development tools;
 - port_speed (oep-if-link §3 is the handshake, an op of the optional interface `oep.probe.link` that the probe offers when its
   ops set it; the procedure is the oep-spec host guide §17, opt-in):
@@ -192,6 +192,11 @@ npm run typecheck
 npm run serve       # the page at http://localhost:4173/
 npm run test:browser # Chromium UI verification against the Python virtual probe
 ```
+
+The main browser action installs OEP on a new board. ESP32 / P4 / P4X installation uses their serial ROM port and bundled release images,
+then offers an OEP connection. S3 / C3 / C6 accept a compatible merged image (no prebuilt OepProbe release); CH32 initial installation is unsupported.
+The site bundles a pinned `esptool-js`; the npm library gains no runtime dependency.
+`npm run serve` fetches release images on first use and caches them in `.cache/firmware`. Refresh with `node scripts/fetch-firmware.js`.
 
 ## Documents
 

@@ -63,7 +63,7 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 - firmware の更新: USB の DFU（ESP32-P4 / P4X）、WebUSB での PICOBOOT（RP2040 / RP2350: `rp2ResetToBoot` の後に `rp2Write`）と、
   Release の firmware-<version>.json
 - [ブラウザの作業画面](docs/page.ja.md): 導入・接続先登録、GPIO/UART/I2C/SPI/PWM/カウンタ/DAC、ターゲットのデバッグ・メモリ・コンソール、
-  設定とメモ領域、firmware更新・診断。キャプチャはWireSkein、ターゲット固有の書き込みは対応する道具へ案内します。
+  設定とメモ領域、firmware初回書き込み・更新・診断。キャプチャはWireSkein、ターゲット固有の書き込みは対応する道具へ案内します。
 - port_speed（oep-if-link §3 は握手だけで、任意のインターフェース `oep.probe.link` の op。probe は ops が立てるときに持つ。手順は
   oep-spec の host 開発ガイド §17。使うときだけ）:
   `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, record })`（または
@@ -175,6 +175,11 @@ npm run typecheck
 npm run serve       # http://localhost:4173/ でページ
 npm run test:browser # ChromiumとPython仮想プローブで画面操作を確認
 ```
+
+ブラウザの主導線は新規書き込みです。ESP32・P4・P4XはUSBシリアルから配布画像を直接書き込み、完了後にOEPとして接続します。
+S3/C3/C6は対応するmerged画像の持ち込みに対応します（OepProbe配布画像は未提供）。CH32の初回書き込みは未対応です。
+ESP書き込み用の固定版 `esptool-js` はサイトに同梱し、npmライブラリの実行時依存には加えません。
+`npm run serve` は初回に配布画像を取得し、`.cache/firmware` に保存します。再取得は `node scripts/fetch-firmware.js` で行えます。
 
 ## 文書
 

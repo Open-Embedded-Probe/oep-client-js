@@ -7,7 +7,7 @@
 /** @typedef {true | false | Text} Has  true: yes, false: no, a text: yes with that limit */
 /**
  * @typedef {{ id: string, tier: 'release' | 'build', name: Text, chip: string, models: string[], verified: boolean | Text,
- *   write: { page: 'any' | 'dfu' | false, how: Text }, usb: Text, pins: Text, reserved: Text,
+ *   write: { page: 'any' | 'serial' | false, how: Text }, usb: Text, pins: Text, reserved: Text,
  *   features: Record<string, Has> }} Board
  * tier: release - a released firmware runs on it; build - build an example for it yourself
  */
@@ -68,7 +68,7 @@ export const BOARDS = [
   },
   {
     id: 'p4', tier: 'release', name: { en: 'ESP32-P4 board (chip v1.x)', ja: 'ESP32-P4 のボード（チップ v1.x）' }, chip: 'ESP32-P4 (v1.x)', models: ['esp32p4'], verified: true,
-    write: { page: 'dfu', how: { en: 'The first time with esptool (the .merged.bin at 0x0); after that this page updates it over USB (DFU).', ja: '初めは esptool で（.merged.bin を 0x0 に）。その後は、このページが USB（DFU）で更新します。' } },
+    write: { page: 'serial', how: { en: 'Install here over serial USB; later update here over native USB (DFU).', ja: 'このページでUSBシリアルから初回書き込みできます。導入後はnative USB（DFU）でも更新できます。' } },
     usb: { en: 'USB HS (vendor bulk, HID, CDC)', ja: 'USB HS（vendor bulk、HID、CDC）' },
     pins: { en: 'GPIO0-GPIO54 but 24, 25', ja: 'GPIO0〜GPIO54（24、25 以外）' },
     reserved: { en: 'GPIO24 / 25 (USB-Serial/JTAG)', ja: 'GPIO24 / 25（USB-Serial/JTAG）' },
@@ -81,7 +81,7 @@ export const BOARDS = [
   },
   {
     id: 'p4x', tier: 'release', name: { en: 'ESP32-P4X board (chip v3.x)', ja: 'ESP32-P4X のボード（チップ v3.x）' }, chip: 'ESP32-P4X (v3.x)', models: ['esp32p4x'], verified: true,
-    write: { page: 'dfu', how: { en: 'The first time with esptool (the .merged.bin at 0x0); after that this page updates it over USB (DFU). The P4 and P4X images are not interchangeable.', ja: '初めは esptool で（.merged.bin を 0x0 に）。その後は、このページが USB（DFU）で更新します。P4 と P4X の画像は互換がありません。' } },
+    write: { page: 'serial', how: { en: 'Install here over serial USB; later update here over native USB (DFU). The P4 and P4X images are not interchangeable.', ja: 'このページでUSBシリアルから初回書き込みできます。導入後はnative USB（DFU）でも更新できます。P4 と P4X の画像は互換がありません。' } },
     usb: { en: 'USB HS (vendor bulk, HID, CDC)', ja: 'USB HS（vendor bulk、HID、CDC）' },
     pins: { en: 'GPIO0-GPIO54 but 24, 25', ja: 'GPIO0〜GPIO54（24、25 以外）' },
     reserved: { en: 'GPIO24 / 25 (USB-Serial/JTAG)', ja: 'GPIO24 / 25（USB-Serial/JTAG）' },
@@ -94,7 +94,7 @@ export const BOARDS = [
   },
   {
     id: 'esp32', tier: 'release', name: { en: 'Classic ESP32 board (ESP32-DevKitC, ...)', ja: 'classic ESP32 のボード（ESP32-DevKitC など）' }, chip: 'ESP32', models: ['esp32'], verified: true,
-    write: { page: false, how: { en: 'With esptool: the .merged.bin at 0x0 (this page cannot yet).', ja: 'esptool で .merged.bin を 0x0 に書きます（このページではまだ書けません）。' } },
+    write: { page: 'serial', how: { en: 'Install here through the USB–serial port. No OEP firmware is needed beforehand.', ja: 'USBシリアルのポートを選んで、このページから初回書き込みできます。OEPの事前導入は不要です。' } },
     usb: { en: 'its USB-UART bridge (115200); Wi-Fi TCP once set up', ja: 'USB-UART の変換チップ（115200）。設定すれば Wi-Fi の TCP も' },
     pins: { en: 'GPIO4, 5, 13, 14, 16-19, 21-23, 25-27, 32-36, 39 (34-39 input only)', ja: 'GPIO4、5、13、14、16〜19、21〜23、25〜27、32〜36、39（34〜39 は入力だけ）' },
     reserved: { en: '1, 3 (its UART), 6-11 (flash), 0, 2, 12, 15 (boot straps)', ja: '1、3（UART）、6〜11（flash）、0、2、12、15（起動のストラップ）' },
@@ -123,7 +123,7 @@ export const BOARDS = [
   {
     id: 'esp32s3', tier: 'build', name: { en: 'ESP32-S3 / C3 / C6 board', ja: 'ESP32-S3 / C3 / C6 のボード' }, chip: 'ESP32-S3, C3, C6', models: [],
     verified: { en: 'RVSWD builds; not checked on hardware', ja: 'RVSWD のビルドのみ。実機では未確認' },
-    write: { page: false, how: { en: 'Build an example for it: arduino-cli compile --profile esp32s3 examples/04.Debug/RvswdDebugProbe (a CH32 debugger), then arduino-cli upload. The guide: oep-probe-arduino docs/guide/boards.md "Builds for other boards".', ja: 'example を自分でビルドします: arduino-cli compile --profile esp32s3 examples/04.Debug/RvswdDebugProbe（CH32 のデバッガ）、そのあと arduino-cli upload。手引き: oep-probe-arduino の docs/guide/boards.ja.md「ほかのボード向けのビルド」。' } },
+    write: { page: 'serial', how: { en: 'Select your chip family and a compatible merged .bin file, then program it here. No prebuilt OepProbe release is available for these chips.', ja: 'チップの種類と対応するmerged .binファイルを選んで、このページから書き込みます。この系列のOepProbe配布画像はまだありません。' } },
     usb: { en: 'USB-Serial/JTAG or USB CDC', ja: 'USB-Serial/JTAG か USB CDC' },
     pins: { en: 'chosen in the build (leave out flash, PSRAM, USB and strap pins)', ja: 'ビルドで選ぶ（flash、PSRAM、USB、起動のストラップのピンを外す）' },
     reserved: { en: 'flash, PSRAM, USB, boot straps', ja: 'flash、PSRAM、USB、起動のストラップ' },

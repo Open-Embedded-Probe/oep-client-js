@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Make initial browser installation the primary entry. Program ESP32/P4/P4X release images over Web Serial, validate chip/revision and SHA-256, then connect as OEP. Accept compatible S3/C3/C6 merged images; bundle the ROM programmer locally and cache release images for local preview.
+- (JA) 新規書き込みを主導線に変更。ESP32/P4/P4Xの配布画像をWeb Serialで初回書き込みし、チップ・revision・SHA-256を確認後、OEP接続へ進む。S3/C3/C6の対応merged画像にも対応。ROM書き込み処理をサイト内に同梱し、ローカル起動でも配布画像を取得・保存。
+
 - (EN) Make probe and function choices visible as descriptive cards; choose a board before connecting instead of choosing USB/Serial/HID. Enlarge controls and show allowed devices by unit ID.
 - (JA) プローブ・機能の選択を説明付きのカードへ変更。初手のUSB/Serial/HID選択をなくし、ボードから接続方法を決定。操作部品を拡大し、許可済みの個体はIDで選べるようにした。
 

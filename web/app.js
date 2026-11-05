@@ -1,3 +1,4 @@
+import { flashEsp } from './esp-flash.js';
 import * as oep from './oep-client.js';
 import { BOARDS, FEATURES, boardOf } from './boards.js';
 import { integer, hexBytes, printable, parseRoute, connectionName, firmwareState } from './model.js';
@@ -91,7 +92,7 @@ function boardFacts(b) {
 function boardPurpose(b) {
   return ({ pico: L('A small USB probe. Install and update it here with BOOTSEL.', '小さなUSBプローブ。BOOTSELで、このページから導入・更新できます。'),
     pico2: L('The RP2350 board. Browser installation and updates via BOOTSEL.', 'RP2350のボード。BOOTSELでブラウザから導入・更新できます。'),
-    p4: L('For wider, faster logic capture. Select chip v1.x; first installation uses esptool.', '多チャンネル・高速のロジック取得向け。チップv1.x用。初回導入はesptoolです。'),
+    p4: L('For wider, faster logic capture. Chip v1.x; install here through serial USB.', '多チャンネル・高速のロジック取得向け。チップv1.x用。このページでシリアルから初回導入できます。'),
     p4x: L('The P4 v3.x chip. Use its own firmware; the P4 image is not interchangeable.', 'P4のチップv3.x用。P4とは異なる専用firmwareを使います。'),
     esp32: L('Use a classic ESP32 over its USB–serial bridge. Includes a DAC output.', 'classic ESP32をUSBシリアル変換経由で使用。DAC出力も使えます。'),
     ch32: L('WCH CH32 boards. Functions vary by chip; installation needs WCH tools.', 'WCHのCH32ボード。機能はチップで異なり、導入にはWCHの道具を使います。'),
@@ -346,9 +347,9 @@ function render() {
 }
 function showHome() {
   return [node('section', { class: 'intro' }, p('OPEN EMBEDDED PROBE', 'eyebrow'), node('h1', {}, L('A workspace for your development probe.', '開発プローブを、ブラウザから。')),
-    p(L('Connect an OEP probe to configure pins, exchange signals and work with your target. Start with a board if you do not have a probe yet.', 'OEPプローブを接続して、ピンの設定、信号の送受信、ターゲットの調査を行います。まだプローブがなければ、ボードへの導入から始められます。'))),
-    state.host ? entry(L('Continue with your probe', '接続中のプローブを使う'), `${state.info.model} · ${unit()}`, '#probe', 'CONNECTED') : connectCard(),
-    node('div', { class: 'grid' }, entry(L('Turn a board into a probe', 'ボードをプローブにする'), L('Choose a board and install OEP firmware.', 'ボードを選び、OEPのfirmwareを導入します。'), '#firmware', '01 / SET UP'),
+    p(L('Start by installing OEP on your board. Then connect it to configure pins, exchange signals and work with your target.', 'まずボードへOEPを書き込みます。そのあとプローブとして接続し、ピンの設定、信号の送受信、ターゲットの調査を行います。'))),
+    state.host ? entry(L('Continue with your probe', '接続中のプローブを使う'), `${state.info.model} · ${unit()}`, '#probe', 'CONNECTED') : card(L('Start with a new board', 'まずは新規書き込みから'), p(L('Install OEP, then connect and use your probe. Everything from serial installation to signal I/O runs in this browser.', 'OEPを書き込んでから、プローブとして接続して使います。シリアルからの初回導入も、導入後の操作も、このブラウザで行います。')), link(L('Install OEP on a new board', '新しいボードにOEPを書き込む'), '#firmware', true)),
+    node('div', { class: 'grid' }, entry(L('Already installed? Connect your probe', '導入済みのプローブを接続する'), L('Use this if OEP firmware is already installed.', 'OEPのfirmwareを書き込み済みの場合はこちら。'), '#connect', '02 / CONNECT'),
       entry(L('Understand OEP & choose a board', 'OEPを知る・ボードを選ぶ'), L('Compare debug, I/O and capture capabilities.', 'デバッグ・入出力・取得機能の違いを比較します。'), '#help', '02 / EXPLORE')),
     p(L('Device data stays in your browser. Firmware is fetched from this site. No login needed.', '機器のデータはブラウザ内で扱います。firmwareはこのサイトから取得します。ログインは不要です。'), 'muted')];
 }
@@ -764,8 +765,8 @@ async function loadRelease() {
   } catch { state.release = null; state.releaseError = true; }
   if (!state.busy) render();
 }
-async function firmwareImage(model) {
-  const entry = state.release && oep.pickFirmware(state.release, { model, kind: IMAGE_KIND[model] });
+async function firmwareImage(model, kind = IMAGE_KIND[model]) {
+  const entry = state.release && oep.pickFirmware(state.release, { model, kind });
   if (!entry) throw new Error(L('No compatible firmware is bundled with this site.', 'このサイトには対応するfirmwareがありません。'));
   const response = await fetch(`./firmware/${entry.file}`);
   if (!response.ok) throw new Error(`${entry.file}: HTTP ${response.status}`);
@@ -779,7 +780,8 @@ function fwProgress(done, total, text) {
 async function flashFirmware(model, update) {
   const device = update ? state.fwUpdateDevice : state.fwBoot;
   if (!device || (!update && state.fwBootModel !== model)) throw new Error(L('Select the correct programming device first.', '先に書き込み対象の機器を選択してください。'));
-  state.firmwareBusy = true;
+  state.firmwareBusy = true; state.fwFinished = null;
+  $('fw-status')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   try {
     fwProgress(0, 1, L('Fetching and verifying SHA-256…', '取得してSHA-256を検証中…'));
     const image = await firmwareImage(model);
@@ -801,21 +803,51 @@ async function flashFirmware(model, update) {
       await oep.rp2Write(boot, image, { model, onProgress: (p) => fwProgress(p.done, p.total, `${p.done} / ${p.total} bytes`) });
     }
     fwProgress(1, 1, L('Firmware written. Reconnect the probe to check its version.', 'firmwareを書き込みました。プローブに再接続して版を確認してください。'));
-    state.fwFinished = `${model} · ${state.release.version}`;
+    state.fwFinished = `${model} · ${state.release.version}`; state.fwFinishedModel = model;
   } finally { state.firmwareBusy = false; state.fwUpdateDevice = null; state.fwBoot = null; }
+}
+async function installEsp(model) {
+  if (!state.fwSerial || state.fwSerialBoard !== value('fw-board')) throw new Error(L('Select the serial port first.', '先にシリアルポートを選択してください。'));
+  const port = state.fwSerial;
+  state.firmwareBusy = true; state.fwFinished = null;
+  $('fw-status')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  state.fwLog = [];
+  try {
+    fwProgress(0, 1, L('Fetching and verifying image…', '画像を取得・検証中…'));
+    let image;
+    if (value('fw-board') === 'esp32s3') {
+      if (!state.fwCustom) throw new Error(L('Select a compatible merged image.', '対応するmerged画像を選択してください。'));
+      if (state.fwCustom.size > 32 * 1024 * 1024) throw new Error(L('The image exceeds 32 MiB.', '画像が32 MiBを超えています。'));
+      image = new Uint8Array(await state.fwCustom.arrayBuffer());
+    } else {
+      const entry = state.release && oep.pickFirmware(state.release, { model, kind: 'merged' });
+      if (!entry || entry.flash_offset !== 0) throw new Error(L('A merged image at offset 0 is required.', 'offset 0のmerged画像が必要です。'));
+      image = await firmwareImage(model, 'merged');
+    }
+    if (state.host) await disconnect();
+    const chip = await flashEsp({ port, model, image, onProgress: fwProgress, log: (line) => {
+      state.fwLog.push(String(line));
+      if (state.fwLog.length > 200) state.fwLog.shift();
+      if ($('fw-log')) $('fw-log').textContent = state.fwLog.join('\n');
+    } });
+    state.fwFinished = `${chip} · ${state.fwCustom && model !== 'esp32' && !model.startsWith('esp32p4') ? state.fwCustom.name : state.release.version}`;
+    state.fwFinishedModel = model;
+    state.drafts.set('connect-board', value('fw-board'));
+    fwProgress(1, 1, L('Written. Reconnect the USB cable, then connect as an OEP probe.', '書き込み完了。USBを挿し直し、OEPプローブとして接続してください。'));
+  } finally { state.firmwareBusy = false; state.fwSerial = null; }
 }
 function showFirmware() {
   const current = state.info;
   const model = current?.model;
   const b0 = boardOf(model);
-  const boardSelect = boardChoices('fw-board', L('Choose the board to install OEP on', 'OEPを導入するボードを選ぶ'), b0?.id ?? 'pico', () => { state.fwBoot = null; });
+  const boardSelect = boardChoices('fw-board', L('Choose the board to install OEP on', 'OEPを導入するボードを選ぶ'), b0?.id ?? 'pico', () => { state.fwBoot = null; state.fwSerial = null; state.fwCustom = null; state.fwFinished = null; });
   const b = BOARDS.find((b) => b.id === value('fw-board')) ?? BOARDS[0];
-  const available = state.release && oep.pickFirmware(state.release, { model: b.models[0], kind: IMAGE_KIND[b.models[0]] ?? '' });
+  const available = state.release && oep.pickFirmware(state.release, { model: b.models[0], kind: b.write.page === 'serial' ? 'merged' : IMAGE_KIND[b.models[0]] ?? '' });
   const status = firmwareState(current?.firmware, state.release?.version);
   const statusText = { current: L('The bundled release is already installed.', '同じリリースが導入済みです。'), update: L('A newer bundled release is available.', '新しいリリースがあります。'), newer: L('This probe has a newer version than the bundled release. Writing it would downgrade the probe.', 'このプローブは配布画像より新しい版です。書き込むと古い版になります。'), unknown: L('The version order could not be determined. Check both versions before writing.', '版の前後関係は判定できません。両方の版を確認してください。') };
-  return [header(L('Probe firmware', 'プローブのfirmware'), L('Install OEP on a board, or update the probe itself. This does not flash a target chip.', 'ボードへOEPを導入し、プローブ自身を更新します。ターゲットのチップへの書き込みとは別の作業です。')),
-    state.release ? notice(`OepProbe ${state.release.version} · ${L('bundled release', 'このサイトで配布するリリース')}`) : notice(L('Firmware images are not available on this site. Follow the board instructions and release downloads below.', 'このサイトにはfirmware画像がありません。下のボード別手順とリリースの配布先を使ってください。'), 'warn'),
-    state.fwFinished ? card(L('Written — reconnect next', '書き込み完了・再接続してください'), p(state.fwFinished), link(L('Connect and check the version', '接続して版を確認'), '#home', true)) : null,
+  return [header(L('Install OEP on a new board', '新しいボードにOEPを書き込む'), L('1. Choose a board → 2. Select its programming port → 3. Write firmware → 4. Connect as an OEP probe. No existing OEP connection is needed.', '①ボードを選ぶ → ②書き込み先を選ぶ → ③firmwareを書き込む → ④OEPプローブとして接続。初回書き込みの前にOEPとして接続する必要はありません。')),
+    state.release ? notice(`OepProbe ${state.release.version} · ${L('bundled release', 'このサイトで配布するリリース')}`) : notice(L('Release images could not be loaded. Retry loading them here; ESP custom merged images can still be selected below.', '配布画像を読み込めませんでした。この画面で再取得できます。ESPの持ち込みmerged画像は下で選択できます。'), 'warn'),
+    state.fwFinished ? card(L('Written — reconnect next', '書き込み完了・再接続してください'), p(state.fwFinished), p(state.fwFinishedModel?.startsWith('esp32p4') ? L('For OEP, connect the board’s native USB connector (not its serial bridge connector). Restart the board if it is still in download mode.', 'OEP接続にはボードのnative USB端子を使います。シリアル変換用の端子から必要に応じて差し替えてください。downloadモードのままならボードを再起動します。') : L('Reconnect the USB cable and restart the board if it remains in boot mode. Then connect as an OEP probe.', 'USBケーブルを挿し直します。bootモードのままならボードを再起動し、OEPプローブとして接続してください。')), link(L('Connect and check the version', '接続して版を確認'), '#connect', true)) : null,
     current ? card(L('Update the connected probe', '接続中のプローブを更新'),
       node('dl', {}, node('dt', {}, L('Device', '機器')), node('dd', {}, `${model} · ${unit()}`), node('dt', {}, L('Installed', '導入済み')), node('dd', {}, current.firmware ?? '—'),
         node('dt', {}, L('Available release', '配布する版')), node('dd', {}, state.release?.version ?? '—')), p(statusText[status], 'muted'),
@@ -829,16 +861,34 @@ function showFirmware() {
         await flashFirmware(model, true);
       }, { primary: true, disabled: !state.release || !IMAGE_KIND[model] || !state.fwUpdateDevice }))) : null,
     card(L('Install on a board', 'ボードへ初めて導入する'), boardSelect, p(T(b.write.how)),
-      p(b.write.page === 'any' ? L('1. Start in BOOTSEL mode. 2. Select the boot device. 3. Write the firmware. 4. Reconnect as an OEP probe.', '1. BOOTSELで起動 → 2. boot機器を選択 → 3. firmwareを書き込み → 4. OEPプローブとして再接続。')
-        : L('Browser installation is not available for this board. Use the board-specific method; native USB P4 probes can be updated here after initial installation.', 'このボードの初回導入には専用の道具を使います。native USBのP4は、初回導入後にこのページから更新できます。'), 'muted'),
-      actions(button(L('Select boot device', 'boot機器を選択'), async () => {
-        state.fwBoot = await oep.requestRp2Boot(/** @type {'rp2040' | 'rp2350'} */ (b.models[0])); state.fwBootModel = b.models[0];
-      }, { disabled: b.write.page !== 'any' || !deviceAPIs.usb || !available }),
-      button(L('Write OEP firmware', 'OEPを書き込む'), () => flashFirmware(b.models[0], false),
-        { primary: true, disabled: b.write.page !== 'any' || !available || !state.fwBoot || state.fwBootModel !== b.models[0] })),
-      actions(external(L('Firmware releases & manual installation', 'firmwareの配布・手動導入'), 'https://github.com/Open-Embedded-Probe/oep-probe-arduino/releases'), link(L('Compare boards', 'ボードを比較'), '#help'))),
+      b.write.page === 'serial' ? node('div', { class: 'stack' },
+        notice(L('Use the USB connector for the serial bridge / ROM download port. Close other serial tools. Hold BOOT, tap RESET, then release BOOT if automatic connection fails. P4 boards may have separate serial and native USB connectors.', 'シリアル変換・ROM書き込み用のUSB端子につなぎ、他のシリアルツールを閉じてください。自動接続できない場合はBOOTを押しながらRESETを押して離し、その後BOOTを離します。P4ではシリアル用とnative USB用の端子が別の場合があります。')),
+        b.id === 'esp32s3' ? node('div', { class: 'stack' },
+          choiceCards('fw-esp-family', L('Chip family of your image', '画像に対応するチップ'), ['esp32s3', 'esp32c3', 'esp32c6'].map((value) => ({ value, title: value.toUpperCase().replace('32', '32-'), description: L('Requires a merged image built for this chip.', 'このチップ向けに作られたmerged画像が必要です。'), facts: [] })), 'esp32s3'),
+          notice(L('No prebuilt OepProbe image is distributed for S3 / C3 / C6. Upload a compatible merged image at offset 0, including its bootloader and partition table at 0x8000. An app-only image will not boot a blank board.', 'S3・C3・C6向けのOepProbe画像は未配布です。bootloaderと0x8000のpartition tableを含むoffset 0の対応merged画像を選んでください。app単体の画像では新品のボードは起動できません。'), 'warn'),
+          node('label', {}, L('Merged .bin image', 'merged .bin画像'), node('input', { id: 'fw-custom', type: 'file', accept: '.bin', onchange: (e) => { state.fwCustom = e.target.files[0] ?? null; render(); } })),
+          p(state.fwCustom?.name ?? L('No image selected', '画像未選択'))) : p(available ? `${available.file} · SHA-256 ${available.sha256}` : L('Waiting for the release image.', '配布画像を読み込むまでお待ちください。'), 'muted'),
+        p(state.fwSerial ? L('Serial port selected. Ready to write.', 'シリアルポートを選択済みです。書き込めます。') : L('First choose the serial port of the blank board.', 'まず未導入ボードのシリアルポートを選びます。')),
+        actions(button(L('Select serial programming port', '書き込み用シリアルポートを選ぶ'), async () => {
+          state.fwSerial = await deviceAPIs.serial.requestPort(); state.fwSerialBoard = b.id;
+        }, { disabled: !deviceAPIs.serial }),
+        button(L('Write OEP firmware', 'OEPを書き込む'), async () => {
+          if (!confirm(L('Write firmware to this board? Existing firmware and overlapping flash data will be replaced.', 'このボードにfirmwareを書き込みます。既存firmwareと書き込み領域のデータは置き換わります。'))) return CANCELLED;
+          await installEsp(b.id === 'esp32s3' ? value('fw-esp-family') : b.models[0]);
+        }, { primary: true, disabled: !state.fwSerial || (b.id === 'esp32s3' ? !state.fwCustom : !available) })),
+        !deviceAPIs.serial ? notice(L('Web Serial requires Chrome / Edge on desktop over HTTPS or localhost.', 'Web Serial対応のデスクトップ版Chrome・Edgeで、HTTPSまたはlocalhostから開いてください。'), 'warn') : null)
+        : b.write.page === 'any' ? node('div', { class: 'stack' },
+          p(L('Hold BOOTSEL while plugging in the board, then select the boot device and write.', 'BOOTSELを押しながらUSBを挿し、boot機器を選んで書き込みます。')),
+          actions(button(L('Select boot device', 'boot機器を選択'), async () => {
+            state.fwBoot = await oep.requestRp2Boot(/** @type {'rp2040' | 'rp2350'} */ (b.models[0])); state.fwBootModel = b.models[0];
+          }, { disabled: !deviceAPIs.usb || !available }),
+          button(L('Write OEP firmware', 'OEPを書き込む'), async () => {
+            await flashFirmware(b.models[0], false); state.drafts.set('connect-board', b.id);
+          }, { primary: true, disabled: !available || !state.fwBoot || state.fwBootModel !== b.models[0] })))
+        : notice(L('Browser installation is not supported for CH32. Choose ESP32 or Pico to complete initial installation here. An already programmed CH32 probe can be connected here.', 'CH32のブラウザ初回書き込みには未対応です。初回導入からここで完結する場合はESP32またはPicoを選んでください。導入済みのCH32プローブは接続できます。'), 'warn'),
+      actions(button(L('Reload release images', '配布画像を再取得'), loadRelease), link(L('Already installed? Connect', '書き込み済みの場合は接続へ'), '#connect'), link(L('Compare boards', 'ボードを比較'), '#help'))),
     card(L('Progress', '進行状況'), node('progress', { id: 'fw-progress', max: state.fwProgress?.total || 1, value: state.fwProgress?.done ?? 0, 'aria-label': L('Firmware progress', 'firmware書き込みの進行') }),
-      node('p', { id: 'fw-status' }, state.fwProgress?.text ?? L('Select a device to begin. The image is verified before writing.', '書き込み対象を選択してください。画像を検証してから書き込みます。')))];
+      node('p', { id: 'fw-status' }, state.fwProgress?.text ?? L('Select a device to begin. The image is verified before writing.', '書き込み対象を選択してください。画像を検証してから書き込みます。')), node('pre', { id: 'fw-log', role: 'log' }, (state.fwLog ?? []).join('\n')))];
 }
 $('language').addEventListener('change', (e) => {
   lang = /** @type {HTMLSelectElement} */ (e.target).value;

@@ -5,6 +5,10 @@ import { extname, join, normalize, resolve } from 'node:path';
 import './build-site.js';
 
 const root = resolve('site');
+if (!existsSync(join(root, 'firmware/firmware.json'))) {
+  try { await import('./fetch-firmware.js'); }
+  catch (error) { console.warn('Could not fetch firmware release:', error); }
+}
 const port = Number(process.env.OEP_CLIENT_JS_PORT) || 4173;
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml' };
 createServer((request, response) => {

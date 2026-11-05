@@ -35,7 +35,7 @@ docs/           this document, the release steps
 - `site/` is not in the npm package (the page is served from Pages); `src/node/` is not in `site/`.
 - Types are JSDoc, checked with `// @ts-check` and `tsc --noEmit`; the code is not TypeScript. `tsc` writes the
   declarations (`types/`) from the JSDoc.
-- No dependencies are added. Node's `serialport` and `usb` are native modules: optional, installed by whoever talks to
+- The OEP library has no runtime dependencies. Only the site bundles a pinned esptool-js for ESP ROM programming. Node's `serialport` and `usb` are native modules: optional, installed by whoever talks to
   probes from Node (a browser-only user never gets them).
 
 ## 3. Transports

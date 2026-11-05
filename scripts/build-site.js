@@ -1,9 +1,10 @@
 // @ts-check
-import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { buildSync } from 'esbuild';
+import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// The web page as a static site: web/ plus the library sources, no bundling. GitHub Pages serves it; it is not in
+// The page uses library sources; only the ESP ROM programmer is bundled. GitHub Pages serves it; it is not in
 // the npm package. The Node transports (src/node/) stay out: a browser cannot load them.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const site = join(root, 'site');
@@ -17,5 +18,14 @@ writeFileSync(join(site, 'oep-client.js'), [
   "export * from './src/browser/index.js';",
   '',
 ].join('\n'));
+buildSync({ entryPoints: [join(root, 'web/esp-loader.js')], outfile: join(site, 'esp-loader.js'), bundle: true, format: 'esm', target: 'es2022', minify: true, legalComments: 'linked' });
+const licenseDir = join(site, 'licenses');
+mkdirSync(licenseDir, { recursive: true });
+for (const [name, file] of [['esptool-js', 'LICENSE'], ['pako', 'LICENSE'], ['atob-lite', 'LICENSE.md']]) {
+  cpSync(join(root, 'node_modules', name, file), join(licenseDir, `${name}.txt`));
+}
+writeFileSync(join(site, 'THIRD-PARTY-NOTICES.txt'), 'ESP ROM programming uses esptool-js 0.7.1 (Apache-2.0), pako (MIT AND Zlib), and atob-lite (MIT). Full license texts are in licenses/.\n');
+const cachedFirmware = join(root, '.cache/firmware');
+if (existsSync(cachedFirmware)) cpSync(cachedFirmware, join(site, 'firmware'), { recursive: true });
 writeFileSync(join(site, '.nojekyll'), '');
 console.log('site/ ready');
