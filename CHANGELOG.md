@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Register known debug and signal wiring without scanning or attaching a target; make discovery optional, validate declared pin groups, and load saved wiring into the relevant tool without starting it. Remove board-type selection from probe connection.
+- (JA) ターゲット未接続でもデバッグ・信号の固定配線を登録可能にし、探索を任意化。宣言されたピンの組を検証し、保存した配線を動作開始せず対応する操作画面に呼び出せるようにした。プローブ接続時のボード選択を廃止。
+
 - (EN) Make initial browser installation the primary entry. Program ESP32/P4/P4X release images over Web Serial, validate chip/revision and SHA-256, then connect as OEP. Accept compatible S3/C3/C6 merged images; bundle the ROM programmer locally and cache release images for local preview.
 - (JA) 新規書き込みを主導線に変更。ESP32/P4/P4Xの配布画像をWeb Serialで初回書き込みし、チップ・revision・SHA-256を確認後、OEP接続へ進む。S3/C3/C6の対応merged画像にも対応。ROM書き込み処理をサイト内に同梱し、ローカル起動でも配布画像を取得・保存。
 

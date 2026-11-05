@@ -1,7 +1,7 @@
 import { flashEsp } from './esp-flash.js';
 import * as oep from './oep-client.js';
 import { BOARDS, FEATURES, boardOf } from './boards.js';
-import { integer, hexBytes, printable, parseRoute, connectionName, firmwareState } from './model.js';
+import { integer, hexBytes, printable, parseRoute, connectionName, firmwareState, validateBindings } from './model.js';
 import { SIGNALS, valuesFor } from './signals.js';
 
 /** @param {string} id @returns {any} */
@@ -73,8 +73,7 @@ function choiceCards(id, label, choices, fallback = '', onChange = () => {}) {
     node('div', { class: 'choice-grid' }, ...choices.map((c) => node('label', { class: `choice-card${String(c.value) === selected ? ' selected' : ''}` },
       node('input', { type: 'radio', name: id, value: String(c.value), checked: String(c.value) === selected, disabled: !!c.disabled,
         onchange: () => { state.drafts.set(id, String(c.value)); onChange(); render();
-          (/** @type {HTMLInputElement | null} */ (document.querySelector(`input[name="${id}"]:checked`)))?.focus({ preventScroll: true });
-          if (id === 'connect-board' && matchMedia('(max-width: 1100px)').matches) $('connect-selected').scrollIntoView({ block: 'center' }); } }),
+          (/** @type {HTMLInputElement | null} */ (document.querySelector(`input[name="${id}"]:checked`)))?.focus({ preventScroll: true }); } }),
       node('span', { class: 'choice-body' }, c.badge ? node('span', { class: 'tag' }, c.badge) : null,
         node('strong', { class: 'choice-title' }, c.title), c.description ? node('span', { class: 'choice-description' }, c.description) : null,
         c.facts?.length ? node('ul', { class: 'choice-facts' }, ...c.facts.map((f) => node('li', {}, f))) : null,
@@ -99,12 +98,9 @@ function boardPurpose(b) {
     esp32s3: L('For a custom build on S3 / C3 / C6. Functions depend on the example you built.', 'S3・C3・C6で自分でビルドする場合。使える機能はexampleにより異なります。'),
   })[b.id] ?? T(b.usb);
 }
-function boardChoices(id, label, fallback = '', onChange = () => {}, unknown = false) {
+function boardChoices(id, label, fallback = '', onChange = () => {}) {
   const choices = BOARDS.map((b) => ({ value: b.id, title: T(b.name), description: boardPurpose(b), facts: boardFacts(b),
     badge: `${b.chip} · ${b.tier === 'release' ? L('Released firmware', '配布firmwareあり') : L('Build it yourself', '自分でビルド')}` }));
-  if (unknown) choices.push({ value: 'unknown', title: L('Other / I do not know the board', 'その他・ボードの種類がわからない'),
-    description: L('Start with the standard OEP USB connection. If it does not appear, use the connection help below.', '標準のOEP USB接続で探します。機器が出てこない場合は、下の接続方法の案内へ進めます。'),
-    facts: [L('Actual functions are read after connecting', '実際の機能は接続後に読み取ります')], badge: 'OEP' });
   return choiceCards(id, label, choices, fallback, onChange);
 }
 function wireChoices(id, offers, onChange = () => {}) {
@@ -211,21 +207,24 @@ function connectionLink(label, primary = false) {
 function connectCard() {
   const go = connectionLink(L('Choose a probe and connect', 'プローブを選んで接続'), true);
   return card(L('Use your OEP probe', '手元のOEPプローブを使う'),
-    p(L('Choose your board first. We will use the matching connection method and ask you to select the device.', 'まずボードの種類を選びます。その種類に合う方法で接続し、対象の機器を選びます。'), 'muted'),
+    p(L('Choose your device in the browser dialog. Its model and functions are read after connecting; no board selection is needed.', 'ブラウザの一覧から機器を選びます。ボードの種類と機能は接続後に読み取るので、事前のボード選択は不要です。'), 'muted'),
     actions(go), p(L('For Raspberry Pi Pico, ESP32, CH32 and custom OEP probes. No account needed.', 'Raspberry Pi Pico、ESP32、CH32などのOEPプローブに対応。アカウントは不要です。'), 'muted'));
 }
 function showConnect() {
   if (state.host) return [header(L('Your probe is connected', 'プローブは接続済みです'), `${state.info.model} · ${unit()}`),
     link(L('Open the probe workspace', 'プローブの画面へ'), '#probe', true)];
-  const boards = boardChoices('connect-board', L('What board are you connecting?', '接続するプローブのボードを選んでください'), '', () => {}, true);
-  const chosen = BOARDS.find((b) => b.id === value('connect-board'));
-  const serial = chosen?.id === 'esp32' || chosen?.id === 'esp32s3';
+  const serial = value('connect-method') === 'serial';
   const api = serial ? 'serial' : 'usb';
-  const ready = !!value('connect-board');
   const browserSupported = !!deviceAPIs[api] && isSecureContext;
-  const top = [header(L('Choose your probe', '接続するプローブを選ぶ'),
-    L('Compare the board types below. After selecting one, use the single connection button. The browser then lists the devices you can connect.',
-      '下の特徴を見てボードの種類を選び、接続ボタンを押してください。その後、ブラウザの一覧で接続する個体を選びます。')),
+  const top = [header(L('Connect your probe', 'プローブに接続'),
+    L('Select the actual device in the browser dialog. The probe tells us its model and functions after connection. No board type needs to be selected.',
+      'ブラウザの一覧で、実際の機器を選択してください。種類と機能は接続したプローブから読み取ります。ボードの種類を選ぶ必要はありません。')),
+    card(L('Connect the device at hand', '手元の機器に接続する'),
+      p(serial ? L('The board you just programmed uses its serial port for OEP. Select that same port.', '先ほど書き込んだボードは、OEP接続にもシリアルポートを使います。同じポートを選択してください。')
+        : L('Connect the probe’s OEP USB connector, then choose it below. Its name and serial number distinguish multiple devices.', 'プローブのOEP用USB端子につないで、下のボタンから機器を選びます。複数ある場合は名前とシリアル番号で見分けられます。')),
+      actions(button(L('Select device and connect', '機器を選択して接続'), () => connect(() => serial ? oep.openWebSerial() : oep.openWebUsb()), { primary: true, disabled: !browserSupported, id: 'connect-selected' })),
+      !browserSupported ? notice(L('Use Chrome or Edge over HTTPS or localhost with device access enabled.', 'HTTPSまたはlocalhostのChrome・Edgeで機器へのアクセスを有効にしてください。'), 'warn') : null,
+      p(L('If the device does not appear, open the connection help below. Firmware installation is a separate step for a new board.', '一覧に機器が出ない場合は下の接続の案内を開いてください。新しいボードへのfirmware導入は別の手順です。'), 'muted')),
     node('details', { class: 'card', open: state.granted.length > 0 }, node('summary', {}, L('Choose a previously allowed device by its unit ID', '接続を許可済みの個体を、個体IDで選ぶ')),
       p(L('List USB probes this site already has permission to access. Unit IDs distinguish multiple devices of the same kind.', 'このサイトへのアクセスを許可済みのUSBプローブを表示します。同じ種類が複数ある場合は個体IDで区別できます。'), 'muted'),
       actions(button(L('Find allowed probes', '許可済みのプローブを表示'), async () => { state.granted = await oep.getUsbProbes(); state.drafts.set('probes-checked', 'true'); }, { disabled: !deviceAPIs.usb || !isSecureContext })),
@@ -235,20 +234,11 @@ function showConnect() {
           p(`${L('Unit ID', '個体ID')}: ${d.serialNumber || L('not provided', '未提供')}`),
           p(known?.features ?? L('Functions and firmware version will be checked after connecting.', '機能とfirmwareの版は接続後に確認します。'), 'muted'),
           actions(button(L('Connect to this device', 'この個体に接続'), () => connect(() => oep.openWebUsb(d, { unitId: d.serialNumber && !d.serialNumber.toLowerCase().startsWith('x-') ? d.serialNumber : undefined })), { primary: true })));
-      })) : state.drafts.get('probes-checked') ? p(L('No previously allowed USB probes were found. Choose a board below to grant access.', '許可済みのUSBプローブは見つかりませんでした。下でボードを選んでアクセスを許可してください。'), 'muted') : null),
-    node('div', { class: 'connection-picker' }, boards, node('section', { class: 'card connection-summary' }, node('h2', {}, L('Connect the selected probe', '選んだプローブに接続')),
-      ready ? p(`${chosen ? T(chosen.name) : L('Other OEP probe', 'その他のOEPプローブ')} · ${serial ? L('USB–serial connection', 'USBシリアル変換経由で接続') : L('Direct USB connection', 'USBへ直接接続')}`)
-        : p(L('Select the board that matches your probe.', '手元のプローブに合うボードを選んでください。'), 'muted'),
-      chosen ? p(T(chosen.usb), 'muted') : null,
-      ['p4', 'p4x'].includes(chosen?.id) ? p(L('Use the native USB socket for this connection. For USB-Serial/JTAG, use the serial option below.', 'この接続はnative USB側の端子を使います。USB-Serial/JTAG側の端子では、下のシリアル接続を使ってください。'), 'muted') : null,
-      ready && !browserSupported ? notice(L('This connection is unavailable. Use Chrome or Edge over HTTPS or localhost with device access enabled.', 'この接続方法を使えません。HTTPSまたはlocalhostのChrome・Edgeで機器へのアクセスを有効にしてください。'), 'warn') : null,
-      actions(button(L('Select device and connect', '機器を選択して接続'), () => connect(() => serial ? oep.openWebSerial() : oep.openWebUsb()),
-        { primary: true, disabled: !ready || !browserSupported, id: 'connect-selected' })),
-      p(L('The device list is shown by your browser. If several devices appear, match the name and serial number of the probe you want.', '機器の選択一覧はブラウザが表示します。複数ある場合は、使いたいプローブの名前とシリアル番号を確認してください。'), 'muted'))),
+      })) : state.drafts.get('probes-checked') ? p(L('No previously allowed USB probes were found. Use the device chooser above to grant access.', '許可済みのUSBプローブは見つかりませんでした。上のボタンから機器を選び、アクセスを許可してください。'), 'muted') : null),
     node('details', { class: 'card' }, node('summary', {}, L('The probe does not appear / choose another connection method', '機器が見つからない・別の接続方法を使う')),
       p(L('An external USB–serial bridge, or an ESP32 USB-Serial/JTAG port, uses the serial connection. A native USB OEP probe can use HID if its regular USB interface is unavailable.',
         '外付けのUSBシリアル変換やESP32のUSB-Serial/JTAG端子には、シリアル接続を使います。native USBのOEPプローブで通常のUSB接続が使えない場合は、HIDを試せます。')),
-      node('div', { class: 'grid' }, card(L('USB serial port', 'USBシリアル端子'), p(L('For classic ESP32, USB–UART converters and USB-Serial/JTAG.', 'classic ESP32、USB–UART変換、USB-Serial/JTAG向け。')),
+      node('div', { class: 'grid' }, serial ? card(L('Direct OEP USB', 'OEPのUSB端子'), p(L('Use the native OEP USB connector on another probe.', '別のプローブやnative USBのOEP端子を使う場合はこちら。')), button(L('Choose a USB device', 'USB機器を選んで接続'), () => connect(() => oep.openWebUsb()), { disabled: !deviceAPIs.usb || !isSecureContext })) : null, card(L('USB serial port', 'USBシリアル端子'), p(L('For classic ESP32, USB–UART converters and USB-Serial/JTAG.', 'classic ESP32、USB–UART変換、USB-Serial/JTAG向け。')),
         button(L('Choose a serial port', 'シリアル端子を選んで接続'), () => connect(() => oep.openWebSerial()), { disabled: !deviceAPIs.serial || !isSecureContext })),
         card(L('HID USB alternative', 'HIDでUSB接続'), p(L('For a probe exposing an OEP HID interface. Not for USB–UART bridges.', 'OEPのHID機能を持つプローブ向け。USB–UART変換には使えません。')),
           button(L('Try the HID connection', 'HIDでの接続を試す'), () => connect(() => oep.openWebHid()), { disabled: !deviceAPIs.hid || !isSecureContext })))),
@@ -363,7 +353,7 @@ function showProbe() {
     ].flatMap(([a, b]) => [node('dt', {}, a), node('dd', {}, b)])),
       actions(button(L('Refresh device data', '状態を読み直す'), refreshData), link(L('Update firmware', 'firmwareを更新'), '#firmware'))),
     node('div', { class: 'grid' },
-      entry(L('Connect a target', 'ターゲットをつなぐ'), L('Find a chip, name its wiring and get an address.', 'チップを探して配線に名前を付け、アドレスを得ます。'), '#targets', '01 / CONNECT'),
+      entry(L('Set up reusable wiring', '配線を登録して使う'), L('Save known wiring now and attach later. Scan unknown wiring only when needed.', '配線を先に保存して、ターゲットは後で接続します。不明な配線だけ必要に応じて探索できます。'), '#targets', '01 / CONNECT'),
       entry(L('Control signals', '信号を操作する'), SIGNALS.filter((s) => offered(s.name).length).map((s) => T(s.title)).join(' · ') || L('No supported signal interfaces', '対応する信号機能はありません'), '#signals', '02 / I/O'),
       entry(L('Inspect a target', 'ターゲットを調べる'), L('Debug, memory, registers and target console.', 'デバッグ・メモリ・レジスタ・ターゲットコンソール。'), '#debug', '03 / DEBUG'),
       entry(L('Capture with WireSkein', 'WireSkeinで波形を取る'), L('Use this probe from capture and development tools.', 'このプローブをキャプチャや開発の道具から使います。'), '#tools', '04 / CAPTURE')),
@@ -443,13 +433,40 @@ function wireClient(offer) {
   return offer.entry.name === 'oep.wire.swd' ? new oep.arm.SwdWire(state.host, offer.entry.fn, offer.entry.name)
     : new oep.riscv.Wire(state.host, offer.entry.fn, offer.entry.name);
 }
+function portBindings(port, offer) {
+  const bindings = /** @type {[number,number][]} */ ([...roleChannels(offer).keys()].flatMap((role) => {
+    const line = port.lines.find(([, label]) => oep.settings.parseLabel(label)?.[1]?.toLowerCase() === roleLine(offer, role));
+    return line ? [[role, line[0]]] : [];
+  }));
+  if (offer.entry.name.startsWith('oep.wire.') && (!bindings.some(([r]) => r === 1) || (offer.entry.name !== 'oep.wire.swio' && !bindings.some(([r]) => r === 2)))) return null;
+  try { return validateBindings(offer.description.roles, offer.description.groups, bindings); }
+  catch { return null; }
+}
+function usePort(port, offer) {
+  const bindings = portBindings(port, offer);
+  if (offer.entry.name.startsWith('oep.wire.') && state.debug) throw new Error(L('Detach the current target before loading different wiring.', '別の配線を読み込む前に、接続中のターゲットを切り離してください。'));
+  if (!bindings) throw new Error(L('The saved wiring is not compatible with this interface.', '保存した配線は、この機能のピン候補に対応していません。'));
+  if (offer.entry.name.startsWith('oep.wire.')) {
+    state.drafts.set('debug-wire', String(offer.entry.fn));
+    state.drafts.delete('debug-dio'); state.drafts.delete('debug-clk');
+    for (const [r, ch] of bindings) if (r === 1 || r === 2) state.drafts.set(r === 1 ? 'debug-dio' : 'debug-clk', String(ch));
+    location.hash = '#debug';
+  } else {
+    const tool = SIGNALS.find((s) => s.name === offer.entry.name);
+    state.drafts.set(`signal-${tool.id}-instance`, String(offer.entry.fn));
+    for (const role of roleChannels(offer).keys()) state.drafts.set(`signal-${offer.entry.fn}-pin-${role}`, '');
+    for (const [role, ch] of bindings) state.drafts.set(`signal-${offer.entry.fn}-pin-${role}`, String(ch));
+    location.hash = `#signals/${tool.id}`;
+  }
+}
 function showTargets() {
   return [header(L('Connections', '接続先'), L('Names and wiring saved in this probe. Registration does not mean the target is connected or powered now.', 'このプローブに登録された名前と配線です。現在ターゲットが接続・通電されていることを示すものではありません。')),
-    actions(link(L('Add a connection', '接続先を追加'), '#target/new', true), button(L('Refresh', '読み直す'), refreshData)),
+    actions(node('a', { href: '#target/new', class: 'button primary', onclick: () => resetWizard() }, L('Add a connection', '接続先を追加')), button(L('Refresh', '読み直す'), refreshData)),
     !state.ports.length ? card('', p(L('No connections have been registered yet.', '接続先はまだ登録されていません。'), 'empty')) : null,
     ...state.ports.map((port) => card(port.name,
       p(port.lines.map(([ch, label]) => `${label} → ${pinName(ch)}`).join(' · '), 'muted'), addressBox(`oep://${unit()}/${port.name}`),
-      actions(link(L('Open target tools', 'ターゲット操作へ'), '#debug'), link(L('Use from tools', '道具から使う'), '#tools'),
+      p(L('Choose how to use this wiring. Loading it does not attach or drive pins.', 'この配線を使う機能を選びます。呼び出しただけではターゲット接続・ピン駆動は行いません。'), 'muted'),
+      actions(...registrationOffers().filter((o) => portBindings(port, o)).map((o) => button(L(`Use ${registrationTitle(o)}`, `${registrationTitle(o)}で使う`), async () => usePort(port, o))), link(L('Use from tools', '道具から使う'), '#tools'),
         state.memo ? button(L('Read notes', '記録を読む'), async () => { output(`port-${port.name}`, await state.memo.readPortRecord(port.name) ?? L('No notes.', '記録はありません。')); }) : null,
         state.changeable ? button(L('Remove registration', '登録を削除'), async () => {
           if (!confirm(L(`Remove the saved pin names for ${port.name}? Its memo record is kept in Storage.`, `${port.name}のピン名の登録を削除します。メモは保存領域に残ります。`))) return CANCELLED;
@@ -458,13 +475,57 @@ function showTargets() {
         }, { write: true, danger: true }) : null), result(`port-${port.name}`))),
     state.dirty ? notice(L('Settings have changes not saved to persistent storage. Save them in Settings to keep them after restarting.', '永続保存していない設定変更があります。再起動後も残す場合は「設定」で保存してください。'), 'warn') : null];
 }
+const registrationOffers = () => [...wireOffers(), ...SIGNALS.flatMap((s) => offered(s.name))];
+const roleLine = (offer, role) => {
+  const name = (oep.interfaces.KNOWN[offer.entry.name]?.roles[role] ?? `line${role}`).toLowerCase();
+  return name === 'reset' ? 'nrst' : name;
+};
+function registrationTitle(offer) {
+  const tool = SIGNALS.find((s) => s.name === offer.entry.name);
+  return `${tool ? T(tool.title) : offer.entry.name.replace('oep.wire.', '').toUpperCase()} · ${offer.entry.instance}`;
+}
+function fixedRegistration(top) {
+  const offers = registrationOffers();
+  if (!offers.length) return [...top, notice(L('No supported pin interface is declared.', '対応するピン機能が宣言されていません。'))];
+  const choices = choiceCards('registration-function', L('What will this connection be used for?', 'どの用途の配線を登録しますか？'), offers.map((offer) => ({
+    value: offer.entry.fn, title: registrationTitle(offer),
+    description: ({ 'oep.wire.rvswd': L('WCH RISC-V debug connector: SWDIO + SWCLK.', 'WCHのRISC-V向けデバッグ端子。SWDIOとSWCLKを使います。'), 'oep.wire.swio': L('CH32V00x debug connector: one SWIO signal.', 'CH32V00x向けデバッグ端子。SWIOの1本を使います。'), 'oep.wire.swd': L('ARM debug connector: SWDIO + SWCLK.', 'ARM向けデバッグ端子。SWDIOとSWCLKを使います。') })[offer.entry.name] ?? T(SIGNALS.find((s) => s.name === offer.entry.name)?.description),
+    facts: [Object.values(oep.interfaces.KNOWN[offer.entry.name]?.roles ?? {}).join(' / '), `${L('Pin candidates', 'ピン候補')}: ${[...new Set([...roleChannels(offer).values()].flat())].length}`],
+  })), offers[0].entry.fn);
+  const offer = offers.find((o) => o.entry.fn === +value('registration-function')) ?? offers[0];
+  const labels = new Map(state.labels);
+  const fields = [...roleChannels(offer)].map(([role, pins]) => selectField(`registration-pin-${offer.entry.fn}-${role}`,
+    `${oep.interfaces.KNOWN[offer.entry.name]?.roles[role] ?? role}${offer.entry.name === 'oep.fixture.uart' ? role === 1 ? L(' ← target TX', ' ← ターゲットのTX') : L(' → target RX', ' → ターゲットのRX') : ''}`,
+    [['', L('Not assigned', '割り当てない')], ...pins.map((ch) => [ch, `${pinName(ch)}${labels.has(ch) ? ` · ${labels.get(ch)}` : ''}`])], pins.length === 1 && !labels.has(pins[0]) && role !== 3 ? String(pins[0]) : ''));
+  return [...top, card(L('Specify the fixed wiring', '固定の配線を指定する'),
+    p(L('Your probe must be connected; the target may be disconnected or unpowered. Choose roles and pins from the probe’s declarations.', 'プローブには接続しますが、ターゲットは未配線・未通電のままで構いません。プローブが宣言する候補から役割ごとのピンを指定します。')),
+    notice(L('Saving only registers names. It does not claim pins, drive signals or connect to a target.', '保存はピン名の登録だけです。ピンの占有・信号出力・ターゲットへの接続は行いません。')), choices, node('div', { class: 'fields' }, ...fields),
+    actions(button(L('Review wiring', '保存内容を確認'), async () => {
+      const bindings = /** @type {[number,number][]} */ ([...roleChannels(offer).keys()].filter((r) => value(`registration-pin-${offer.entry.fn}-${r}`) !== '').map((r) => [r, num(`registration-pin-${offer.entry.fn}-${r}`, 0, 65534)]));
+      validateBindings(offer.description.roles, offer.description.groups, bindings);
+      if (offer.entry.name.startsWith('oep.wire.') && (!bindings.some(([r]) => r === 1) || (offer.entry.name !== 'oep.wire.swio' && !bindings.some(([r]) => r === 2)))) throw new Error(L('Specify each debug signal pin.', 'デバッグの各信号ピンを指定してください。'));
+      for (const [, ch] of bindings) if (labels.has(ch)) throw new Error(L(`${pinName(ch)} is already named ${labels.get(ch)}. Edit or remove its registration in Settings first.`, `${pinName(ch)}には${labels.get(ch)}が登録済みです。先に「設定」で既存の登録を編集・削除してください。`));
+      state.wizard.fixed = { offer, bindings };
+      state.wizard.step = 2;
+    }, { primary: true })))];
+}
 function resetWizard() { state.wizard = { step: 0, found: [], picked: 0, saved: null }; }
 function showWizard() {
   const w = state.wizard;
   const offers = wireOffers().filter((o) => supports(o, oep.riscv.WireBase.SCAN));
-  const top = [header(L('Add a connection', '接続先を追加'), L('Choose the wired pins, find the target, and save a reusable connection name.', '配線したピンを選び、ターゲットを探して、使い回せる接続名を保存します。')),
-    node('ol', { class: 'wizard' }, ...[L('1. Wire', '1. 配線'), L('2. Find', '2. 探索'), L('3. Name', '3. 命名'), L('4. Done', '4. 完了')].map((name, i) => node('li', { class: w.step === i ? 'current' : w.step > i ? 'done' : '', ...(w.step === i ? { 'aria-current': 'step' } : {}) }, name))), writeGate()];
-  if (!offers.length) return [...top, notice(L('This probe offers no supported debug scan interface. Use Settings to name other connections manually.', 'このプローブには対応する探索機能がありません。その他の接続は「設定」でピン名を登録できます。'))];
+  const manual = value('registration-mode') !== 'scan';
+  const steps = manual ? [L('1. Pins', '1. ピン指定'), L('2. Review & save', '2. 確認・保存'), L('3. Done', '3. 完了')] : [L('1. Wire', '1. 配線'), L('2. Find', '2. 探索'), L('3. Name', '3. 命名'), L('4. Done', '4. 完了')];
+  const activeStep = manual ? w.step === 0 ? 0 : w.step - 1 : w.step;
+  const top = [header(L('Add a connection', '接続先を追加'), L('Register known wiring without a target attached. Scan only when you need to discover unknown wiring.', '決まっている配線は、ターゲット未接続のまま登録できます。スキャンは配線を調べたい場合だけ使います。')),
+    node('ol', { class: 'wizard' }, ...steps.map((name, i) => node('li', { class: activeStep === i ? 'current' : activeStep > i ? 'done' : '', ...(activeStep === i ? { 'aria-current': 'step' } : {}) }, name))), writeGate()];
+  if (w.step === 0) {
+    top.push(choiceCards('registration-mode', L('How do you want to register the wiring?', 'どの方法で配線を登録しますか？'), [
+      { value: 'fixed', title: L('Specify known pins', '決まっているピンを指定'), description: L('For a connector, fixture or a wiring diagram. Save now and connect the target later.', '端子・治具・配線図のピンが決まっている場合。先に保存し、ターゲットは後でつなぎます。'), facts: [L('No scan or target power required', 'スキャン・ターゲットの給電は不要')] },
+      { value: 'scan', title: L('Find unknown debug wiring', '不明なデバッグ配線を探索'), description: L('Try selected candidate pins against a powered target.', '給電したターゲットに対して、選んだ候補ピンの組を試します。'), facts: [L('Optional; drives the selected pins', '必要な場合のみ。選んだピンを駆動します')] },
+    ], 'fixed', () => { resetWizard(); state.results.delete('scan'); }));
+    if (manual) return fixedRegistration(top);
+  }
+  if (!manual && !offers.length) return [...top, notice(L('This probe has no supported scan operation. Choose known pins above to register wiring without scanning.', 'このプローブには対応する探索操作がありません。上の「決まっているピンを指定」で、探索せずに配線を登録できます。'))];
   if (w.step === 0) {
     const wire = wireChoices('wizard-wire', offers, () => {
       state.drafts.forEach((_, k) => { if (k.startsWith('wizard-pin-')) state.drafts.delete(k); }); resetWizard();
@@ -501,17 +562,19 @@ function showWizard() {
     !w.found.length && state.results.has('scan') ? notice(L('No target responded. Check GND, power, line type and wiring before retrying.', 'ターゲットから応答がありません。GND・電源・線の種類・配線を確認してください。'), 'warn') : null,
     actions(button(L('Back to wiring', '配線に戻る'), async () => { w.step = 0; }), button(L('Name this connection', '名前を付ける'), async () => { w.step = 2; }, { disabled: !w.found.length, primary: true })))];
   if (w.step === 2) {
-    const f = w.found[w.picked];
-    return [...top, card(L('Save the wiring', '配線を保存'), p(f.pins.filter((n) => n !== 65535).map(pinName).join(' / ')),
+    const f = w.fixed ?? w.found[w.picked];
+    const bindings = w.fixed ? w.fixed.bindings : [[1, f.pins[0]], ...(f.pins[1] === 65535 ? [] : [[2, f.pins[1]]])];
+    return [...top, card(L('Save the wiring', '配線を保存'), p(bindings.map(([r, ch]) => `${roleLine(f.offer, r)} → ${pinName(ch)}`).join(' · ')),
+      notice(manual ? L('Wiring is not tested. Saving only changes labels; it does not scan, attach, or drive pins.', '配線は動作未確認です。保存はピン名の設定だけを変更し、スキャン・ターゲット接続・ピン駆動は行いません。') : L('The scan response confirms these pins at scan time only.', 'スキャン時点で応答のあったピンです。現在の接続状態を保証するものではありません。')),
       node('div', { class: 'fields' }, field('wizard-name', L('Connection name (up to 16 characters)', '接続名（16文字まで）'), 'target'),
         field('wizard-part', L('Part number', '型番')), field('wizard-note', L('Notes', 'メモ'), '', { multiline: true })),
       state.dirty ? notice(L('Saving this connection also saves all other current settings on the probe.', '接続先の保存時に、プローブの他の現在の設定もまとめて永続保存します。'), 'warn') : null,
-      p(L('The name creates labels such as target.swdio and target.swclk. Pin names are saved first; notes are saved only if memo storage is available.', 'target.swdio・target.swclkなどのピン名を作ります。ピン名を保存し、メモ領域があれば型番とメモも保存します。'), 'muted'),
+      p(L('The connection name prefixes each signal label, such as target.swdio or sensor.sda. Notes are saved when memo storage is available.', '接続名と信号名からtarget.swdioやsensor.sdaなどのピン名を作ります。メモ領域があれば型番とメモも保存します。'), 'muted'),
       !state.changeable ? notice(L('This probe has no writable settings; connection names cannot be saved.', 'このプローブには変更可能な設定がなく、接続名を保存できません。'), 'warn') : null,
-      actions(button(L('Back to results', '探索結果へ戻る'), async () => { w.step = 1; }), button(L('Save connection', '接続先を保存'), async () => {
+      actions(button(manual ? L('Back to pin selection', 'ピン指定へ戻る') : L('Back to results', '探索結果へ戻る'), async () => { w.step = manual ? 0 : 1; }), button(L('Save connection', '接続先を保存'), async () => {
         const name = connectionName(value('wizard-name').trim(), state.ports.map((p) => p.name));
-        const named = f.pins[1] === 65535 ? { [`channel.${pinName(f.pins[0])}.label`]: `${name}.swio` }
-          : { [`channel.${pinName(f.pins[0])}.label`]: `${name}.swdio`, [`channel.${pinName(f.pins[1])}.label`]: `${name}.swclk` };
+        const named = Object.fromEntries(bindings.map(([r, ch]) => [`channel.${pinName(ch)}.label`, `${name}.${roleLine(f.offer, r)}`]));
+        for (const [, ch] of bindings) if (state.labels.some(([pin]) => pin === ch)) throw new Error(L('A selected pin already has a label. Review the current settings before replacing it.', '選択したピンには既に名前があります。置き換える前に現在の設定を確認してください。'));
         w.saved = { name, persistent: false, notes: false };
         await new oep.settings.Settings(state.host).setNamed('core', named); state.dirty = true;
         try {
@@ -523,7 +586,13 @@ function showWizard() {
   return [...top, card(L('Connection registered', '接続先を登録しました'), addressBox(`oep://${unit()}/${w.saved.name}`),
     notice(w.saved.persistent ? L('Pin names saved to the probe.', 'ピン名をプローブに永続保存しました。') : L('Pin names are applied for now; persistent save was not completed.', 'ピン名は現在の設定へ適用しました。永続保存は完了していません。'), w.saved.persistent ? 'good' : 'warn'),
     p(w.saved.notes ? L('Part number and notes were saved.', '型番とメモを保存しました。') : L('Notes were not saved. Check the probe capabilities or the operation error.', '型番とメモは保存していません。プローブの対応状況や操作エラーを確認してください。'), 'muted'),
-    actions(link(L('View connections', '接続先一覧へ'), '#targets', true), link(L('Target tools', 'ターゲット操作へ'), '#debug'), link(L('Use from tools', '道具から使う'), '#tools'),
+    p(L('Registration is saved wiring, not a live connection check. Attach or apply pins explicitly from the operation screen.', '登録は配線の設定であり、実際の接続確認ではありません。操作画面で接続・ピン割当を明示的に実行してください。'), 'muted'),
+    actions(link(L('View connections', '接続先一覧へ'), '#targets', true), button(L('Load wiring into its tool', 'この配線で操作画面を開く'), async () => {
+      const f = w.fixed ?? w.found[w.picked];
+      const port = state.ports.find((p) => p.name === w.saved.name);
+      if (!port) throw new Error(L('The saved registration was not found.', '保存した登録を確認できませんでした。'));
+      usePort(port, f.offer);
+    }), link(L('Use from tools', '道具から使う'), '#tools'),
       button(L('Register another', '別の接続先を登録'), async () => { resetWizard(); state.results.delete('scan'); })))];
 }
 function debugOffer() { return wireOffers().find((o) => o.entry.fn === +value('debug-wire')); }
@@ -567,13 +636,7 @@ function showDebug() {
       await d.wire.detach(d.conn); state.debug = null; state.console = null;
     }, { write: true })), result('debug-connect'));
   if (!d) return [...top, connection, p(L('Saved connections can be selected below to fill the wiring; attaching is still explicit.', '登録済みの接続先から配線を入力できます。接続操作は別途実行します。'), 'muted'),
-    actions(...state.ports.map((port) => button(port.name, async () => {
-      for (const [ch, label] of port.lines) {
-        const line = oep.settings.parseLabel(label)?.[1];
-        if (line === 'swdio' || line === 'swio') state.drafts.set('debug-dio', String(ch));
-        if (line === 'swclk') state.drafts.set('debug-clk', String(ch));
-      }
-    })))];
+    actions(...state.ports.filter((port) => portBindings(port, offer)).map((port) => button(port.name, async () => usePort(port, offer))))];
   const targetName = d.arm ? 'oep.target.arm-adi' : 'oep.target.riscv-dm';
   const targetOffer = offered(targetName)[0];
   if (!targetOffer) return [...top, connection, notice(L('The wire is connected, but this probe has no supported target interface for the following operations.', '線は接続しましたが、このプローブには後続の操作に対応するターゲット機能がありません。'))];
@@ -832,7 +895,7 @@ async function installEsp(model) {
     } });
     state.fwFinished = `${chip} · ${state.fwCustom && model !== 'esp32' && !model.startsWith('esp32p4') ? state.fwCustom.name : state.release.version}`;
     state.fwFinishedModel = model;
-    state.drafts.set('connect-board', value('fw-board'));
+    state.drafts.set('connect-method', ['esp32', 'esp32s3'].includes(value('fw-board')) ? 'serial' : 'usb');
     fwProgress(1, 1, L('Written. Reconnect the USB cable, then connect as an OEP probe.', '書き込み完了。USBを挿し直し、OEPプローブとして接続してください。'));
   } finally { state.firmwareBusy = false; state.fwSerial = null; }
 }
@@ -883,7 +946,7 @@ function showFirmware() {
             state.fwBoot = await oep.requestRp2Boot(/** @type {'rp2040' | 'rp2350'} */ (b.models[0])); state.fwBootModel = b.models[0];
           }, { disabled: !deviceAPIs.usb || !available }),
           button(L('Write OEP firmware', 'OEPを書き込む'), async () => {
-            await flashFirmware(b.models[0], false); state.drafts.set('connect-board', b.id);
+            await flashFirmware(b.models[0], false); state.drafts.set('connect-method', 'usb');
           }, { primary: true, disabled: !available || !state.fwBoot || state.fwBootModel !== b.models[0] })))
         : notice(L('Browser installation is not supported for CH32. Choose ESP32 or Pico to complete initial installation here. An already programmed CH32 probe can be connected here.', 'CH32のブラウザ初回書き込みには未対応です。初回導入からここで完結する場合はESP32またはPicoを選んでください。導入済みのCH32プローブは接続できます。'), 'warn'),
       actions(button(L('Reload release images', '配布画像を再取得'), loadRelease), link(L('Already installed? Connect', '書き込み済みの場合は接続へ'), '#connect'), link(L('Compare boards', 'ボードを比較'), '#help'))),

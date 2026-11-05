@@ -61,6 +61,11 @@ try {
         res.setHeader('Content-Type', 'text/javascript');
         res.end(`export * from './src/index.js'; export * from './src/browser/index.js';
           import {connect} from './src/open.js';
+          import * as lib from './src/index.js';
+          export const core={...lib.core,async planApply(...args){if(globalThis.__forbidTargetIO)throw Error('Unexpected pin assignment while registering');return lib.core.planApply(...args);}};
+          export const dump={...lib.dump,async collect(h){const caps=await lib.dump.collect(h);if(globalThis.__withoutScan)for(const o of caps.offers)if(o.entry.name.startsWith('oep.wire.'))o.description.ops=new Set([lib.riscv.WireBase.ATTACH]);return caps;}};
+          for(const [Class,method] of [[lib.riscv.WireBase,'scan'],[lib.riscv.Wire,'attach'],[lib.arm.SwdWire,'attach']]){const original=Class.prototype[method];Class.prototype[method]=function(...args){if(globalThis.__forbidTargetIO)throw Error('Unexpected '+method+' while registering');return original.apply(this,args);};}
+
           export async function getUsbProbes(){return [{productName:'OEP Probe',serialNumber:'fafe00000035'},{productName:'OEP Probe',serialNumber:'second-probe'}];}
           export async function openWebSerial(){const h=await openWebUsb();globalThis.__connectionMethod='serial';return h;}
           export async function openWebUsb(device,opts){
@@ -146,14 +151,15 @@ try {
   assert.match(await evaluate('document.getElementById("fw-status").textContent'), /Written/);
   await snapshot('01c-initial-install');
   await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.textContent==="Connect and check the version").click()'); await delay(100);
-  assert.equal(await evaluate('document.querySelector("input[name=connect-board]:checked").value'), 'esp32');
+  assert.equal(await evaluate('document.querySelector("input[name=connect-board]")'), null, 'no board selection after flashing');
+  await click('Select device and connect'); await succeeded();
+  assert.equal(await evaluate('globalThis.__connectionMethod'),'serial','serial install leads directly to serial OEP connection');
+  await click('Disconnect'); await succeeded();
   await send('Page.navigate', { url: base }); await until('document.querySelector("#screen .button")?.hash==="#firmware"');
   await route('settings');
   await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.hash==="#connect").click()'); await delay(100);
-  assert.equal(await evaluate('document.getElementById("connect-selected").disabled'), true, 'choose a board before connecting');
-  await evaluate('document.querySelector("input[name=connect-board][value=p4]").click()');
-  assert.match(await evaluate('document.getElementById("connect-board").textContent'), /Logic capture|logic capture/);
-  assert.equal(await evaluate('document.getElementById("connect-selected").disabled'), false);
+  assert.equal(await evaluate('document.querySelector("input[name=connect-board]")'), null, 'no board type question before connecting');
+  assert.equal(await evaluate('document.getElementById("connect-selected").disabled'), false, 'device chooser works immediately');
   await snapshot('01b-probe-choices');
   await click('Select device and connect'); await succeeded(); assert.equal(await heading(), 'Settings', 'deep link resumes after connection');
   assert.match(await evaluate('document.getElementById("connection-bar").textContent'), /Read only/);
@@ -201,7 +207,39 @@ try {
   assert.match(await evaluate('document.querySelector("#screen").textContent'), /x035/);
   assert.match(await evaluate('document.getElementById("feedback").textContent'), /cancelled/);
   acceptDialog = true; await click('Remove registration'); await succeeded();
+  await click('Release changes'); await succeeded();
+  // Known wiring can be registered without target I/O and without a scan capability.
+  await evaluate('globalThis.__forbidTargetIO=true;globalThis.__withoutScan=true');
+  await route('diagnostics'); await click('Read declarations'); await succeeded();
   await route('target/new');
+  assert.equal(await evaluate('document.querySelector("input[name=registration-mode]:checked").value'),'fixed');
+  const fixedPins = await evaluate('[...document.querySelectorAll("select[id^=registration-pin-]")].filter(e=>e.value!=="").map(e=>e.value)');
+  await click('Review wiring'); await succeeded();
+  assert.equal(await evaluate('[...document.querySelectorAll("#screen button")].find(b=>b.textContent==="Save connection").disabled'),true,'only saving needs change permission');
+  await click('Enable changes'); await succeeded();
+  await set('wizard-name','fixture'); await click('Save connection'); await succeeded();
+  assert.match(await evaluate('document.querySelector("#screen").textContent'),/Registration is saved wiring/);
+  await click('Load wiring into its tool'); await succeeded();
+  assert.equal(await evaluate('document.getElementById("debug-dio").value'),fixedPins[0]);
+  assert.equal(await evaluate('document.getElementById("debug-clk").value'),fixedPins[1]);
+  assert.equal(await evaluate('document.querySelectorAll("#debug-control").length'),0);
+  await route('targets'); await click('Remove registration'); await succeeded();
+  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.hash==="#target/new").click()'); await delay(80);
+  // A UART connector is reusable independently of target discovery.
+  await evaluate('[...document.querySelectorAll("#registration-function .choice-card")].find(e=>e.textContent.includes("UART")).querySelector("input").click()');
+  await evaluate(`{const used=new Set();for(const e of document.querySelectorAll('select[id^="registration-pin-"]')){const o=[...e.options].find(o=>o.value!==''&&!used.has(o.value));if(o){e.value=o.value;used.add(o.value);e.dispatchEvent(new Event('change'));}}}`);
+  const uartPins = await evaluate('[...document.querySelectorAll("select[id^=registration-pin-]")].map(e=>e.value)');
+  await click('Review wiring'); await succeeded(); await set('wizard-name','serial-fixture'); await click('Save connection'); await succeeded();
+  await snapshot('05a-fixed-wiring');
+  await click('Load wiring into its tool'); await succeeded();
+  assert.equal(await evaluate('location.hash'),'#signals/uart');
+  assert.deepEqual(await evaluate('[...document.querySelectorAll("select[id^=signal-]")].filter(e=>e.id.includes("-pin-")).map(e=>e.value)'),uartPins);
+  await route('targets'); await click('Remove registration'); await succeeded();
+  await evaluate('globalThis.__forbidTargetIO=false;globalThis.__withoutScan=false');
+  await route('diagnostics'); await click('Read declarations'); await succeeded();
+  await evaluate('location.hash="#targets"'); await delay(80);
+  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.hash==="#target/new").click()'); await delay(80);
+  await evaluate('document.querySelector("input[name=registration-mode][value=scan]").click()');
   await evaluate(`for(const e of document.querySelectorAll('.pin-list input')){if(!e.disabled){e.checked=true;e.dispatchEvent(new Event('change'));}}`);
   await click('Continue to scan'); await click('Scan selected pins'); await succeeded(); await snapshot('05-connection');
   await click('Name this connection'); await set('wizard-name','test-target'); await click('Save connection'); await succeeded();
@@ -210,9 +248,12 @@ try {
   await route('settings'); await click('Read settings'); await succeeded(); await click('Save to probe'); await succeeded();
   await route('storage'); assert.match(await evaluate('document.querySelector("#screen").textContent'), /no supported memo/);
   await route('tools'); assert.match(await evaluate('document.querySelector("#screen").textContent'), /fafe00000035/);
+  await route('target/new'); await click('Register another');
+  await evaluate('document.querySelector("input[name=registration-mode][value=fixed]").click()');
+  await snapshot('05b-fixed-pin-form');
   await set('language', 'ja'); await route('probe'); assert.equal(await heading(), 'プローブ'); await snapshot('06-probe-ja');
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-  for (const hash of ['home', 'connect', 'probe', 'signals/spi-controller', 'debug', 'settings', 'firmware', 'help']) {
+  for (const hash of ['home', 'connect', 'probe', 'target/new', 'signals/spi-controller', 'debug', 'settings', 'firmware', 'help']) {
     await route(hash); assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, `mobile ${hash}`);
   }
   await click('変更権を解放'); await succeeded();
@@ -220,14 +261,14 @@ try {
   await click('切断'); await succeeded(); assert.match(await evaluate('document.getElementById("connection-bar").textContent'), /未接続/);
   // A second physical shape supplies the optional DAC; the first profile has none.
   benchPort = Number(await start(python, ['-m','oep_client.virtual_bench_serve','--tcp','0','--profile','esp32-v003'], /PORT (\d+)/));
-  await set('language','en'); await route('connect'); await evaluate('document.querySelector("input[name=connect-board][value=esp32]").click()'); await click('Select device and connect'); await succeeded(); await click('Enable changes'); await succeeded();
-  assert.equal(await evaluate('globalThis.__connectionMethod'),'serial','classic ESP32 selects serial without asking the user to choose a transport');
+  await set('language','en'); await route('connect'); await evaluate('document.querySelectorAll("#screen details")[1].open=true'); await click('Choose a serial port'); await succeeded(); await click('Enable changes'); await succeeded();
+  assert.equal(await evaluate('globalThis.__connectionMethod'),'serial','the serial help connects without a board type question');
   await route('signals/dac'); await set('signal-14-pin-0','25'); await click('Apply pin assignment'); await succeeded();
   await click('Set output'); await succeeded(); await click('Read status'); await succeeded(); await click('Release pins'); await succeeded();
   await click('Disconnect'); await succeeded();
   // Optional UART writes must disappear when the device does not advertise them.
   benchPort = Number(await start(python, ['-m','oep_client.virtual_bench_serve','--tcp','0','--profile','p4-x035','--minimal-ops'], /PORT (\d+)/));
-  await route('connect'); await evaluate('document.querySelector("input[name=connect-board][value=p4]").click()'); await click('Select device and connect'); await succeeded(); await route('signals/uart');
+  await route('connect'); await click('Select device and connect'); await succeeded(); await route('signals/uart');
   assert.equal(await evaluate('[...document.querySelectorAll("#screen button")].some(b=>b.textContent==="Send" || b.textContent==="Send bytes")'),false);
   await click('Disconnect'); await succeeded();
   await route('connect'); await evaluate('document.querySelector("#screen details").open=true'); await click('Find allowed probes'); await succeeded();
@@ -237,7 +278,7 @@ try {
   assert.equal(await evaluate('globalThis.__selectedProbe'),'fafe00000035','the exact chosen device is passed to the transport');
   await click('Disconnect'); await succeeded();
   assert.deepEqual(exceptions, []);
-  console.log('Browser workspace: ESP initial install, bundled ROM loader, navigation, deep-link connect, GPIO, PWM, UART, I2C/SPI peers and controllers, counter, DAC, debug and console, settings, capabilities, language, mobile and session cleanup passed.');
+  console.log('Browser workspace: board-free connect, fixed wiring without scan/attach, saved UART/debug wiring, ESP initial install, bundled ROM loader, navigation, deep-link connect, GPIO, PWM, UART, I2C/SPI peers and controllers, counter, DAC, debug and console, settings, capabilities, language, mobile and session cleanup passed.');
 } finally {
   browserSocket?.close(); socket?.destroy(); if (waiting) waiting.end(); server?.closeAllConnections(); server?.close();
   for (const child of children) { child.stdin?.end(); child.kill(); }

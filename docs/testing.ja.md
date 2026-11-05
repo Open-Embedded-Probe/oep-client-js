@@ -22,4 +22,5 @@ Chromiumのコマンドは `OEP_CHROME`（既定 `google-chrome`）、Pythonは 
 
 直接URL、接続後の元画面への復帰、機能別フォーム、GPIO/PWM/UART/I2C/SPI/カウンタ/DAC、ターゲット操作、設定、言語、狭い画面、
 セッション解放を確認します。ESP初回書き込みは疑似ROMでoffset 0・進行・reset・ポート解放・完了後の接続を確認し、実際のbundleもブラウザでimportします。
+固定配線の登録ではSCAN非対応としても保存できること、読取専用でも編集・確認できること、登録・呼出中にSCAN/ATTACH/PLAN_APPLYを呼ばないことを検査します。
 単体試験ではチップ/画像の不一致、P4のrevision不一致、接続/書き込み失敗時の解放を確認します。USB権限ダイアログ、電気的な信号、firmware書き込みは実機で確認します。

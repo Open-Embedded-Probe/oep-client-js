@@ -43,3 +43,18 @@ export function firmwareState(current, latest) {
   for (let i = 1; i <= 3; i++) if (+a[i] !== +b[i]) return +a[i] < +b[i] ? 'update' : 'newer';
   return 'current';
 }
+
+/** Validate a fixed role/pin mapping without claiming or driving pins.
+ * @param {Map<number, number[]>} roles
+ * @param {Map<number, [number,number][]>} groups
+ * @param {[number, number][]} bindings
+ */
+export function validateBindings(roles, groups, bindings) {
+  if (!bindings.length) throw new RangeError('Choose at least one pin.');
+  if (new Set(bindings.map(([, ch]) => ch)).size !== bindings.length) throw new RangeError('Each role needs a different pin.');
+  const variants = groups.size ? [...groups.values()].map((g) => new Map(g)) : [new Map()];
+  if (!variants.some((g) => bindings.every(([role, ch]) => g.has(role)
+    ? g.get(role) === ch && (!roles.has(role) || (roles.get(role) ?? []).includes(ch))
+    : (roles.get(role) ?? []).includes(ch)))) throw new RangeError('These pins do not form a declared channel group for this interface.');
+  return bindings;
+}

@@ -1,7 +1,7 @@
 // @ts-check
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { integer, hexBytes, printable, parseRoute, connectionName, firmwareState } from '../web/model.js';
+import { integer, hexBytes, printable, parseRoute, connectionName, firmwareState, validateBindings } from '../web/model.js';
 
 test('device numeric fields reject blank, partial, fractional and out-of-range input before sending', () => {
   assert.equal(integer('0x20000000'), 0x20000000);
@@ -46,4 +46,16 @@ test('results preserve large times and binary bytes without losing their values'
   assert.equal(result.time, '9007199254740993');
   assert.equal(result.values[0], 42);
   assert.equal(result.bytes.hex, '00 ff');
+});
+
+
+test('fixed wiring validates groups and role intersections without scanning or claiming pins', () => {
+  const roles = new Map([[1, [1, 3]], [2, [2, 4]]]);
+  const groups = new Map([[0, /** @type {[number,number][]} */ ([[1, 1], [2, 2]])], [1, /** @type {[number,number][]} */ ([[1, 3], [2, 4]])]]);
+  assert.deepEqual(validateBindings(roles, groups, [[1, 1], [2, 2]]), [[1, 1], [2, 2]]);
+  assert.throws(() => validateBindings(roles, groups, [[1, 1], [2, 4]]), /channel group/);
+  assert.throws(() => validateBindings(new Map([[1, [3]]]), groups, [[1, 1]]), /channel group/);
+  assert.deepEqual(validateBindings(new Map(), groups, [[1, 3], [2, 4]]), [[1, 3], [2, 4]]);
+  assert.throws(() => validateBindings(roles, new Map(), [[1, 1], [2, 1]]), /different pin/);
+  assert.throws(() => validateBindings(roles, new Map(), []), /at least one/);
 });
