@@ -4,11 +4,10 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-  # a new oep-probe-arduino Release: its Firmware workflow sends this (the page serves the latest Release's firmware)
-  repository_dispatch:
-    types: [firmware-released]
+  # the page serves the latest oep-probe-arduino Release's firmware: rebuilt once a day to pick a new Release up
+  # (or by hand, workflow_dispatch, right after one)
   schedule:
-    - cron: '17 3 * * *'   # and once a day, should a dispatch be missed
+    - cron: '17 3 * * *'
 
 permissions:
   contents: read
