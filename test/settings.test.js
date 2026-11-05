@@ -245,10 +245,10 @@ test('export and import through another probe (settings file §3, §4)', { skip 
   let first = {};
   await withSettings(['--profile', 'p4-x035'], async (st) => {
     await st.setNamed(CORE, { [label(14)]: 'NRST', [idle(14)]: 'pull-up', [disable(30)]: true });
-    await st.setNamed('oep.wire.rvswd/0', { 'hold.GPIO2': false });
+    await st.setNamed('oep.wire.rvswd/0', { 'channel.GPIO2.hold': false });
     doc = await st.export();
     assert.deepEqual(doc.settings, { [CORE]: { [label(2)]: 'x035.swdio', [label(14)]: 'NRST', [label(54)]: 'x035.swclk',
-      [idle(14)]: 'pull-up', [disable(30)]: true }, 'oep.wire.rvswd/0': { 'hold.GPIO2': false } });   // every value
+      [idle(14)]: 'pull-up', [disable(30)]: true }, 'oep.wire.rvswd/0': { 'channel.GPIO2.hold': false } });   // every value
     assert.equal(doc.probe.unit_id, 'fafe00000035');
     first = await user(st);
   });

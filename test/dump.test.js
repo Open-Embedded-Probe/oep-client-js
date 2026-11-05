@@ -94,15 +94,15 @@ test('the core (fn 0) is described first and never listed; its describe is the p
   assert.equal(caps.maxFrame, 64);
   assert.ok(caps.requests.list > 1);                                // 64-byte frames (esp32-v003-64): the list is paged
   const row = dump.describeOffer(caps.core);
-  assert.deepEqual(row.ops, Object.entries(m.OP).sort((a, b) => a[1] - b[1]).map(([k]) => k));   // fn 0's ops by name (core §12)
+  assert.deepEqual(row.ops, Object.entries(m.OP).filter(([k]) => k !== 'network').sort((a, b) => a[1] - b[1]).map(([k]) => k));   // fn 0's ops by name (core §12)
   const d = /** @type {Record<string, string>} */ (row.declares);
   assert.equal(d['unit id'], 'fafe00000003');
   assert.equal(d.transport, '0 = UART bridge');
   assert.ok(d['channel name'].includes('16 = GPIO16') && d['channel name'].includes('23 = GPIO23'));   // repeated tags all kept
-  assert.equal(d.netif, 'wifi');
+  assert.equal(d.netif, undefined);   // a 64-byte route cannot offer Wi-Fi settings (transports §7)
   const text = dump.toText(caps);
   // the core block reads like every other: its heading, the summary, then what it declares
-  assert.match(text, /\ncore {9}fn 0 {3}\(no name; the probe itself\)\n {14}the core: confirm, list, describe, clock, open \/ end \/ keepalive, lock state, the settings \(core §13\); describe = the probe itself\n {16}ops: confirm, list, describe, clock, open, end, keepalive, lock_state, get, set, unset, save, state, network\n/);
+  assert.match(text, /\ncore {9}fn 0 {3}\(no name; the probe itself\)\n {14}the core: confirm, list, describe, clock, open \/ end \/ keepalive, lock state, the settings \(core §13\); describe = the probe itself\n {16}ops: confirm, list, describe, clock, open, end, keepalive, lock_state, get, set, unset, save, state\n/);
   assert.ok(!text.includes('oep.core'));
   assert.deepEqual(dump.toData(caps).core.declares?.['unit id'], 'fafe00000003');
 }, 'cobs'));
@@ -110,7 +110,8 @@ test('the core (fn 0) is described first and never listed; its describe is the p
 test('filters', { skip: !haveVirtualBench }, () => withBench('esp32-v003', async (hst) => {
   const fixture = await dump.collect(hst, 'oep.fixture');
   assert.deepEqual(new Set(fixture.offers.map((o) => o.entry.name)), new Set(['oep.fixture.gpio', 'oep.fixture.uart',
-    'oep.fixture.logic', 'oep.fixture.i2c-target', 'oep.fixture.spi-target']));
+    'oep.fixture.logic', 'oep.fixture.i2c-target', 'oep.fixture.spi-target', 'oep.fixture.i2c-controller',
+    'oep.fixture.spi-controller', 'oep.fixture.pwm', 'oep.fixture.counter', 'oep.fixture.dac']));
   const one = await dump.collect(hst, 'oep.fixture.spi-target', true);
   assert.deepEqual(one.offers.map((o) => o.entry.name), ['oep.fixture.spi-target']);
   assert.deepEqual(one.offers[0].description.groups.get(2)?.[0], [1, 14]);
@@ -120,9 +121,9 @@ test('filters', { skip: !haveVirtualBench }, () => withBench('esp32-v003', async
 test('p4 follows the agreed names; text and JSON', { skip: !haveVirtualBench }, () => withBench('p4-x035', async (hst) => {
   const caps = await dump.collect(hst);
   const byName = new Map(caps.offers.map((o) => [o.entry.name, o]));
-  assert.equal(caps.offers.length, 14);                             // fn 0 not among them; oep.probe.plan / restart / link listed
+  assert.equal(caps.offers.length, 18);                             // fn 0 not among them; oep.probe.plan / restart / link listed
   assert.equal(caps.requests.list, 1);
-  assert.equal(caps.requests.describe, 15);                         // fn 0 and every listed fn
+  assert.equal(caps.requests.describe, 19);                         // fn 0 and every listed fn
   const L = reg.PROBE_LINK.op, P = reg.PROBE_PLAN.op;
   assert.ok([L.source, L.sink].every((op) => byName.get('oep.probe.link')?.description.ops?.has(op)));
   assert.ok(!byName.get('oep.probe.link')?.description.ops?.has(L.port_speed));   // no UART bridge here
@@ -135,7 +136,7 @@ test('p4 follows the agreed names; text and JSON', { skip: !haveVirtualBench }, 
   assert.deepEqual(i2c.description.roles.get(1), i2c.description.roles.get(2));
   assert.ok(!i2c.description.roles.get(1)?.includes(2));           // reserved for RVSWD
   const text = dump.toText(caps);
-  assert.match(text, /^OEP revision 1, max frame 1024 bytes; 14 interfaces in 1 list and 15 describe requests\n/);
+  assert.match(text, /^OEP revision 1, max frame 1024 bytes; 18 interfaces in 1 list and 19 describe requests\n/);
   assert.ok(text.includes('instance 0') && text.includes('oep.fixture.i2c-target'));
   assert.ok(!text.includes('preloaded tx') && !text.includes('clock stretching'));   // one form; stretch: an op (ops)
   assert.ok(text.includes('ops: configure, read_rx, preload_tx, status, stretch'));
@@ -148,7 +149,7 @@ test('p4 follows the agreed names; text and JSON', { skip: !haveVirtualBench }, 
   assert.deepEqual(caps.missing, []);
   const data = JSON.parse(dump.toJson(caps));
   assert.equal(data.maxFrame, 1024);
-  assert.equal(data.interfaces.length, 14);
+  assert.equal(data.interfaces.length, 18);
   const rvswd = data.interfaces.find((/** @type {any} */ i) => i.name === 'oep.wire.rvswd');
   assert.equal(rvswd.roles, undefined);                             // rvswd declares a fixed pin set, not roles
   assert.deepEqual(rvswd.pinGroups['1'], { SWDIO: 2, SWCLK: 54 });

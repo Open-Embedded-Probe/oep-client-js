@@ -28,7 +28,7 @@ import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 const FAST = { verifyMs: 900 };   // the probe's try state ends soon: a failed candidate costs under a second
 const UNIT = 'fafe00000003';      // the virtual bench esp32-v003's unit_id
 const NO_PROBATION = { probationBytes: 0, probationMs: 0 };   // the window alone (the probation has its own tests)
-const LINK_FN = 10;               // the virtual bench esp32-v003's oep.probe.link (oep-if-link): port_speed and the link test are its ops
+const LINK_FN = 15;               // the virtual bench esp32-v003's oep.probe.link (oep-if-link): port_speed and the link test are its ops
 const PS = reg.PROBE_LINK.op.port_speed, SOURCE = reg.PROBE_LINK.op.source, SINK = reg.PROBE_LINK.op.sink;
 
 // Most tests here are about the procedure at any rate the virtual bench makes (1500000, 921600 ... included): they run without
