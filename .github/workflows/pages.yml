@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # a new oep-probe-arduino Release: its Firmware workflow sends this (the page serves the latest Release's firmware)
+  repository_dispatch:
+    types: [firmware-released]
+  schedule:
+    - cron: '17 3 * * *'   # and once a day, should a dispatch be missed
 
 permissions:
   contents: read
@@ -30,6 +35,10 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run build:site
+      - name: The latest oep-probe-arduino Release's firmware beside the page (scripts/fetch-firmware.js)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/fetch-firmware.js
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

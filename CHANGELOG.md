@@ -1,6 +1,20 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) OEP Probe Tool, reorganised in wireskein-web's layout: a top bar (the connection's state, connect, allow changes,
+  the language), a side menu of tasks each with a line of what it is, and a first screen asking what to do. The language
+  follows the browser's (navigator.languages) unless one is picked. The firmware is no longer picked by hand: the Pages
+  build puts the latest oep-probe-arduino Release's OepProbe images beside the page (scripts/fetch-firmware.js, their
+  sha256 checked; a Release's own files carry no CORS header for a browser), and the page writes the one for the
+  connected probe's model (ESP32-P4 / P4X over DFU, RP2040 / RP2350 over PICOBOOT), or for a new RP2 board in BOOTSEL.
+  The words: a "connection name" (the address's last part) and "pin names" for the labels; `#setup`, `#firmware`, ...
+  open a task.
+- (JA) OEP Probe Tool を wireskein-web の組み立てで整理した。上の帯（接続の様子、接続、変更の許可、言語）、作業ごとに 1 行の説明の付いた
+  左のメニュー、何をするかを聞く最初の画面。言語は、選ばない限りブラウザの言語（navigator.languages）に従う。firmware は手で選ばない:
+  Pages のビルドが、oep-probe-arduino の最新のリリースの OepProbe の画像をページの隣に置き（scripts/fetch-firmware.js。sha256 を確かめる。
+  リリースのファイルそのものはブラウザ向けの CORS のヘッダを持たない）、ページはつないだプローブの型に合うものを書く（ESP32-P4 / P4X は
+  DFU、RP2040 / RP2350 は PICOBOOT）。BOOTSEL の新しい RP2 のボードにも書く。用語は「接続名」（アドレスの最後の段）と、label は
+  「ピンの名前」。`#setup`、`#firmware` などで、その作業を開く。
 - (EN) `rp2ResetToBoot` restarts a running RP2 probe into its boot ROM through the firmware's reset interface (the
   pico-sdk's, a class-typed RESET_REQUEST_BOOTSEL as picotool sends). The page's RP2 update is one button: a connected
   probe goes into its boot ROM by itself, a board with no firmware is asked for BOOTSEL, and devices the browser was given

@@ -3,87 +3,104 @@
 // operations, update its firmware (docs/design.md §4). Everything goes through oep-client-js.
 import {
   VERSION, settings, core, dump, fixture, openWebHid, openWebSerial, openWebUsb, parseFirmwareManifest, pickFirmware,
-  requestDfuDevice, dfuUpdate, verifyFirmware, Rejected, Unavailable, raiseSpeed, speedText, riscv, arm, memo, requestRp2Boot, rp2Write, rp2ResetToBoot, checkUf2, getUsbProbes, requestUsbProbe, RP2_BOOT_VID, RP2_BOOT_PID,
+  requestDfuDevice, dfuUpdate, verifyFirmware, Rejected, Unavailable, raiseSpeed, speedText, riscv, arm, memo, requestRp2Boot, rp2Write, rp2ResetToBoot, getUsbProbes, requestUsbProbe, getDfuDevices, RP2_BOOT_VID, RP2_BOOT_PID,
 } from './oep-client.js';
 
 // ---- words ---------------------------------------------------------------------------------------------------
 
 const WORDS = {
   en: {
-    tabSetup: 'Set up',
-    setup1: '1. Firmware', setup1Go: 'Open the firmware tab',
-    setup1Hint: 'Put the OEP firmware on the board first. ESP32-P4 / P4X: over DFU in the firmware tab. RP2040 / RP2350: hold BOOTSEL while plugging it in and copy the .uf2. Classic ESP32: the .merged.bin with esptool. Then connect it with the buttons above and take the lock.',
-    setup2: '2. Wire the target', setupPins: 'List the pins',
-    setup2Hint: 'Wire the target\'s debug lines and GND to free pins of the probe: SWDIO and SWCLK (two wires: RVSWD for WCH RISC-V, SWD for ARM) or SWIO (one wire). Pins with a label are in use already.',
-    setup3: '3. Scan', setupScan: 'Scan the pins checked', setupWire: 'wire', setupUse: 'use',
-    setup3Hint: 'Check the pins you wired in the list above. The scan drives only them, trying them as the line pair both ways round, and lists what answers.',
-    setup4: '4. Name the port', setupPort: 'port', setupPart: 'part', setupNote: 'note', setupApply: 'Set the labels and the record',
-    setup4Hint: 'A port name (a letter, then letters, digits or -, up to 16) names the pins in the probe\'s settings (S.swdio, S.swclk or S.swio) and is saved in the probe. The part number and note go to the probe\'s memo area (oep.probe.memo/port/<port>), for any host to read.',
+    tagline: 'Prepare an OEP probe from the browser: its firmware, the target wired to it, its settings.',
+    unsupported: 'This browser has no WebUSB / Web Serial / WebHID. Use Chrome or Edge, over HTTPS or localhost.',
+    connectUsb: 'Connect', connectSerial: 'Serial', connectHid: 'HID', disconnect: 'Disconnect',
+    takeLock: 'Allow changes', notConnected: 'Not connected', locked: 'changes allowed', noLock: 'read only',
+    tabHome: 'Start', tabHomeDesc: 'What to do',
+    homeTitle: 'What do you want to do?', homeDesc: 'Pick a task. Connect the probe with the button at the top first; to change anything, tick "Allow changes".',
+    tabSetup: 'Prepare a new probe', tabSetupDesc: 'Firmware, wiring, finding the target, naming it',
+    tabFirmware: 'Update the firmware', tabFirmwareDesc: 'The latest release, picked for this probe',
+    tabSettings: 'Settings', tabSettingsDesc: 'Read, change, save, back up',
+    tabTools: 'Try it', tabToolsDesc: 'GPIO, UART, the serial speed',
+    tabDescribe: 'What the probe offers', tabDescribeDesc: 'Everything it declares, as text or JSON',
+    setup1: '1. Firmware', setup1Go: 'Update the firmware',
+    setup1Hint: 'The probe needs the OEP firmware. A board with none yet: write it on "Update the firmware". Then connect it with the button at the top and tick "Allow changes".',
+    setup2: '2. Wire the target', setupPins: 'List the probe\'s pins',
+    setup2Hint: 'Wire the target chip\'s debug lines and GND to free pins of the probe: SWDIO and SWCLK (two wires: RVSWD for WCH RISC-V chips, SWD for ARM) or SWIO (one wire). Pins that already have a name are in use.',
+    setup3: '3. Find the target', setupScan: 'Search the pins ticked', setupWire: 'debug line',
+    setup3Hint: 'Tick the pins you wired in the list above. The search drives only those pins, trying them both ways round, and lists the chips that answer.',
+    setup4: '4. Name the connection', setupPort: 'connection name', setupPart: 'part number', setupNote: 'note', setupApply: 'Save the names',
+    setup4Hint: 'Give the target a connection name (a letter, then letters, digits or -, up to 16, e.g. x035). Its pins get names from it (x035.swdio, x035.swclk) in the probe\'s settings, saved in the probe. The part number and note are kept in the probe too, for any computer to read.',
     setup5: '5. Use it',
-    setup5Hint: 'Tools that take OEP addresses (the cores, oep-client-python) reach the port with this address, from any host the probe is plugged into.',
-    setupNoScan: 'This probe has no scan on that wire.', setupNoPins: 'Check at least the pins of one line pair.',
-    setupNothing: 'nothing answered on those pins', setupPick: 'Pick a found target first.',
-    unsupported: 'This browser has no WebUSB / WebSerial / WebHID. Use Chrome or Edge, over HTTPS or localhost.',
-    connectUsb: 'Connect (USB)', connectSerial: 'Connect (serial)', connectHid: 'Connect (HID)', disconnect: 'Disconnect',
-    takeLock: 'Take the lock (to change things)', notConnected: 'Not connected.',
-    tabDescribe: 'Probe', tabSettings: 'Settings', tabTools: 'Tools', tabFirmware: 'Firmware',
+    setup5Hint: 'Tools that take an OEP address reach this target with it, whichever computer the probe is plugged into.',
+    setupNoScan: 'This probe cannot search on that debug line.', setupNoPins: 'Tick at least the two pins of one line pair.',
+    setupNothing: 'No chip answered on those pins', setupPick: 'Pick a chip that was found first.',
     describeRun: 'Read everything it declares', saveJson: 'Save as JSON', read: 'Read', saveToProbe: 'Save in the probe',
-    unsetAll: 'Unset all (save after it to empty the storage)', fixedValues: 'values fixed by the probe (no set / unset)', exportFile: 'Export to a file', importFile: 'Import a file',
-    importAsk: 'Make the probe\'s values this file\'s?', addItem: 'Set a value',
+    unsetAll: 'Clear all (save after it to empty the stored settings)', fixedValues: 'values fixed by the probe (cannot be changed)',
+    exportFile: 'Back up to a file', importFile: 'Restore from a file', importAsk: 'Make the probe\'s settings this file\'s?', addItem: 'Set a value',
+    category: 'category', item: 'item', key: 'which', value: 'value',
     secretHint: 'A secret: the probe never gives it back and this page never shows it. Left empty, the value it has is kept.',
-    uart: 'UART', set: 'Set', remove: 'Remove', configure: 'Configure', send: 'Send',
-    gpioHint: 'Plan the channel to oep.fixture.gpio first (it takes the pin for this session).', gpioPlan: 'Plan it',
-    uartHint: 'The UART needs its RX / TX planned to oep.fixture.uart in this session.',
-    fwP4: 'ESP32-P4 (DFU over its HS port)',
-    fwP4Hint: 'Pick OepProbe-esp32p4-<version>.bin (the app image from the Release) and, to check it, firmware-<version>.json. The probe restarts into it; its settings stay.',
-    fwWrite: 'Choose the device and write', fwEsp32: 'ESP32 (USB-Serial/JTAG, UART bridge)',
-    fwEsp32Hint: 'Write OepProbe-<model>-<version>.merged.bin at 0x0 with esptool (esptool.py or the web esptool). Not in this page yet.',
-    fwRp2: 'RP2040 / RP2350',
-    fwRp2Hint: 'Pick OepProbe-<model>-<version>.uf2 (and, to check it, firmware-<version>.json), then Write. A connected probe goes into its boot ROM by itself (the first time the browser may ask for the probe and for "RP2 Boot", then remembers them); a board with no firmware yet: hold BOOTSEL while plugging it in. It is written over USB, read back and restarted; its settings stay. On Linux the boot ROM needs a udev rule for 2e8a:0003 / 2e8a:000f.',
-    fwRp2Write: 'Write', fwUf2: 'image (.uf2)', fwRp2Hold: 'Hold BOOTSEL while plugging the board in, then choose "RP2 Boot".',
-    locked: 'lock held', noLock: 'no lock',
-    speedHint: 'A UART bridge (serial) probe that offers port_speed runs faster for this session: each candidate is tried, confirmed at the new rate and committed - the first that passes is kept (the probe goes back to 115200 when the lock is released); in use, a rate whose frames keep breaking is left for the session. Which rates pass depends on the bridge chip. The default is 500000: a faster rate is tried only when you enter it here, and is used only after full frames ran 1 s each way at it (host guide §17).',
+    set: 'Set', remove: 'Remove', configure: 'Configure', send: 'Send',
+    gpioHint: 'Take the pin for GPIO first (it is kept for this connection).', gpioPlan: 'Take the pin',
+    uartHint: 'The UART needs its RX / TX pins taken for this connection.',
+    speedHint: 'A probe behind a USB-UART bridge can run faster for this connection: each rate is tried and kept only after full frames ran 1 s each way at it; the probe goes back to 115200 when changes are no longer allowed. The default is 500000.',
     speedTry: 'Try the rates',
+    fwLatest: 'This probe', fwUpdate: 'Update to the latest',
+    fwNew: 'A board with no firmware yet', fwBoard: 'board', fwNewWrite: 'Write',
+    fwNewHint: 'Hold the BOOTSEL button while plugging the board in, then Write and choose "RP2 Boot". The latest release is written.',
+    fwOther: 'The classic ESP32, the ESP32-P4 / P4X with no firmware and the WCH CH32 are written with their own tools for now (esptool, WCH-LinkUtility).',
+    fwRp2Hold: 'Hold BOOTSEL while plugging the board in, then choose "RP2 Boot".',
   },
   ja: {
-    tabSetup: 'セットアップ',
-    setup1: '1. firmware', setup1Go: 'firmware のタブを開く',
-    setup1Hint: '先にボードに OEP の firmware を書きます。ESP32-P4 / P4X は firmware のタブから DFU で。RP2040 / RP2350 は BOOTSEL を押しながら挿して .uf2 をコピー。classic ESP32 は .merged.bin を esptool で。書けたら上のボタンでつなぎ、ロックを取ります。',
-    setup2: '2. target の配線', setupPins: 'ピンを並べる',
-    setup2Hint: 'target のデバッグの線と GND を、probe の空いたピンにつなぎます。SWDIO と SWCLK（2 線: WCH の RISC-V は RVSWD、ARM は SWD）か、SWIO（1 線）です。label のあるピンはもう使われています。',
-    setup3: '3. スキャン', setupScan: 'チェックしたピンでスキャン', setupWire: '線', setupUse: '使う',
-    setup3Hint: '上の一覧で、配線したピンにチェックを付けます。スキャンはそのピンだけを、線の組として両方の向きで試し、答えたものを並べます。',
-    setup4: '4. 口の名付け', setupPort: '口', setupPart: '型番', setupNote: '注', setupApply: 'label と記録を設定する',
-    setup4Hint: '口の名前（英字で始まり、英字・数字・- で 16 文字まで）で、probe の設定のピンに名前を付けて（S.swdio、S.swclk か S.swio）probe に保存します。型番と注は probe のメモ欄（oep.probe.memo/port/<口>）に置き、どの host からも読めます。',
+    tagline: 'ブラウザから OEP のプローブを準備します。firmware、つないだターゲット、設定。',
+    unsupported: 'このブラウザには WebUSB / Web Serial / WebHID がありません。Chrome か Edge で、HTTPS か localhost で開いてください。',
+    connectUsb: '接続', connectSerial: 'シリアル', connectHid: 'HID', disconnect: '切断',
+    takeLock: '変更を許可', notConnected: '未接続', locked: '変更可', noLock: '読むだけ',
+    tabHome: 'はじめに', tabHomeDesc: '何をするか選ぶ',
+    homeTitle: '何をしますか？', homeDesc: '作業を選びます。先に上のボタンでプローブをつなぎます。何かを変えるときは「変更を許可」にチェックを入れます。',
+    tabSetup: '新しいプローブを準備する', tabSetupDesc: 'firmware、配線、ターゲットを見つける、名前を付ける',
+    tabFirmware: 'firmware を更新する', tabFirmwareDesc: '最新のリリースを、このプローブに合わせて選ぶ',
+    tabSettings: '設定', tabSettingsDesc: '読む、変える、保存する、ファイルに控える',
+    tabTools: '動かしてみる', tabToolsDesc: 'GPIO、UART、シリアルの速さ',
+    tabDescribe: 'プローブの機能', tabDescribeDesc: '宣言をすべて、テキストか JSON で',
+    setup1: '1. firmware', setup1Go: 'firmware を更新する',
+    setup1Hint: 'プローブには OEP の firmware が要ります。まだ無いボードは「firmware を更新する」で書きます。書けたら上のボタンでつなぎ、「変更を許可」にチェックを入れます。',
+    setup2: '2. ターゲットを配線する', setupPins: 'プローブのピンを並べる',
+    setup2Hint: 'ターゲットのチップのデバッグの線と GND を、プローブの空いたピンにつなぎます。SWDIO と SWCLK（2 線: WCH の RISC-V は RVSWD、ARM は SWD）か、SWIO（1 線）です。名前の付いたピンは、もう使われています。',
+    setup3: '3. ターゲットを探す', setupScan: 'チェックしたピンで探す', setupWire: 'デバッグの線',
+    setup3Hint: '上の一覧で、配線したピンにチェックを付けます。探すときはそのピンだけを、両方の向きで試し、答えたチップを並べます。',
+    setup4: '4. 接続に名前を付ける', setupPort: '接続名', setupPart: '型番', setupNote: 'メモ', setupApply: '名前を保存する',
+    setup4Hint: 'ターゲットに接続名を付けます（英字で始まり、英字・数字・- で 16 文字まで。例: x035）。この名前から、そのピンに名前が付き（x035.swdio、x035.swclk）、プローブの設定に保存されます。型番とメモもプローブに置かれ、どのパソコンからも読めます。',
     setup5: '5. 使う',
-    setup5Hint: 'OEP のアドレスを受ける道具（コア、oep-client-python）は、このアドレスでこの口に届きます。probe をどの host につないでも同じです。',
-    setupNoScan: 'この probe はその線のスキャンを持ちません。', setupNoPins: '少なくとも線の組 1 つ分のピンにチェックを付けます。',
-    setupNothing: 'そのピンでは何も答えなかった', setupPick: '先に見つかった target を選びます。',
-    unsupported: 'このブラウザには WebUSB / WebSerial / WebHID がありません。Chrome か Edge で、HTTPS か localhost で開いてください。',
-    connectUsb: '接続（USB）', connectSerial: '接続（シリアル）', connectHid: '接続（HID）', disconnect: '切断',
-    takeLock: 'ロックを取る（変更するとき）', notConnected: 'つながっていません。',
-    tabDescribe: 'probe', tabSettings: '設定', tabTools: '操作', tabFirmware: 'firmware',
-    describeRun: '宣言をすべて読む', saveJson: 'JSON で保存', read: '読む', saveToProbe: 'probe に保存',
-    unsetAll: 'すべて消す（その後に保存すると保存領域が空になる）', fixedValues: 'probe が値を固定（変更不可）', exportFile: 'ファイルに書き出す', importFile: 'ファイルを読み込む',
-    importAsk: 'probe の値をこのファイルの内容にしますか？', addItem: '値を設定する',
-    secretHint: '秘密の値です。probe は返さず、このページも表示しません。空のままなら今の値を保ちます。',
-    uart: 'UART', set: '設定', remove: '消す', configure: '設定', send: '送る',
-    gpioHint: '先にその channel を oep.fixture.gpio に plan します（このセッションの間、ピンを持ちます）。', gpioPlan: 'plan する',
-    uartHint: 'UART は、このセッションで RX / TX を oep.fixture.uart に plan する必要があります。',
-    fwP4: 'ESP32-P4（HS の口で DFU）',
-    fwP4Hint: 'OepProbe-esp32p4-<version>.bin（Release の app の image）を選び、確かめるなら firmware-<version>.json も選びます。probe はそれで再起動し、設定は残ります。',
-    fwWrite: 'デバイスを選んで書く', fwEsp32: 'ESP32（USB-Serial/JTAG、UART bridge）',
-    fwEsp32Hint: 'OepProbe-<model>-<version>.merged.bin を esptool（esptool.py か Web の esptool）で 0x0 に書きます。このページではまだできません。',
-    fwRp2: 'RP2040 / RP2350',
-    fwRp2Hint: 'OepProbe-<model>-<version>.uf2 を選び（確かめるなら firmware-<version>.json も）、「書く」を押します。つないでいる probe は自分で boot ROM に入ります（初めの 1 回だけ、ブラウザが probe と「RP2 Boot」を選ばせ、その後は覚えます）。まだ firmware の無いボードは、BOOTSEL を押しながら挿します。USB から書き、読み戻して確かめ、再起動します。設定は残ります。Linux では boot ROM（2e8a:0003 / 2e8a:000f）に udev の規則が要ります。',
-    fwRp2Write: '書く', fwUf2: 'image（.uf2）', fwRp2Hold: 'BOOTSEL を押しながらボードを挿し、「RP2 Boot」を選びます。',
-    locked: 'ロックあり', noLock: 'ロックなし',
-    speedHint: 'port_speed を持つ UART bridge（シリアル）の probe は、このセッションの間速くできます。候補を順に試し、新しい速さで confirm して決め、最初に通った速さを使います（ロックを放すと probe は 115200 に戻る）。使っている間にフレームが壊れ続ける速さはそのセッションでは降ります。通る速さは変換チップで決まります。既定は 500000 で、それより速い速さはここに入れたときだけ試し、両方向それぞれ 1 秒、最大のフレームを流して通ったときだけ使います（oep-if-link §3 の義務 7）。',
+    setup5Hint: 'OEP のアドレスを受ける道具は、このアドレスでこのターゲットに届きます。プローブをどのパソコンにつないでも同じです。',
+    setupNoScan: 'このプローブは、そのデバッグの線で探せません。', setupNoPins: '線の組 1 つ分（2 本）のピンに、少なくともチェックを付けます。',
+    setupNothing: 'そのピンでは、どのチップも答えませんでした', setupPick: '先に、見つかったチップを選びます。',
+    describeRun: '宣言をすべて読む', saveJson: 'JSON で保存', read: '読む', saveToProbe: 'プローブに保存',
+    unsetAll: 'すべて消す（その後に保存すると、保存した設定が空になる）', fixedValues: 'プローブが固定した値（変えられない）',
+    exportFile: 'ファイルに控える', importFile: 'ファイルから戻す', importAsk: 'プローブの設定を、このファイルの内容にしますか？', addItem: '値を設定する',
+    category: '分類', item: '項目', key: '対象', value: '値',
+    secretHint: '秘密の値です。プローブは返さず、このページも表示しません。空のままなら今の値を保ちます。',
+    set: '設定', remove: '消す', configure: '設定', send: '送る',
+    gpioHint: '先にそのピンを GPIO 用に取ります（この接続の間、持ち続けます）。', gpioPlan: 'ピンを取る',
+    uartHint: 'UART は、この接続の間、RX と TX のピンを取る必要があります。',
+    speedHint: 'USB-UART の変換チップを通すプローブは、この接続の間、速くできます。速さを順に試し、両方向それぞれ 1 秒、最大のフレームを流して通ったときだけ使います。「変更を許可」を外すと、プローブは 115200 に戻ります。既定は 500000 です。',
     speedTry: '速さを試す',
+    fwLatest: 'このプローブ', fwUpdate: '最新に更新する',
+    fwNew: 'まだ firmware の無いボード', fwBoard: 'ボード', fwNewWrite: '書く',
+    fwNewHint: 'BOOTSEL のボタンを押しながらボードを挿し、「書く」を押して「RP2 Boot」を選びます。最新のリリースが書かれます。',
+    fwOther: 'classic ESP32、firmware の無い ESP32-P4 / P4X、WCH の CH32 は、今はそれぞれの道具（esptool、WCH-LinkUtility）で書きます。',
+    fwRp2Hold: 'BOOTSEL を押しながらボードを挿し、「RP2 Boot」を選びます。',
   },
 };
+/** The language: the one chosen here before, else the browser's (navigator.languages), else English. */
+const LANGS = ['en', 'ja'];
 /** @type {'en' | 'ja'} */
-let lang = (() => { try { return localStorage.getItem('oep-lang') === 'ja' ? 'ja' : 'en'; } catch { return 'en'; } })();
+let lang = (() => {
+  try { const v = localStorage.getItem('oep-lang'); if (v && LANGS.includes(v)) return /** @type {'en' | 'ja'} */ (v); } catch { /* none */ }
+  for (const l of navigator.languages ?? [navigator.language]) {
+    const base = String(l).toLowerCase().split('-')[0];
+    if (LANGS.includes(base)) return /** @type {'en' | 'ja'} */ (base);
+  }
+  return 'en';
+})();
 /** @param {keyof typeof WORDS.en} key */
 const t = (key) => WORDS[lang][key] ?? WORDS.en[key];
 
@@ -93,8 +110,15 @@ function applyWords() {
     const key = /** @type {keyof typeof WORDS.en} */ (el.getAttribute('data-i18n'));
     el.textContent = t(key);
   }
-  $('lang').textContent = lang === 'en' ? '日本語' : 'English';
+  // a label's own words: its first text node, before its input
+  for (const el of document.querySelectorAll('[data-i18n-label]')) {
+    const key = /** @type {keyof typeof WORDS.en} */ (el.getAttribute('data-i18n-label'));
+    const node = [...el.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && n.textContent?.trim());
+    if (node) node.textContent = `${t(key)} `;
+  }
+  /** @type {HTMLSelectElement} */ ($('lang-select')).value = lang;
   showProbe();
+  showFirmware();
 }
 
 // ---- state and helpers ---------------------------------------------------------------------------------------
@@ -141,6 +165,8 @@ function refreshButtons() {
     el.disabled = need === 'host' ? !host : need === 'lock' ? !host || !locked : need === 'dump' ? !caps : false;
   }
   for (const id of ['connect-usb', 'connect-serial', 'connect-hid']) /** @type {HTMLButtonElement} */ ($(id)).disabled = !!host;
+  showProbe();
+  showFirmware();
   /** @type {HTMLButtonElement} */ ($('disconnect')).disabled = !host;
   input('lock').disabled = !host;
   input('lock').checked = locked;
@@ -148,10 +174,19 @@ function refreshButtons() {
 
 function showProbe() {
   const el = $('probe');
+  $('status').classList.toggle('connected', !!(host && info));
   if (!host || !info) { el.textContent = t('notConnected'); return; }
-  el.textContent = [`${info.model ?? '?'} ${info.chip ? `(${info.chip})` : ''}`, `unit ${info.unitId ?? '?'}`,
-    `firmware ${info.firmware ?? '?'}`, host.link.transport.kind ?? '',
-    info.maxOpMs !== null ? `max op ${info.maxOpMs} ms` : '', locked ? t('locked') : t('noLock')].filter(Boolean).join(' · ');
+  el.textContent = [`${info.model ?? '?'}`, info.unitId ?? '?', info.firmware ?? '?', host.link.transport.kind ?? '',
+    locked ? t('locked') : t('noLock')].filter(Boolean).join(' · ');
+}
+
+/** @param {string} name the tab to show */
+function showTab(name) {
+  if (!document.getElementById(`tab-${name}`)) name = 'home';
+  if (location.hash !== `#${name}`) history.replaceState(null, '', name === 'home' ? location.pathname + location.search : `#${name}`);
+  for (const x of document.querySelectorAll('nav.side button')) x.classList.toggle('active', x.getAttribute('data-tab') === name);
+  for (const sec of document.querySelectorAll('section.tab')) /** @type {HTMLElement} */ (sec).hidden = sec.id !== `tab-${name}`;
+  window.scrollTo(0, 0);
 }
 
 // ---- connecting ------------------------------------------------------------------------------------------------
@@ -419,31 +454,108 @@ function wireTools() {
 
 // ---- firmware ------------------------------------------------------------------------------------------------------
 
-async function writeFirmware() {
-  const imageFile = input('fw-image').files?.[0];
-  if (!imageFile) throw new Error('pick the .bin image first');
-  const image = new Uint8Array(await imageFile.arrayBuffer());
-  const manifestFile = input('fw-manifest').files?.[0];
-  if (manifestFile) {
-    const manifest = parseFirmwareManifest(JSON.parse(await manifestFile.text()));
-    const entry = manifest.firmware.find((f) => f.file === imageFile.name) ?? pickFirmware(manifest, { model: 'esp32p4', kind: 'app' });
-    if (!entry) throw new Error(`${manifestFile.name} lists no ${imageFile.name}`);
-    await verifyFirmware(image, entry);
-    log(`sha256 matches ${entry.file}`);
-  }
-  if (host) await disconnect();
-  const device = await requestDfuDevice();
+/** The latest release's OepProbe firmware the page was built with (scripts/fetch-firmware.js: ./firmware/). */
+/** @type {any} */ let release = null;
+
+async function loadRelease() {
+  try {
+    const r = await fetch('./firmware/firmware.json', { cache: 'no-cache' });
+    if (r.ok) release = { ...parseFirmwareManifest(await r.json()) };
+  } catch { release = null; }
+  showFirmware();
+}
+
+const KIND = { esp32p4: 'app', esp32p4x: 'app', rp2040: 'uf2', rp2350: 'uf2' };
+
+function showFirmware() {
+  $('fw-release').textContent = release ? `OepProbe ${release.version}` : '-';
+  const el = $('fw-probe');
+  if (!host || !info) { el.textContent = t('notConnected'); return; }
+  const supported = /** @type {Record<string, string>} */ (KIND)[info.model ?? ''];
+  el.textContent = `${info.model ?? '?'} · ${info.firmware ?? '?'}` + (release && supported ? ` → ${release.version}` : '');
+  /** @type {HTMLButtonElement} */ ($('fw-update')).disabled = !supported || !release;
+}
+
+/** The latest image for `model`, fetched from beside the page and checked against its sha256. @param {string} model */
+async function latestImage(model) {
+  if (!release) throw new Error('no firmware list beside this page');
+  const kind = /** @type {Record<string, string>} */ (KIND)[model];
+  const entry = kind && pickFirmware(release, { model, kind });
+  if (!entry) throw new Error(`the latest release has no ${model} firmware this page can write`);
+  const r = await fetch(`./firmware/${entry.file}`);
+  if (!r.ok) throw new Error(`${entry.file}: HTTP ${r.status}`);
+  return verifyFirmware(new Uint8Array(await r.arrayBuffer()), entry);
+}
+
+/** @param {{ done: number, total: number, text: string }} p */
+function progress(p) {
   const bar = /** @type {HTMLProgressElement} */ ($('fw-progress'));
   bar.hidden = false;
-  bar.max = image.length;
+  bar.max = p.total;
+  bar.value = p.done;
+  $('fw-status').textContent = p.text;
+}
+
+/** The ESP32-P4 / P4X: its DFU interface (the same USB device as the probe). @param {Uint8Array} image */
+async function updateOverDfu(image) {
+  const unitId = info?.unitId;
+  await disconnect();
+  const device = (await getDfuDevices()).find((d) => (d.serialNumber ?? '').toLowerCase() === (unitId ?? '').toLowerCase())
+    ?? await requestDfuDevice();
   const t0 = performance.now();
-  await dfuUpdate(device, image, { onProgress: (p) => {          // a DfuProgress: phase, written, total, block
-    bar.max = p.total;
-    bar.value = p.written;
-    $('fw-status').textContent = p.phase === 'manifest' ? `${p.total} bytes written: the probe checks the image`
-      : `${p.written} / ${p.total} bytes`;
-  } });
-  $('fw-status').textContent = `${image.length} bytes in ${((performance.now() - t0) / 1000).toFixed(1)} s: the probe restarts into it`;
+  await dfuUpdate(device, image, { onProgress: (p) => progress({ done: p.written, total: p.total,
+    text: p.phase === 'manifest' ? 'the probe checks the image' : `${p.written} / ${p.total} bytes` }) });
+  return (performance.now() - t0) / 1000;
+}
+
+/** The boot ROM of `model` the browser was given before, if it is on the bus. @param {'rp2040' | 'rp2350'} model */
+async function grantedBoot(model) {
+  const usb = /** @type {any} */ (navigator).usb;
+  return (await usb.getDevices()).find((/** @type {any} */ d) => d.vendorId === RP2_BOOT_VID && d.productId === RP2_BOOT_PID[model]) ?? null;
+}
+
+/** An RP2: the connected probe into its boot ROM by its reset interface (when one is connected), then PICOBOOT.
+ * @param {'rp2040' | 'rp2350'} model @param {Uint8Array} image */
+async function updateRp2(model, image) {
+  let asked = false;
+  if (host && info) {
+    const unitId = info.unitId;
+    let device = (await getUsbProbes({ unitId }))[0] ?? null;
+    await disconnect();
+    if (!device) device = await requestUsbProbe();
+    if (!await rp2ResetToBoot(device)) throw new Error('this probe has no reset interface');
+    asked = true;
+  }
+  let boot = null;
+  for (let i = 0; i < (asked ? 20 : 1) && !boot; i++) {
+    boot = await grantedBoot(model);
+    if (!boot && asked) await new Promise((r) => setTimeout(r, 250));
+  }
+  if (!boot) {
+    $('fw-status').textContent = t('fwRp2Hold');
+    boot = await requestRp2Boot(model);
+  }
+  const t0 = performance.now();
+  await rp2Write(boot, image, { model, onProgress: (p) => progress({ done: p.done, total: p.total,
+    text: p.phase === 'reboot' ? 'written and read back: restarting' : `${p.done} / ${p.total}` }) });
+  return (performance.now() - t0) / 1000;
+}
+
+async function updateProbe() {
+  if (!info) return;
+  const model = /** @type {string} */ (info.model);
+  const image = await latestImage(model);
+  const s = KIND[/** @type {keyof typeof KIND} */ (model)] === 'app' ? await updateOverDfu(image)
+    : await updateRp2(/** @type {'rp2040' | 'rp2350'} */ (model), image);
+  $('fw-status').textContent = `OepProbe ${release.version}: written in ${s.toFixed(1)} s, the probe restarts into it`;
+}
+
+async function writeNewBoard() {
+  const model = /** @type {'rp2040' | 'rp2350'} */ (/** @type {HTMLSelectElement} */ ($('fw-new-model')).value);
+  const image = await latestImage(model);
+  if (host) await disconnect();
+  const s = await updateRp2(model, image);
+  $('fw-status').textContent = `OepProbe ${release.version}: written in ${s.toFixed(1)} s, the board restarts into it`;
 }
 
 // ---- set up: wire, scan, name the port, record it (host guide §5.3, oep-if-memo §4.3) ------------------------------
@@ -566,76 +678,23 @@ async function applyPort() {
   await listPins();
 }
 
-async function rp2Image() {
-  const model = /** @type {'rp2040' | 'rp2350'} */ (/** @type {HTMLSelectElement} */ ($('rp2-model')).value);
-  const file = input('rp2-image').files?.[0];
-  if (!file) throw new Error('pick the .uf2 image first');
-  const image = new Uint8Array(await file.arrayBuffer());
-  checkUf2(image, { model });
-  const manifestFile = input('rp2-manifest').files?.[0];
-  if (manifestFile) {
-    const manifest = parseFirmwareManifest(JSON.parse(await manifestFile.text()));
-    const entry = manifest.firmware.find((f) => f.file === file.name) ?? pickFirmware(manifest, { model, kind: 'uf2' });
-    if (!entry) throw new Error(`${manifestFile.name} lists no ${file.name}`);
-    await verifyFirmware(image, entry);
-    log(`sha256 matches ${entry.file}`);
-  }
-  return { model, image };
-}
-
-/** The boot ROM of `model` the browser was given before, if it is on the bus. @param {'rp2040' | 'rp2350'} model */
-async function grantedBoot(model) {
-  const usb = /** @type {any} */ (navigator).usb;
-  return (await usb.getDevices()).find((/** @type {any} */ d) => d.vendorId === RP2_BOOT_VID && d.productId === RP2_BOOT_PID[model]) ?? null;
-}
-
-/** Into the boot ROM: the connected probe by its reset interface (its USB device: one the browser was given, or chosen
- * once); not connected: nothing (a board with no firmware comes up in BOOTSEL by its button). -> whether it was asked. */
-async function rp2IntoBoot() {
-  if (!host || !info) return false;
-  const unitId = info.unitId;
-  let device = (await getUsbProbes({ unitId }))[0] ?? null;
-  await disconnect();
-  if (!device) device = await requestUsbProbe();
-  if (!await rp2ResetToBoot(device)) throw new Error('this probe has no reset interface');
-  return true;
-}
-
-async function rp2WriteImage() {
-  const { model, image } = await rp2Image();
-  const asked = await rp2IntoBoot();
-  let device = null;
-  for (let i = 0; i < (asked ? 20 : 1) && !device; i++) {
-    device = await grantedBoot(model);
-    if (!device && asked) await new Promise((r) => setTimeout(r, 250));
-  }
-  if (!device) {
-    $('rp2-status').textContent = asked ? '' : t('fwRp2Hold');
-    device = await requestRp2Boot(model);
-  }
-  const bar = /** @type {HTMLProgressElement} */ ($('rp2-progress'));
-  bar.hidden = false;
-  const t0 = performance.now();
-  const r = await rp2Write(device, image, { model, onProgress: (p) => {
-    bar.max = p.total;
-    bar.value = p.done;
-    $('rp2-status').textContent = p.phase === 'reboot' ? 'written and read back: restarting' : `${p.done} / ${p.total} sectors`;
-  } });
-  $('rp2-status').textContent = `${r.sectors} sectors written and read back in ${((performance.now() - t0) / 1000).toFixed(1)} s: the probe restarts into it`;
-}
-
 // ---- start ---------------------------------------------------------------------------------------------------------
 
 function main() {
   $('version').textContent = `oep-client-js ${VERSION}`;
   const nav = /** @type {any} */ (navigator);
   if (!nav.usb && !nav.serial && !nav.hid) $('unsupported').hidden = false;
-  $('lang').onclick = () => { lang = lang === 'en' ? 'ja' : 'en'; try { localStorage.setItem('oep-lang', lang); } catch { /* none */ } applyWords(); };
-  for (const b of document.querySelectorAll('nav.tabs button')) {
-    /** @type {HTMLButtonElement} */ (b).onclick = () => {
-      for (const x of document.querySelectorAll('nav.tabs button')) x.classList.toggle('active', x === b);
-      for (const s of document.querySelectorAll('section.tab')) /** @type {HTMLElement} */ (s).hidden = s.id !== `tab-${b.getAttribute('data-tab')}`;
-    };
+  const langSelect = /** @type {HTMLSelectElement} */ ($('lang-select'));
+  langSelect.onchange = () => {
+    lang = /** @type {'en' | 'ja'} */ (langSelect.value);
+    try { localStorage.setItem('oep-lang', lang); } catch { /* none */ }
+    applyWords();
+  };
+  for (const b of document.querySelectorAll('nav.side button')) {
+    /** @type {HTMLButtonElement} */ (b).onclick = () => showTab(/** @type {string} */ (b.getAttribute('data-tab')));
+  }
+  for (const b of document.querySelectorAll('.choices [data-go]')) {
+    /** @type {HTMLButtonElement} */ (b).onclick = () => showTab(/** @type {string} */ (b.getAttribute('data-go')));
   }
   $('connect-usb').onclick = () => connectWith(() => openWebUsb());
   $('connect-serial').onclick = () => connectWith(() => openWebSerial());
@@ -657,9 +716,9 @@ function main() {
   const settingForm = /** @type {HTMLFormElement} */ ($('form-setting'));
   settingForm.onchange = (e) => { if (/** @type {HTMLElement} */ (e.target).id !== 'setting-value') fillSettingForm(); };
   settingForm.onsubmit = (e) => { e.preventDefault(); act(setFromForm); };
-  $('fw-dfu').onclick = () => act(writeFirmware);
-  $('rp2-write').onclick = () => act(rp2WriteImage);
-  $('setup-to-firmware').onclick = () => /** @type {HTMLButtonElement} */ (document.querySelector('nav.tabs button[data-tab=firmware]')).click();
+  $('fw-update').onclick = () => act(updateProbe);
+  $('fw-new-write').onclick = () => act(writeNewBoard);
+  $('setup-to-firmware').onclick = () => showTab('firmware');
   $('setup-pins').onclick = () => act(listPins);
   $('setup-scan').onclick = () => act(scanPins);
   input('setup-port').oninput = preview;
@@ -668,6 +727,8 @@ function main() {
   wireTools();
   applyWords();
   refreshButtons();
+  loadRelease();
+  showTab(location.hash.slice(1) || 'home');   // #setup, #firmware, ... open that task
 }
 
 main();

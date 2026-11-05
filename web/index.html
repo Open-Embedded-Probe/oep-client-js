@@ -8,36 +8,44 @@
   <link rel="stylesheet" href="styles/app.css">
 </head>
 <body>
-  <header>
-    <h1>OEP Probe Tool</h1>
-    <span id="version" class="muted"></span>
-    <span class="spacer"></span>
-    <button id="lang" type="button">日本語</button>
-  </header>
-
-  <p id="unsupported" class="warn" hidden data-i18n="unsupported"></p>
-
-  <section id="connection" class="card">
-    <div class="row">
-      <button id="connect-usb" type="button" data-i18n="connectUsb"></button>
+  <header class="topbar">
+    <div>
+      <h1>OEP Probe Tool</h1>
+      <p data-i18n="tagline"></p>
+    </div>
+    <div class="top-actions">
+      <span id="status" class="status-pill"><span class="dot"></span><span id="probe" data-i18n="notConnected"></span></span>
+      <button id="connect-usb" class="button" type="button" data-i18n="connectUsb"></button>
       <button id="connect-serial" type="button" data-i18n="connectSerial"></button>
       <button id="connect-hid" type="button" data-i18n="connectHid"></button>
       <button id="disconnect" type="button" data-i18n="disconnect" disabled></button>
       <label class="check"><input id="lock" type="checkbox" disabled> <span data-i18n="takeLock"></span></label>
+      <select id="lang-select" aria-label="language"><option value="en">English</option><option value="ja">日本語</option></select>
     </div>
-    <div id="probe" class="muted" data-i18n="notConnected"></div>
-  </section>
-
-  <nav class="tabs">
-    <button type="button" data-tab="setup" class="active" data-i18n="tabSetup"></button>
-    <button type="button" data-tab="describe" data-i18n="tabDescribe"></button>
-    <button type="button" data-tab="settings" data-i18n="tabSettings"></button>
-    <button type="button" data-tab="tools" data-i18n="tabTools"></button>
-    <button type="button" data-tab="firmware" data-i18n="tabFirmware"></button>
+  </header>
+  <p id="unsupported" class="warn" hidden data-i18n="unsupported"></p>
+  <div class="layout">
+  <nav class="side">
+    <button type="button" data-tab="home" class="active"><span data-i18n="tabHome"></span><small data-i18n="tabHomeDesc"></small></button>
+    <button type="button" data-tab="setup"><span data-i18n="tabSetup"></span><small data-i18n="tabSetupDesc"></small></button>
+    <button type="button" data-tab="firmware"><span data-i18n="tabFirmware"></span><small data-i18n="tabFirmwareDesc"></small></button>
+    <button type="button" data-tab="settings"><span data-i18n="tabSettings"></span><small data-i18n="tabSettingsDesc"></small></button>
+    <button type="button" data-tab="tools"><span data-i18n="tabTools"></span><small data-i18n="tabToolsDesc"></small></button>
+    <button type="button" data-tab="describe"><span data-i18n="tabDescribe"></span><small data-i18n="tabDescribeDesc"></small></button>
   </nav>
-
-  <main>
-    <section id="tab-setup" class="tab">
+  <section class="content">
+    <section id="tab-home" class="tab">
+      <header class="tab-header"><h2 data-i18n="homeTitle"></h2><p data-i18n="homeDesc"></p></header>
+      <div class="choices">
+        <button type="button" class="choice" data-go="setup"><b data-i18n="tabSetup"></b><span data-i18n="tabSetupDesc"></span></button>
+        <button type="button" class="choice" data-go="firmware"><b data-i18n="tabFirmware"></b><span data-i18n="tabFirmwareDesc"></span></button>
+        <button type="button" class="choice" data-go="settings"><b data-i18n="tabSettings"></b><span data-i18n="tabSettingsDesc"></span></button>
+        <button type="button" class="choice" data-go="tools"><b data-i18n="tabTools"></b><span data-i18n="tabToolsDesc"></span></button>
+        <button type="button" class="choice" data-go="describe"><b data-i18n="tabDescribe"></b><span data-i18n="tabDescribeDesc"></span></button>
+      </div>
+    </section>
+    <section id="tab-setup" class="tab" hidden>
+      <header class="tab-header"><h2 data-i18n="tabSetup"></h2><p data-i18n="tabSetupDesc"></p></header>
       <div class="card">
         <h3 data-i18n="setup1"></h3>
         <p data-i18n="setup1Hint"></p>
@@ -76,6 +84,7 @@
       </div>
     </section>
     <section id="tab-describe" class="tab" hidden>
+      <header class="tab-header"><h2 data-i18n="tabDescribe"></h2><p data-i18n="tabDescribeDesc"></p></header>
       <div class="row">
         <button id="describe-run" type="button" data-i18n="describeRun" data-needs="host"></button>
         <button id="describe-save" type="button" data-i18n="saveJson" data-needs="dump"></button>
@@ -84,6 +93,7 @@
     </section>
 
     <section id="tab-settings" class="tab" hidden>
+      <header class="tab-header"><h2 data-i18n="tabSettings"></h2><p data-i18n="tabSettingsDesc"></p></header>
       <div class="row">
         <button id="settings-read" type="button" data-i18n="read" data-needs="host"></button>
         <button id="settings-save" type="button" data-i18n="saveToProbe" data-needs="lock"></button>
@@ -107,6 +117,7 @@
     </section>
 
     <section id="tab-tools" class="tab" hidden>
+      <header class="tab-header"><h2 data-i18n="tabTools"></h2><p data-i18n="tabToolsDesc"></p></header>
       <div class="card">
         <h3>GPIO</h3>
         <p class="muted" data-i18n="gpioHint"></p>
@@ -151,43 +162,32 @@
     </section>
 
     <section id="tab-firmware" class="tab" hidden>
+      <header class="tab-header"><h2 data-i18n="tabFirmware"></h2><p data-i18n="tabFirmwareDesc"></p></header>
       <div class="card">
-        <h3 data-i18n="fwP4"></h3>
-        <p class="muted" data-i18n="fwP4Hint"></p>
-        <div class="row">
-          <label data-i18n-label="fwImage">image (.bin) <input id="fw-image" type="file" accept=".bin"></label>
-          <label data-i18n-label="fwManifest">firmware-*.json <input id="fw-manifest" type="file" accept=".json"></label>
-          <button id="fw-dfu" type="button" data-i18n="fwWrite"></button>
-        </div>
+        <h3 data-i18n="fwLatest"></h3>
+        <p id="fw-release" class="muted"></p>
+        <p id="fw-probe"></p>
+        <div class="row"><button id="fw-update" class="button" type="button" data-i18n="fwUpdate" disabled></button></div>
         <progress id="fw-progress" max="1" value="0" hidden></progress>
         <div id="fw-status" class="muted"></div>
       </div>
       <div class="card">
-        <h3 data-i18n="fwEsp32"></h3>
-        <p data-i18n="fwEsp32Hint"></p>
-      </div>
-      <div class="card">
-        <h3 data-i18n="fwRp2"></h3>
-        <p data-i18n="fwRp2Hint"></p>
+        <h3 data-i18n="fwNew"></h3>
+        <p data-i18n="fwNewHint"></p>
         <div class="row">
-          <label>model <select id="rp2-model"><option value="rp2040">rp2040</option><option value="rp2350">rp2350</option></select></label>
-          <label data-i18n-label="fwUf2">image (.uf2) <input id="rp2-image" type="file" accept=".uf2"></label>
-          <label data-i18n-label="fwManifest">firmware-*.json <input id="rp2-manifest" type="file" accept=".json"></label>
+          <label><span data-i18n="fwBoard"></span> <select id="fw-new-model">
+            <option value="rp2040">Raspberry Pi Pico (RP2040)</option><option value="rp2350">Raspberry Pi Pico 2 (RP2350)</option></select></label>
+          <button id="fw-new-write" type="button" data-i18n="fwNewWrite"></button>
         </div>
-        <div class="row">
-          <button id="rp2-write" type="button" data-i18n="fwRp2Write"></button>
-        </div>
-        <progress id="rp2-progress" max="1" value="0" hidden></progress>
-        <div id="rp2-status" class="muted"></div>
+        <p class="muted" data-i18n="fwOther"></p>
       </div>
     </section>
-  </main>
-
-  <footer class="muted">
+  </section>
+  </div>
+  <footer>
     <span id="log"></span>
-    <a href="https://github.com/Open-Embedded-Probe/oep-client-js">oep-client-js</a>
+    <span><span id="version"></span> · <a href="https://github.com/Open-Embedded-Probe/oep-client-js">GitHub</a></span>
   </footer>
-
   <script type="module" src="app.js"></script>
 </body>
 </html>
