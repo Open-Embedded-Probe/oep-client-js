@@ -47,7 +47,11 @@ try {
         res.setHeader('Content-Type', 'text/javascript');
         res.end(`export * from './src/index.js'; export * from './src/browser/index.js';
           import {connect} from './src/open.js';
-          export async function openWebUsb(){
+          export async function getUsbProbes(){return [{productName:'OEP Probe',serialNumber:'fafe00000035'},{productName:'OEP Probe',serialNumber:'second-probe'}];}
+          export async function openWebSerial(){const h=await openWebUsb();globalThis.__connectionMethod='serial';return h;}
+          export async function openWebUsb(device,opts){
+            globalThis.__connectionMethod='usb';
+            globalThis.__selectedProbe=device?.serialNumber??null;
             await fetch('/_test/open'); let active=true;
             return connect({kind:'usb',framing:'length',keepsBoundaries:true,
               start(onData,onClose){(async()=>{while(active){try{const r=await fetch('/_test/read');const b=new Uint8Array(await r.arrayBuffer());if(!active)return;if(!b.length){onClose();return;}onData(b);}catch(e){if(active)onClose(e);return;}}})();},
@@ -105,11 +109,21 @@ try {
   await send('Runtime.enable'); await send('Page.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: base });
-  await until('document.getElementById("connect-usb") !== null'); await snapshot('01-start');
-  for (const hash of ['probe', 'targets', 'target/new', 'signals/pwm', 'debug', 'tools', 'settings', 'storage', 'firmware', 'diagnostics', 'help', 'details', 'try', 'unknown']) {
+  await until('[...document.querySelectorAll("#screen a")].some(a=>a.hash==="#connect")'); await snapshot('01-start');
+  assert.equal(await evaluate('getComputedStyle(document.querySelector("#screen .button")).minHeight'), '50px');
+  for (const hash of ['connect', 'probe', 'targets', 'target/new', 'signals/pwm', 'debug', 'tools', 'settings', 'storage', 'firmware', 'diagnostics', 'help', 'details', 'try', 'unknown']) {
     await route(hash); assert.ok(await heading(), hash); assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, hash);
   }
-  await route('settings'); await click('USB'); await succeeded(); assert.equal(await heading(), 'Settings', 'deep link resumes after connection');
+  await route('home');
+  assert.equal(await evaluate('document.querySelectorAll("#screen button").length'), 0, 'the first screen does not ask users to choose a transport');
+  await route('settings');
+  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.hash==="#connect").click()'); await delay(100);
+  assert.equal(await evaluate('document.getElementById("connect-selected").disabled'), true, 'choose a board before connecting');
+  await evaluate('document.querySelector("input[name=connect-board][value=p4]").click()');
+  assert.match(await evaluate('document.getElementById("connect-board").textContent'), /Logic capture|logic capture/);
+  assert.equal(await evaluate('document.getElementById("connect-selected").disabled'), false);
+  await snapshot('01b-probe-choices');
+  await click('Select device and connect'); await succeeded(); assert.equal(await heading(), 'Settings', 'deep link resumes after connection');
   assert.match(await evaluate('document.getElementById("connection-bar").textContent'), /Read only/);
   await route('probe'); await snapshot('02-probe');
   await click('Enable changes'); await succeeded();
@@ -123,6 +137,11 @@ try {
   await click('Start output'); await succeeded(); assert.match(await evaluate('document.getElementById("screen").textContent'), /out0: GPIO4/); await snapshot('03-signals'); await click('Read status'); await succeeded(); await click('Stop output'); await succeeded(); await click('Release pins');
   await route('signals/uart'); await set('signal-5-pin-1', '4'); await set('signal-5-pin-2', '5'); await click('Apply pin assignment'); await succeeded();
   await click('Configure UART'); await succeeded(); await click('Receive'); await succeeded(); await set('signal-5-send-text', 'hello'); await click('Send'); await succeeded(); await click('Release pins');
+  assert.equal(await evaluate('document.querySelectorAll("#signal-uart-instance input[type=radio]").length'),2,'multiple UARTs remain visible');
+  await evaluate('[...document.querySelectorAll("input[name=signal-uart-instance]")].find(e=>e.value==="6").click()');
+  assert.ok(await evaluate('document.getElementById("signal-6-pin-1")!==null'),'choosing a different hardware instance changes the controls');
+  assert.match(await evaluate('document.getElementById("signal-uart-instance").textContent'),/3,000,000 Hz/);
+
   await route('signals/counter'); await set('signal-16-pin-0', '4'); await click('Apply pin assignment'); await succeeded(); await click('Measure'); await succeeded(); await click('Release pins');
   for (const [name, fn, configure] of [['i2c-controller',13,'Configure bus'],['spi-controller',14,'Configure bus'],['i2c-target',8,'Set address'],['spi-target',9,'Configure bus']]) {
     await route(`signals/${name}`);
@@ -161,7 +180,7 @@ try {
   await route('tools'); assert.match(await evaluate('document.querySelector("#screen").textContent'), /fafe00000035/);
   await set('language', 'ja'); await route('probe'); assert.equal(await heading(), 'プローブ'); await snapshot('06-probe-ja');
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-  for (const hash of ['home', 'probe', 'signals/spi-controller', 'debug', 'settings', 'firmware', 'help']) {
+  for (const hash of ['home', 'connect', 'probe', 'signals/spi-controller', 'debug', 'settings', 'firmware', 'help']) {
     await route(hash); assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, `mobile ${hash}`);
   }
   await click('変更権を解放'); await succeeded();
@@ -169,14 +188,21 @@ try {
   await click('切断'); await succeeded(); assert.match(await evaluate('document.getElementById("connection-bar").textContent'), /未接続/);
   // A second physical shape supplies the optional DAC; the first profile has none.
   benchPort = Number(await start(python, ['-m','oep_client.virtual_bench_serve','--tcp','0','--profile','esp32-v003'], /PORT (\d+)/));
-  await set('language','en'); await route('home'); await click('USB'); await succeeded(); await click('Enable changes'); await succeeded();
+  await set('language','en'); await route('connect'); await evaluate('document.querySelector("input[name=connect-board][value=esp32]").click()'); await click('Select device and connect'); await succeeded(); await click('Enable changes'); await succeeded();
+  assert.equal(await evaluate('globalThis.__connectionMethod'),'serial','classic ESP32 selects serial without asking the user to choose a transport');
   await route('signals/dac'); await set('signal-14-pin-0','25'); await click('Apply pin assignment'); await succeeded();
   await click('Set output'); await succeeded(); await click('Read status'); await succeeded(); await click('Release pins'); await succeeded();
   await click('Disconnect'); await succeeded();
   // Optional UART writes must disappear when the device does not advertise them.
   benchPort = Number(await start(python, ['-m','oep_client.virtual_bench_serve','--tcp','0','--profile','p4-x035','--minimal-ops'], /PORT (\d+)/));
-  await route('home'); await click('USB'); await succeeded(); await route('signals/uart');
+  await route('connect'); await evaluate('document.querySelector("input[name=connect-board][value=p4]").click()'); await click('Select device and connect'); await succeeded(); await route('signals/uart');
   assert.equal(await evaluate('[...document.querySelectorAll("#screen button")].some(b=>b.textContent==="Send" || b.textContent==="Send bytes")'),false);
+  await click('Disconnect'); await succeeded();
+  await route('connect'); await evaluate('document.querySelector("#screen details").open=true'); await click('Find allowed probes'); await succeeded();
+  const devices=await evaluate('document.querySelector(".device-list").textContent');
+  assert.match(devices,/fafe00000035/); assert.match(devices,/second-probe/);
+  await click('Connect to this device'); await succeeded();
+  assert.equal(await evaluate('globalThis.__selectedProbe'),'fafe00000035','the exact chosen device is passed to the transport');
   await click('Disconnect'); await succeeded();
   assert.deepEqual(exceptions, []);
   console.log('Browser workspace: navigation, deep-link connect, GPIO, PWM, UART, I2C/SPI peers and controllers, counter, DAC, debug and console, settings, capabilities, language, mobile and session cleanup passed.');

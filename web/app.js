@@ -14,7 +14,7 @@ let lang = (() => {
 })();
 const L = (en, ja) => lang === 'ja' ? ja : en;
 const T = (text) => text?.[lang] ?? text?.en ?? String(text ?? '');
-const state = { host: null, info: null, caps: null, busy: false, firmwareBusy: false, dirty: false, epoch: 0,
+const state = { granted: [], knownProbes: new Map(), returnRoute: null, host: null, info: null, caps: null, busy: false, firmwareBusy: false, dirty: false, epoch: 0,
   catalog: null, settings: [], settingsState: null, network: null, changeable: false, saveable: false, labels: [], ports: [], memos: [], memo: null,
   release: null, releaseError: false, clients: new Map(), plans: new Map(), debug: null, console: null,
   drafts: new Map(), results: new Map(), events: [], importPlan: null,
@@ -63,6 +63,60 @@ function selectField(id, label, choices, fallback = '') {
   state.drafts.set(id, select.value);
   return node('label', { htmlFor: id }, label, select);
 }
+// Important choices stay visible, with enough context to compare before selecting.
+function choiceCards(id, label, choices, fallback = '', onChange = () => {}) {
+  const current = state.drafts.has(id) ? value(id) : String(fallback);
+  const selected = choices.some((c) => String(c.value) === current) ? current : '';
+  state.drafts.set(id, selected);
+  return node('fieldset', { class: 'choice-group', id }, node('legend', {}, label),
+    node('div', { class: 'choice-grid' }, ...choices.map((c) => node('label', { class: `choice-card${String(c.value) === selected ? ' selected' : ''}` },
+      node('input', { type: 'radio', name: id, value: String(c.value), checked: String(c.value) === selected, disabled: !!c.disabled,
+        onchange: () => { state.drafts.set(id, String(c.value)); onChange(); render();
+          (/** @type {HTMLInputElement | null} */ (document.querySelector(`input[name="${id}"]:checked`)))?.focus({ preventScroll: true });
+          if (id === 'connect-board' && matchMedia('(max-width: 1100px)').matches) $('connect-selected').scrollIntoView({ block: 'center' }); } }),
+      node('span', { class: 'choice-body' }, c.badge ? node('span', { class: 'tag' }, c.badge) : null,
+        node('strong', { class: 'choice-title' }, c.title), c.description ? node('span', { class: 'choice-description' }, c.description) : null,
+        c.facts?.length ? node('ul', { class: 'choice-facts' }, ...c.facts.map((f) => node('li', {}, f))) : null,
+        node('span', { class: 'choice-state' }, String(c.value) === selected ? L('Selected', '選択中') : L('Select this option', 'これを選ぶ')))))));
+}
+function boardFacts(b) {
+  const capability = (key, en, ja) => b.features[key] ? `${L(en, ja)}${b.features[key] === true ? '' : ` · ${T(b.features[key])}`}` : null;
+  const debug = ['rvswd', 'swio', 'swd'].filter((k) => b.features[k]).map((k) => `${k.toUpperCase()}${b.features[k] === true ? '' : ` (${T(b.features[k])})`}`).join(' / ');
+  return [debug ? `${L('Debug', 'デバッグ')}: ${debug}` : null,
+    capability('logic', 'Logic capture', 'ロジック取得'), capability('analog', 'Analog capture', 'アナログ取得'),
+    b.features.dac ? L('DAC analog output available', 'DACのアナログ出力あり') : null,
+    b.verified === true ? L('Checked on hardware', '実機で確認済み') : b.verified === false ? L('Build / host tests; hardware not verified', 'ビルド・host試験のみ。実機は未確認') : T(b.verified),
+  ].filter(Boolean);
+}
+function boardPurpose(b) {
+  return ({ pico: L('A small USB probe. Install and update it here with BOOTSEL.', '小さなUSBプローブ。BOOTSELで、このページから導入・更新できます。'),
+    pico2: L('The RP2350 board. Browser installation and updates via BOOTSEL.', 'RP2350のボード。BOOTSELでブラウザから導入・更新できます。'),
+    p4: L('For wider, faster logic capture. Select chip v1.x; first installation uses esptool.', '多チャンネル・高速のロジック取得向け。チップv1.x用。初回導入はesptoolです。'),
+    p4x: L('The P4 v3.x chip. Use its own firmware; the P4 image is not interchangeable.', 'P4のチップv3.x用。P4とは異なる専用firmwareを使います。'),
+    esp32: L('Use a classic ESP32 over its USB–serial bridge. Includes a DAC output.', 'classic ESP32をUSBシリアル変換経由で使用。DAC出力も使えます。'),
+    ch32: L('WCH CH32 boards. Functions vary by chip; installation needs WCH tools.', 'WCHのCH32ボード。機能はチップで異なり、導入にはWCHの道具を使います。'),
+    esp32s3: L('For a custom build on S3 / C3 / C6. Functions depend on the example you built.', 'S3・C3・C6で自分でビルドする場合。使える機能はexampleにより異なります。'),
+  })[b.id] ?? T(b.usb);
+}
+function boardChoices(id, label, fallback = '', onChange = () => {}, unknown = false) {
+  const choices = BOARDS.map((b) => ({ value: b.id, title: T(b.name), description: boardPurpose(b), facts: boardFacts(b),
+    badge: `${b.chip} · ${b.tier === 'release' ? L('Released firmware', '配布firmwareあり') : L('Build it yourself', '自分でビルド')}` }));
+  if (unknown) choices.push({ value: 'unknown', title: L('Other / I do not know the board', 'その他・ボードの種類がわからない'),
+    description: L('Start with the standard OEP USB connection. If it does not appear, use the connection help below.', '標準のOEP USB接続で探します。機器が出てこない場合は、下の接続方法の案内へ進めます。'),
+    facts: [L('Actual functions are read after connecting', '実際の機能は接続後に読み取ります')], badge: 'OEP' });
+  return choiceCards(id, label, choices, fallback, onChange);
+}
+function wireChoices(id, offers, onChange = () => {}) {
+  return choiceCards(id, L('Choose the debug line for your target', 'ターゲットに合うデバッグ線を選ぶ'), offers.map((o) => ({ value: o.entry.fn,
+    title: `${o.entry.name.replace('oep.wire.', '').toUpperCase()} · ${o.entry.instance}`,
+    description: ({ 'oep.wire.rvswd': L('WCH RISC-V targets over SWDIO + SWCLK.', 'WCHのRISC-V用。SWDIOとSWCLKの2本を使います。'),
+      'oep.wire.swio': L('CH32V00x targets over a single SWIO signal.', 'CH32V00x用。SWIO信号1本を使います。'),
+      'oep.wire.swd': L('ARM targets over SWDIO + SWCLK.', 'ARM用。SWDIOとSWCLKの2本を使います。') })[o.entry.name],
+    facts: [o.description.maxClockHz ? `${L('Maximum clock', '上限クロック')}: ${o.description.maxClockHz.toLocaleString()} Hz` : null,
+      `${L('Pin candidates', 'ピン候補')}: ${[...new Set([...roleChannels(o).values()].flat())].length} ${L('pins', '本')}`].filter(Boolean),
+  })), offers[0]?.entry.fn ?? '', onChange);
+}
+
 function field(id, label, fallback = '', { multiline = false, password = false } = {}) {
   const input = node(multiline ? 'textarea' : 'input', { id, value: state.drafts.get(id) ?? String(fallback),
     ...(multiline ? { rows: 4 } : { type: password ? 'password' : 'text' }), autocomplete: password ? 'new-password' : 'off',
@@ -148,14 +202,58 @@ function writeGate() {
   return notice(node('div', {}, p(L('Reading is available. Enable changes to drive pins, change settings or connect to a target.', '現在は読み取り専用です。ピン出力・設定変更・ターゲット接続には変更操作を有効にします。')),
     button(L('Enable changes', '変更操作を有効にする'), enableChanges, { primary: true })));
 }
+function connectionLink(label, primary = false) {
+  return node('a', { href: '#connect', class: `button${primary ? ' primary' : ''}`, onclick: () => {
+    if (parseRoute(location.hash).view !== 'connect') state.returnRoute = parseRoute(location.hash).view === 'home' ? '#probe' : location.hash || '#probe';
+  } }, label);
+}
 function connectCard() {
-  const nav = deviceAPIs;
-  return card(L('Connect your OEP probe', 'OEPプローブに接続'), p(L('Connect it by USB, then select the OEP device in your browser. No account or server is needed.', 'USBで接続し、ブラウザの一覧からOEPの機器を選びます。アカウントやサーバーは不要です。'), 'muted'),
-    actions(button('USB', () => connect(() => oep.openWebUsb()), { primary: true, disabled: !nav.usb || !isSecureContext, id: 'connect-usb' }),
-      button(L('Serial', 'シリアル'), () => connect(() => oep.openWebSerial()), { disabled: !nav.serial || !isSecureContext, id: 'connect-serial' }),
-      button('HID', () => connect(() => oep.openWebHid()), { disabled: !nav.hid || !isSecureContext, id: 'connect-hid' })),
-    p(L('USB: native USB probes such as Pico and ESP32-P4. Serial: USB–UART bridges such as classic ESP32. HID: an alternative USB interface.', 'USB：PicoやESP32-P4などのnative USB。シリアル：classic ESP32などのUSB–UART変換経由。HID：USBの別経路。'), 'muted'),
-    actions(link(L('No OEP firmware yet? Prepare a board →', 'まだOEPを入れていない場合：ボードを準備 →'), '#firmware')));
+  const go = connectionLink(L('Choose a probe and connect', 'プローブを選んで接続'), true);
+  return card(L('Use your OEP probe', '手元のOEPプローブを使う'),
+    p(L('Choose your board first. We will use the matching connection method and ask you to select the device.', 'まずボードの種類を選びます。その種類に合う方法で接続し、対象の機器を選びます。'), 'muted'),
+    actions(go), p(L('For Raspberry Pi Pico, ESP32, CH32 and custom OEP probes. No account needed.', 'Raspberry Pi Pico、ESP32、CH32などのOEPプローブに対応。アカウントは不要です。'), 'muted'));
+}
+function showConnect() {
+  if (state.host) return [header(L('Your probe is connected', 'プローブは接続済みです'), `${state.info.model} · ${unit()}`),
+    link(L('Open the probe workspace', 'プローブの画面へ'), '#probe', true)];
+  const boards = boardChoices('connect-board', L('What board are you connecting?', '接続するプローブのボードを選んでください'), '', () => {}, true);
+  const chosen = BOARDS.find((b) => b.id === value('connect-board'));
+  const serial = chosen?.id === 'esp32' || chosen?.id === 'esp32s3';
+  const api = serial ? 'serial' : 'usb';
+  const ready = !!value('connect-board');
+  const browserSupported = !!deviceAPIs[api] && isSecureContext;
+  const top = [header(L('Choose your probe', '接続するプローブを選ぶ'),
+    L('Compare the board types below. After selecting one, use the single connection button. The browser then lists the devices you can connect.',
+      '下の特徴を見てボードの種類を選び、接続ボタンを押してください。その後、ブラウザの一覧で接続する個体を選びます。')),
+    node('details', { class: 'card', open: state.granted.length > 0 }, node('summary', {}, L('Choose a previously allowed device by its unit ID', '接続を許可済みの個体を、個体IDで選ぶ')),
+      p(L('List USB probes this site already has permission to access. Unit IDs distinguish multiple devices of the same kind.', 'このサイトへのアクセスを許可済みのUSBプローブを表示します。同じ種類が複数ある場合は個体IDで区別できます。'), 'muted'),
+      actions(button(L('Find allowed probes', '許可済みのプローブを表示'), async () => { state.granted = await oep.getUsbProbes(); state.drafts.set('probes-checked', 'true'); }, { disabled: !deviceAPIs.usb || !isSecureContext })),
+      state.granted.length ? node('div', { class: 'choice-grid device-list' }, ...state.granted.map((d) => {
+        const known = state.knownProbes.get(d.serialNumber);
+        return card(known?.name ?? d.productName ?? L('OEP probe', 'OEPプローブ'),
+          p(`${L('Unit ID', '個体ID')}: ${d.serialNumber || L('not provided', '未提供')}`),
+          p(known?.features ?? L('Functions and firmware version will be checked after connecting.', '機能とfirmwareの版は接続後に確認します。'), 'muted'),
+          actions(button(L('Connect to this device', 'この個体に接続'), () => connect(() => oep.openWebUsb(d, { unitId: d.serialNumber && !d.serialNumber.toLowerCase().startsWith('x-') ? d.serialNumber : undefined })), { primary: true })));
+      })) : state.drafts.get('probes-checked') ? p(L('No previously allowed USB probes were found. Choose a board below to grant access.', '許可済みのUSBプローブは見つかりませんでした。下でボードを選んでアクセスを許可してください。'), 'muted') : null),
+    node('div', { class: 'connection-picker' }, boards, node('section', { class: 'card connection-summary' }, node('h2', {}, L('Connect the selected probe', '選んだプローブに接続')),
+      ready ? p(`${chosen ? T(chosen.name) : L('Other OEP probe', 'その他のOEPプローブ')} · ${serial ? L('USB–serial connection', 'USBシリアル変換経由で接続') : L('Direct USB connection', 'USBへ直接接続')}`)
+        : p(L('Select the board that matches your probe.', '手元のプローブに合うボードを選んでください。'), 'muted'),
+      chosen ? p(T(chosen.usb), 'muted') : null,
+      ['p4', 'p4x'].includes(chosen?.id) ? p(L('Use the native USB socket for this connection. For USB-Serial/JTAG, use the serial option below.', 'この接続はnative USB側の端子を使います。USB-Serial/JTAG側の端子では、下のシリアル接続を使ってください。'), 'muted') : null,
+      ready && !browserSupported ? notice(L('This connection is unavailable. Use Chrome or Edge over HTTPS or localhost with device access enabled.', 'この接続方法を使えません。HTTPSまたはlocalhostのChrome・Edgeで機器へのアクセスを有効にしてください。'), 'warn') : null,
+      actions(button(L('Select device and connect', '機器を選択して接続'), () => connect(() => serial ? oep.openWebSerial() : oep.openWebUsb()),
+        { primary: true, disabled: !ready || !browserSupported, id: 'connect-selected' })),
+      p(L('The device list is shown by your browser. If several devices appear, match the name and serial number of the probe you want.', '機器の選択一覧はブラウザが表示します。複数ある場合は、使いたいプローブの名前とシリアル番号を確認してください。'), 'muted'))),
+    node('details', { class: 'card' }, node('summary', {}, L('The probe does not appear / choose another connection method', '機器が見つからない・別の接続方法を使う')),
+      p(L('An external USB–serial bridge, or an ESP32 USB-Serial/JTAG port, uses the serial connection. A native USB OEP probe can use HID if its regular USB interface is unavailable.',
+        '外付けのUSBシリアル変換やESP32のUSB-Serial/JTAG端子には、シリアル接続を使います。native USBのOEPプローブで通常のUSB接続が使えない場合は、HIDを試せます。')),
+      node('div', { class: 'grid' }, card(L('USB serial port', 'USBシリアル端子'), p(L('For classic ESP32, USB–UART converters and USB-Serial/JTAG.', 'classic ESP32、USB–UART変換、USB-Serial/JTAG向け。')),
+        button(L('Choose a serial port', 'シリアル端子を選んで接続'), () => connect(() => oep.openWebSerial()), { disabled: !deviceAPIs.serial || !isSecureContext })),
+        card(L('HID USB alternative', 'HIDでUSB接続'), p(L('For a probe exposing an OEP HID interface. Not for USB–UART bridges.', 'OEPのHID機能を持つプローブ向け。USB–UART変換には使えません。')),
+          button(L('Try the HID connection', 'HIDでの接続を試す'), () => connect(() => oep.openWebHid()), { disabled: !deviceAPIs.hid || !isSecureContext })))),
+    card(L('No OEP firmware installed yet?', 'まだOEPを導入していない場合'), p(L('Choose a board and follow its installation instructions before connecting.', 'ボードを選び、firmwareの導入手順を確認してから接続します。')),
+      actions(link(L('Prepare a board', 'ボードをプローブにする'), '#firmware')))];
+  return top;
 }
 async function connect(open) {
   let h;
@@ -166,7 +264,8 @@ async function connect(open) {
     state.host = h; state.info = info; state.caps = caps; state.epoch = h.epoch;
     state.notices = []; state.dirty = false;
     try { await refreshData(); } catch (error) { state.notices.push(errorText(error)); }
-    if (parseRoute(location.hash).view === 'home') location.hash = '#probe';
+    state.knownProbes.set(info.unitId, { name: boardOf(info.model) ? T(boardOf(info.model).name) : info.model, features: `${info.firmware ?? '—'} · ${[...SIGNALS.filter((s) => offered(s.name).length).map((s) => T(s.title)), ...(offered('oep.fixture.logic').length ? [L('Logic capture', 'ロジック取得')] : []), ...(offered('oep.fixture.analog').length ? [L('Analog capture', 'アナログ取得')] : [])].join(' · ')}` });
+    if (['home', 'connect'].includes(parseRoute(location.hash).view)) location.hash = state.returnRoute ?? '#probe';
   } catch (e) { if (h) await h.link.close().catch(() => {}); state.host = null; state.info = null; state.caps = null; throw e; }
 }
 async function disconnect() {
@@ -174,7 +273,7 @@ async function disconnect() {
   invalidateLive();
   state.host = null; state.info = null; state.caps = null; state.catalog = null; state.memo = null;
   state.labels = []; state.ports = []; state.settings = []; state.network = null; state.memos = []; state.importPlan = null;
-  state.dirty = false; state.changeable = false; state.saveable = false; state.notices = []; state.fwUpdateDevice = null;
+  state.returnRoute = null; state.dirty = false; state.changeable = false; state.saveable = false; state.notices = []; state.fwUpdateDevice = null;
   state.wizard = { step: 0, found: [], picked: 0, saved: null }; state.results.clear();
   state.drafts.forEach((_, k) => { if (!k.startsWith('fw-')) state.drafts.delete(k); });
   if (h) { try { if (h.session) await h.end(); } finally { await h.link.close(); } }
@@ -219,14 +318,14 @@ function renderChrome() {
   const nav = $('navigation'); nav.replaceChildren(); let group = -1;
   for (const [id, icon, en, ja, g] of NAV) {
     if (group !== g) { nav.append(node('div', { class: 'nav-group' }, [L('Connect', '接続'), L('Work', '作業'), L('Manage', '管理'), L('Learn', '案内')][g])); group = g; }
-    nav.append(node('a', { href: `#${id}`, ...(current === id || (id === 'targets' && current === 'target') ? { 'aria-current': 'page' } : {}) }, node('span', { class: 'nav-icon', 'aria-hidden': 'true' }, icon), L(en, ja)));
+    nav.append(node('a', { href: `#${id}`, ...(current === id || (id === 'home' && current === 'connect') || (id === 'targets' && current === 'target') ? { 'aria-current': 'page' } : {}) }, node('span', { class: 'nav-icon', 'aria-hidden': 'true' }, icon), L(en, ja)));
   }
   const bar = $('connection-bar');
   if (state.host) bar.replaceChildren(node('span', { class: 'status online' }, `${state.info.model ?? 'OEP'} · ${unit()}`),
     node('span', { class: 'tag' }, state.host.session ? L('Changes enabled', '変更操作 有効') : L('Read only', '読み取り専用')),
     button(state.host.session ? L('Release changes', '変更権を解放') : L('Enable changes', '変更操作を有効にする'), state.host.session ? releaseChanges : enableChanges),
     button(L('Disconnect', '切断'), disconnect));
-  else bar.replaceChildren(node('span', { class: 'status' }, L('Not connected', '未接続')), link(L('Connect a probe', 'プローブに接続'), '#home'));
+  else bar.replaceChildren(node('span', { class: 'status' }, L('Not connected', '未接続')), connectionLink(L('Connect a probe', 'プローブに接続')));
   $('environment').replaceChildren(...(!isSecureContext ? [notice(L('Device access needs HTTPS or localhost.', '機器へのアクセスにはHTTPSまたはlocalhostが必要です。'), 'warn')]
     : !deviceAPIs.usb && !deviceAPIs.serial && !deviceAPIs.hid ? [notice(L('Use Chrome or Edge with device access enabled. You can still read the guide and board information.', '機器の接続にはChromeまたはEdgeを使ってください。案内とボード情報はこのブラウザでも読めます。'), 'warn')] : []));
   $('session-notice').replaceChildren(...(state.host?.session ? [notice(L(`Changes enabled. ${state.plans.size} pin assignment(s)${state.debug ? ', target connected' : ''}. Release changes to end temporary operations.`, `変更操作が有効です。ピン割当 ${state.plans.size}件${state.debug ? '・ターゲット接続中' : ''}。変更権の解放で一時的な操作を終了します。`))] : []));
@@ -240,7 +339,7 @@ function render() {
     const n = NAV.find(([id]) => id === route.view || (id === 'targets' && route.view === 'target'));
     screen.append(header(n ? L(n[2], n[3]) : L('Connect first', '接続してください'), L('Connect a probe to open this workspace. You will return here after connecting.', 'プローブに接続すると、この作業画面を開きます。')), connectCard()); return;
   }
-  const renderers = { home: showHome, probe: showProbe, targets: showTargets, target: showWizard, signals: showSignals, debug: showDebug,
+  const renderers = { home: showHome, connect: showConnect, probe: showProbe, targets: showTargets, target: showWizard, signals: showSignals, debug: showDebug,
     tools: showTools, settings: showSettings, storage: showStorage, firmware: showFirmware, diagnostics: showDiagnostics, help: showHelp };
   try { screen.append(...renderers[route.view](route.arg).filter(Boolean)); }
   catch (e) { screen.append(notice(errorText(e), 'bad')); console.error(e); }
@@ -273,11 +372,21 @@ function showProbe() {
 function showSignals(arg) {
   const tool = SIGNALS.find((s) => s.id === arg) ?? SIGNALS.find((s) => offered(s.name).length) ?? SIGNALS[0];
   const offers = offered(tool.name);
-  const tabs = node('nav', { class: 'tool-tabs', 'aria-label': L('Signal type', '信号の種類') }, ...SIGNALS.map((s) => node('a', { href: `#signals/${s.id}`, ...(tool.id === s.id ? { 'aria-current': 'page' } : {}) }, T(s.title), offered(s.name).length ? '' : ' · —')));
+  const tabs = node('nav', { class: 'function-choices', 'aria-label': L('Signal type', '信号の種類') }, ...SIGNALS.map((s) => node('a', {
+    href: `#signals/${s.id}`, class: `function-choice${offered(s.name).length ? '' : ' unavailable'}`, ...(tool.id === s.id ? { 'aria-current': 'page' } : {}) },
+    node('strong', {}, T(s.title)), node('span', {}, T(s.description)), node('small', {}, offered(s.name).length
+      ? `${L('Available interfaces', '使える系統')}: ${offered(s.name).length}` : L('Not available on this probe', 'このプローブは非対応')))));
   const top = [header(L('Signal I/O', '信号を操作'), T(tool.description)), tabs];
   if (!offers.length) return [...top, notice(L('This probe does not declare a supported revision of this interface.', 'このプローブは、この機能の対応revisionを宣言していません。'))];
-  const selector = selectField(`signal-${tool.id}-instance`, L('Interface instance', '機能のインスタンス'), offers.map((o) => [o.entry.fn, `${T(tool.title)} · ${o.entry.instance}`]), offers[0].entry.fn);
-  selector.querySelector('select').addEventListener('change', render);
+  const selector = choiceCards(`signal-${tool.id}-instance`, L('Choose a hardware interface', '使用する機能を選ぶ'), offers.map((o) => ({
+    value: o.entry.fn, title: `${T(tool.title)} · ${L('Interface', '系統')} ${o.entry.instance}`,
+    description: T(tool.description), facts: [
+      o.description.maxClockHz ? `${L('Maximum clock', '上限クロック')}: ${o.description.maxClockHz.toLocaleString()} Hz` : null,
+      o.description.maxLength ? `${L('Maximum transfer', '最大転送')}: ${o.description.maxLength} bytes` : null,
+      `${L('Pin candidates', 'ピン候補')}: ${[...new Set([...roleChannels(o).values()].flat())].length} ${L('pins', '本')}`,
+      state.plans.has(o.entry.fn) ? L('Pins already assigned in this session', 'このセッションで割当済み') : L('No pins assigned by this page yet', 'このページでのピン割当は未設定'),
+    ].filter(Boolean),
+  })), offers[0].entry.fn);
   const offer = offers.find((o) => o.entry.fn === +value(`signal-${tool.id}-instance`)) ?? offers[0];
   const key = `signal-${offer.entry.fn}`;
   const cls = tool.id === 'uart' ? oep.fixture.FixtureUart : tool.Class;
@@ -356,8 +465,9 @@ function showWizard() {
     node('ol', { class: 'wizard' }, ...[L('1. Wire', '1. 配線'), L('2. Find', '2. 探索'), L('3. Name', '3. 命名'), L('4. Done', '4. 完了')].map((name, i) => node('li', { class: w.step === i ? 'current' : w.step > i ? 'done' : '', ...(w.step === i ? { 'aria-current': 'step' } : {}) }, name))), writeGate()];
   if (!offers.length) return [...top, notice(L('This probe offers no supported debug scan interface. Use Settings to name other connections manually.', 'このプローブには対応する探索機能がありません。その他の接続は「設定」でピン名を登録できます。'))];
   if (w.step === 0) {
-    const wire = selectField('wizard-wire', L('Debug line', 'デバッグの線'), offers.map((o) => [o.entry.fn, `${o.entry.name.replace('oep.wire.', '').toUpperCase()} · ${o.entry.instance}`]), offers[0].entry.fn);
-    wire.querySelector('select').onchange = (e) => { state.drafts.set('wizard-wire', e.target.value); state.drafts.forEach((_, k) => { if (k.startsWith('wizard-pin-')) state.drafts.delete(k); }); resetWizard(); render(); };
+    const wire = wireChoices('wizard-wire', offers, () => {
+      state.drafts.forEach((_, k) => { if (k.startsWith('wizard-pin-')) state.drafts.delete(k); }); resetWizard();
+    });
     const offer = offers.find((o) => o.entry.fn === +value('wizard-wire')) ?? offers[0];
     const candidates = [...new Set([...roleChannels(offer)].filter(([r]) => r !== 3).flatMap(([, pins]) => pins))];
     const labels = new Map(state.labels);
@@ -434,8 +544,7 @@ function showDebug() {
   const offers = wireOffers();
   const top = [header(L('Target tools', 'ターゲット操作'), L('Attach over a debug line to inspect memory, registers and the target console.', 'デバッグの線でターゲットに接続し、メモリ・レジスタ・コンソールを操作します。')), writeGate()];
   if (!offers.length) return [...top, notice(L('This probe has no supported debug line.', 'このプローブには対応するデバッグ線がありません。'))];
-  const select = selectField('debug-wire', L('Debug line', 'デバッグの線'), offers.map((o) => [o.entry.fn, `${o.entry.name.replace('oep.wire.', '').toUpperCase()} · ${o.entry.instance}`]), offers[0].entry.fn);
-  select.querySelector('select').addEventListener('change', () => { state.drafts.delete('debug-dio'); state.drafts.delete('debug-clk'); render(); });
+  const select = wireChoices('debug-wire', offers, () => { state.drafts.delete('debug-dio'); state.drafts.delete('debug-clk'); });
   const offer = debugOffer() ?? offers[0];
   const one = offer.entry.name === 'oep.wire.swio';
   const pinOptions = (role) => (roleChannels(offer).get(role) ?? []).map((ch) => [ch, pinName(ch)]);
@@ -631,8 +740,7 @@ function showDiagnostics() {
 }
 function showHelp(arg) {
   if (BOARDS.some((b) => b.id === arg) && !state.drafts.has('help-board')) state.drafts.set('help-board', arg);
-  const selected = selectField('help-board', L('Board', 'ボード'), BOARDS.map((b) => [b.id, T(b.name)]), 'pico');
-  selected.querySelector('select').addEventListener('change', render);
+  const selected = boardChoices('help-board', L('Compare the boards and choose one', '特徴を比較してボードを選ぶ'), 'pico');
   const b = BOARDS.find((x) => x.id === value('help-board')) ?? BOARDS[0];
   const has = (v) => v === true ? L('Yes', 'あり') : v === false ? '—' : T(v);
   return [header(L('Guide & boards', '案内・ボード'), L('One protocol connects development tools to debug probes, signal I/O and capture devices.', 'OEPは、開発の道具とデバッグプローブ・信号入出力・取得機器をつなぐ共通プロトコルです。')),
@@ -700,8 +808,7 @@ function showFirmware() {
   const current = state.info;
   const model = current?.model;
   const b0 = boardOf(model);
-  const boardSelect = selectField('fw-board', L('Board model', 'ボードの種類'), BOARDS.map((b) => [b.id, T(b.name)]), b0?.id ?? 'pico');
-  boardSelect.querySelector('select').addEventListener('change', () => { state.fwBoot = null; render(); });
+  const boardSelect = boardChoices('fw-board', L('Choose the board to install OEP on', 'OEPを導入するボードを選ぶ'), b0?.id ?? 'pico', () => { state.fwBoot = null; });
   const b = BOARDS.find((b) => b.id === value('fw-board')) ?? BOARDS[0];
   const available = state.release && oep.pickFirmware(state.release, { model: b.models[0], kind: IMAGE_KIND[b.models[0]] ?? '' });
   const status = firmwareState(current?.firmware, state.release?.version);
