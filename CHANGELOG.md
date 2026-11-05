@@ -1,6 +1,11 @@
 # Changelog / 変更履歴
 
 ## Unreleased
+- (EN) Fixed: labels naming a port with a target pin - `S.N@P` and `S@P` (host guide §5.3), e.g. `v208.swdio@pa13` - named
+  no port (`portsNamed`, `portLine`, `lineFromLabels`). `parseLabel` reads all three forms, as oep-client-python's
+  parse_label.
+- (JA) 修正: ターゲットのピンを添えて口を名付ける label（`S.N@P` と `S@P`、host ガイド §5.3。例 `v208.swdio@pa13`）が、口を名付けていなかった
+  （`portsNamed`、`portLine`、`lineFromLabels`）。`parseLabel` は 3 つの形を読む（oep-client-python の parse_label と同じ）。
 - (EN) OEP Probe Tool, reorganised in wireskein-web's layout: a top bar (the connection's state, connect, allow changes,
   the language), a side menu of tasks each with a line of what it is, and a first screen asking what to do. The language
   follows the browser's (navigator.languages) unless one is picked. The firmware is no longer picked by hand: the Pages

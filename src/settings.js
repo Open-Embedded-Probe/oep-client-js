@@ -546,10 +546,21 @@ export function foldName(s) { return s.replace(/[A-Z]/g, (c) => String.fromCharC
 /** [S, N] of a label that names a port's line, as written; null for any other label. @param {string} text
  * @returns {[string, string] | null} */
 export function portLine(text) {
-  const dot = text.indexOf('.');
-  if (dot < 0) return null;
-  const port = text.slice(0, dot), line = text.slice(dot + 1);
-  return PORT.test(port) && LINE.test(line) ? [port, line] : null;
+  const pl = parseLabel(text);
+  return pl && pl[1] !== null ? [pl[0], pl[1]] : null;
+}
+
+/** (S, N or null, P or null) of a label of a port's line - "S.N", "S.N@P" or "S@P" (host guide §5.3) - as written;
+ * null for any other label (as oep-client-python's parse_label). @param {string} text
+ * @returns {[string, string | null, string | null] | null} */
+export function parseLabel(text) {
+  const at = text.indexOf('@');
+  const head = at < 0 ? text : text.slice(0, at), pin = at < 0 ? null : text.slice(at + 1);
+  if (pin !== null && !LINE.test(pin)) return null;
+  const dot = head.indexOf('.');
+  const port = dot < 0 ? head : head.slice(0, dot), line = dot < 0 ? null : head.slice(dot + 1);
+  if (!PORT.test(port) || (line !== null && !LINE.test(line)) || (line === null && pin === null)) return null;
+  return [port, line, pin];
 }
 
 /** The ports the labels name (host guide §5.3): each S once (ignoring case), as written, in order.
@@ -558,7 +569,7 @@ export function portsNamed(labels) {
   /** @type {string[]} */
   const out = [];
   for (const [, t] of labels) {
-    const pl = portLine(t);
+    const pl = parseLabel(t);
     if (pl && !out.some((p) => foldName(p) === foldName(pl[0]))) out.push(pl[0]);
   }
   return out;

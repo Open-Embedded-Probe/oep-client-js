@@ -108,6 +108,13 @@ test('ports and lines: the label S.N, ignoring ASCII case; without a port the on
   assert.equal(await settings.findLine([[5, 'V003.NRST']], 'nrst'), 5); // one port: the tool's shortcut
   assert.equal(await settings.findLine([[5, 'NRST']], 'nrst'), null);   // a bare name names no port's line
   assert.deepEqual(settings.portLine('x035.swdio'), ['x035', 'swdio']);
+  // S.N@P and S@P (host guide §5.3): the port and its line (a role or none), the target pin as written
+  assert.deepEqual(settings.portLine('v208.swdio@pa13'), ['v208', 'swdio']);
+  assert.equal(settings.portLine('x035@pb6'), null);
+  assert.deepEqual(settings.parseLabel('x035@pb6'), ['x035', null, 'pb6']);
+  assert.deepEqual(settings.parseLabel('x035.nrst@pa21'), ['x035', 'nrst', 'pa21']);
+  assert.equal(settings.parseLabel('x035.swdio@'), null);
+  assert.deepEqual(settings.portsNamed([[1, 'v208.swdio@pa13'], [2, 'x035@pb6'], [3, 'NRST']]), ['v208', 'x035']);
   for (const t of ['NRST', 'a.b.c', '1a.swdio', 'a.', 'abcdefghijklmnopq.swdio']) assert.equal(settings.portLine(t), null, t);
   assert.deepEqual([...settings.LINE_NAMES], Object.keys(C.line_names));   // from the registry
 });
