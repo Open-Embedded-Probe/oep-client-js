@@ -69,7 +69,9 @@ docs/           this document, the release steps
 
 ## 4. Browser workspace
 
-The [page requirements and navigation](page.ja.md) define the workspace. It supports probe setup, named target connections,
+The proposed redesign is defined by the [requirements and screen specification](page.ja.md), [connection handoff](page-connection.ja.md), and [acceptance criteria and implementation gaps](page-acceptance.ja.md) (Japanese).
+
+The current workspace supports probe setup, named target connections,
 GPIO/UART/I2C/SPI/PWM/counter/DAC operations, target debugging, settings and memo storage, and probe firmware updates.
 Capture acquisition and viewing lead to WireSkein; device-specific target flash programming leads to the appropriate external tools.
 

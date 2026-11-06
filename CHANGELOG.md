@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Redefine the next browser UI in documentation: an OEP introduction, use cases and board guidance, continuous installation and configuration, purpose-based tools, connection handoff rules, and acceptance criteria. No browser implementation changes in this documentation revision.
+- (JA) 次期ブラウザ画面の要件と仕様を再定義。OEPの概要・用途・ボード案内、導入から設定への連続した操作、目的別の機能画面、接続引継ぎと受入条件を文書化。この変更では画面実装は変更していません。
+
 - (EN) Unify the browser flow as install → configure connections → use. Move directly to configuration after flashing, reuse the programming serial port, and continue permission/reconnect handling inline. Add a shared create/edit form for names, target part numbers, notes and wiring, with collision-safe rename/move operations and explicit metadata storage.
 - (JA) ブラウザの導線を導入→接続先の設定→使用へ統一。書き込み後に設定画面へ自動遷移し、同じシリアルポートを再利用。再接続・使用許可待ちも設定画面内で継続。接続名・相手の型番・メモ・配線を同じフォームで作成/編集でき、名前変更・ピン移動の衝突検査と記録の保存先の説明を追加。
 
