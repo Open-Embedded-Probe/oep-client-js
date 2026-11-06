@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Extend the planned installation handoff for USB identity/interface changes: re-enumeration, permission for the running OEP device, and cable reconnection only when needed, preserving successful flashing and setup progress.
+- (JA) USBのVID/PID・機能構成が変わる導入の引継ぎを仕様化。再列挙、起動後OEPの許可、必要時の抜き差しを分け、書込成功と設定の進行を保持。
+
 - (EN) Clarify the planned serial installation flow: reuse the programming port for OEP without classifying CDC versus external UART; record P4 UART enablement as firmware work in progress.
 - (JA) シリアル導入の仕様を明確化。CDC系/外付けUARTを判別・選択させず、書込ポートをOEP接続へ引き継ぐ。P4のUART有効化はfirmware側で対応中として整理。
 
