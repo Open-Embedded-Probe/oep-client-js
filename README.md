@@ -191,9 +191,12 @@ npm test            # explicit virtual backend setup: docs/testing.md
 npm run typecheck
 npm run serve       # the page at http://localhost:4173/
 npm run test:browser # Chromium UI verification against the Python virtual probe
+npm run test:preview # Chromium checks for the hardware-free UI prototype
 ```
 
 The next UI design is documented in the [requirements and screen specification](docs/page.ja.md), [connection handoff](docs/page-connection.ja.md), and [acceptance criteria](docs/page-acceptance.ja.md) (Japanese). These describe the proposed redesign, separately from the current implementation below.
+
+Review the Japanese UI prototype at `http://localhost:4173/preview/`: OEP introduction, board comparison, installation through initial setup, wiring edits, and purpose-based tools. It uses sample data, never connects to hardware, and resets on reload. The top “確認シナリオ” control exposes automatic continuation, permission, cable reconnection, and retry examples. See the [review guide and limitations](docs/page-preview.ja.md).
 
 The current browser flow is install → configure connections → use. Flashing opens configuration automatically and tries to reconnect on the same port. Create and edit connection names, target part numbers, notes and wiring in one form. ESP32 / P4 / P4X installation uses their serial ROM port and bundled release images,
 then offers an OEP connection. S3 / C3 / C6 accept a compatible merged image (no prebuilt OepProbe release); CH32 initial installation is unsupported.

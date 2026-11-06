@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Add a separate hardware-free UI prototype at `/preview/`: OEP introduction, board comparison, installation handoff scenarios, initial setup, editable wiring, purpose-based tools and external-tool guidance. Add Chromium workflow and responsive-layout checks; real device processing is not connected.
+- (JA) `/preview/` に実機処理のない画面プレビューを追加。OEPの紹介、ボード比較、導入後の引継ぎシナリオ、初期設定、配線編集、目的別操作と外部ツールへの案内を確認可能に。Chromiumで遷移と狭い画面での表示を検証。実機処理は未接続。
+
 - (EN) Extend the planned installation handoff for USB identity/interface changes: re-enumeration, permission for the running OEP device, and cable reconnection only when needed, preserving successful flashing and setup progress.
 - (JA) USBのVID/PID・機能構成が変わる導入の引継ぎを仕様化。再列挙、起動後OEPの許可、必要時の抜き差しを分け、書込成功と設定の進行を保持。
 

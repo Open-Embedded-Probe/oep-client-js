@@ -71,6 +71,8 @@ docs/           this document, the release steps
 
 The proposed redesign is defined by the [requirements and screen specification](page.ja.md), [connection handoff](page-connection.ja.md), and [acceptance criteria and implementation gaps](page-acceptance.ja.md) (Japanese).
 
+`web/preview/` is a separate UI prototype using presentation data and in-memory tab state, without transport or programming modules. `npm run test:preview` checks its workflows and absence of hardware API calls. See the [review guide](page-preview.ja.md).
+
 The current workspace supports probe setup, named target connections,
 GPIO/UART/I2C/SPI/PWM/counter/DAC operations, target debugging, settings and memo storage, and probe firmware updates.
 Capture acquisition and viewing lead to WireSkein; device-specific target flash programming leads to the appropriate external tools.
