@@ -81,7 +81,7 @@ export const BOARDS = [
   },
   {
     id: 'p4x', tier: 'release', name: { en: 'ESP32-P4X board (chip v3.x)', ja: 'ESP32-P4X のボード（チップ v3.x）' }, chip: 'ESP32-P4X (v3.x)', models: ['esp32p4x'], verified: true,
-    write: { page: 'serial', how: { en: 'Install here over serial USB; later update here over native USB (DFU). The P4 and P4X images are not interchangeable.', ja: 'このページでUSBシリアルから初回書き込みできます。導入後はnative USB（DFU）でも更新できます。P4 と P4X の画像は互換がありません。' } },
+    write: { page: 'serial', how: { en: 'Install here over serial USB; later update here over native USB (DFU). The P4 and P4X images are not interchangeable.', ja: 'このページでUSBシリアルから初回書き込みできます。導入後はnative USB（DFU）でも更新できます。P4 と P4X のファームウェアイメージは互換がありません。' } },
     usb: { en: 'USB HS (vendor bulk, HID, CDC)', ja: 'USB HS（vendor bulk、HID、CDC）' },
     pins: { en: 'GPIO0-GPIO54 but 24, 25', ja: 'GPIO0〜GPIO54（24、25 以外）' },
     reserved: { en: 'GPIO24 / 25 (USB-Serial/JTAG)', ja: 'GPIO24 / 25（USB-Serial/JTAG）' },
@@ -123,7 +123,7 @@ export const BOARDS = [
   {
     id: 'esp32s3', tier: 'build', name: { en: 'ESP32-S3 / C3 / C6 board', ja: 'ESP32-S3 / C3 / C6 のボード' }, chip: 'ESP32-S3, C3, C6', models: [],
     verified: { en: 'RVSWD builds; not checked on hardware', ja: 'RVSWD のビルドのみ。実機では未確認' },
-    write: { page: 'serial', how: { en: 'Select your chip family and a compatible merged .bin file, then program it here. No prebuilt OepProbe release is available for these chips.', ja: 'チップの種類と対応するmerged .binファイルを選んで、このページから書き込みます。この系列のOepProbe配布画像はまだありません。' } },
+    write: { page: 'serial', how: { en: 'Select your chip family and a compatible merged .bin file, then program it here. No prebuilt OepProbe release is available for these chips.', ja: 'チップの種類と対応するmerged .binファイルを選んで、このページから書き込みます。この系列のOepProbe配布ファームウェアイメージはまだありません。' } },
     usb: { en: 'USB-Serial/JTAG or USB CDC', ja: 'USB-Serial/JTAG か USB CDC' },
     pins: { en: 'chosen in the build (leave out flash, PSRAM, USB and strap pins)', ja: 'ビルドで選ぶ（flash、PSRAM、USB、起動のストラップのピンを外す）' },
     reserved: { en: 'flash, PSRAM, USB, boot straps', ja: 'flash、PSRAM、USB、起動のストラップ' },

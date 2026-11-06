@@ -1001,15 +1001,15 @@ async function installEsp(model) {
   $('fw-status')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   state.fwLog = [];
   try {
-    fwProgress(0, 1, L('Fetching and verifying image…', '画像を取得・検証中…'));
+    fwProgress(0, 1, L('Fetching and verifying image…', 'ファームウェアイメージを取得・検証中…'));
     let image;
     if (value('fw-board') === 'esp32s3') {
-      if (!state.fwCustom) throw new Error(L('Select a compatible merged image.', '対応するmerged画像を選択してください。'));
-      if (state.fwCustom.size > 32 * 1024 * 1024) throw new Error(L('The image exceeds 32 MiB.', '画像が32 MiBを超えています。'));
+      if (!state.fwCustom) throw new Error(L('Select a compatible merged image.', '対応するmergedファームウェアイメージを選択してください。'));
+      if (state.fwCustom.size > 32 * 1024 * 1024) throw new Error(L('The image exceeds 32 MiB.', 'ファームウェアイメージが32 MiBを超えています。'));
       image = new Uint8Array(await state.fwCustom.arrayBuffer());
     } else {
       const entry = state.release && oep.pickFirmware(state.release, { model, kind: 'merged' });
-      if (!entry || entry.flash_offset !== 0) throw new Error(L('A merged image at offset 0 is required.', 'offset 0のmerged画像が必要です。'));
+      if (!entry || entry.flash_offset !== 0) throw new Error(L('A merged image at offset 0 is required.', 'offset 0のmergedファームウェアイメージが必要です。'));
       image = await firmwareImage(model, 'merged');
     }
     if (state.host) await disconnect();
@@ -1033,9 +1033,9 @@ function showFirmware() {
   const b = BOARDS.find((b) => b.id === value('fw-board')) ?? BOARDS[0];
   const available = state.release && oep.pickFirmware(state.release, { model: b.models[0], kind: b.write.page === 'serial' ? 'merged' : IMAGE_KIND[b.models[0]] ?? '' });
   const status = firmwareState(current?.firmware, state.release?.version);
-  const statusText = { current: L('The bundled release is already installed.', '同じリリースが導入済みです。'), update: L('A newer bundled release is available.', '新しいリリースがあります。'), newer: L('This probe has a newer version than the bundled release. Writing it would downgrade the probe.', 'このプローブは配布画像より新しい版です。書き込むと古い版になります。'), unknown: L('The version order could not be determined. Check both versions before writing.', '版の前後関係は判定できません。両方の版を確認してください。') };
+  const statusText = { current: L('The bundled release is already installed.', '同じリリースが導入済みです。'), update: L('A newer bundled release is available.', '新しいリリースがあります。'), newer: L('This probe has a newer version than the bundled release. Writing it would downgrade the probe.', 'このプローブは配布ファームウェアイメージより新しい版です。書き込むと古い版になります。'), unknown: L('The version order could not be determined. Check both versions before writing.', '版の前後関係は判定できません。両方の版を確認してください。') };
   return [header(L('Install OEP on a new board', '新しいボードにOEPを書き込む'), L('1. Choose a board → 2. Select its programming port → 3. Write firmware → 4. Continue automatically to configuration.', '①ボードを選ぶ → ②書き込み先を選ぶ → ③firmwareを書き込む → ④完了すると設定画面へ進みます。')),
-    state.release ? notice(`OepProbe ${state.release.version} · ${L('bundled release', 'このサイトで配布するリリース')}`) : notice(L('Release images could not be loaded. Retry loading them here; ESP custom merged images can still be selected below.', '配布画像を読み込めませんでした。この画面で再取得できます。ESPの持ち込みmerged画像は下で選択できます。'), 'warn'),
+    state.release ? notice(`OepProbe ${state.release.version} · ${L('bundled release', 'このサイトで配布するリリース')}`) : notice(L('Release images could not be loaded. Retry loading them here; ESP custom merged images can still be selected below.', '配布ファームウェアイメージを読み込めませんでした。この画面で再取得できます。ESPの持ち込みmergedファームウェアイメージは下で選択できます。'), 'warn'),
     current ? card(L('Update the connected probe', '接続中のプローブを更新'),
       node('dl', {}, node('dt', {}, L('Device', '機器')), node('dd', {}, `${model} · ${unit()}`), node('dt', {}, L('Installed', '導入済み')), node('dd', {}, current.firmware ?? '—'),
         node('dt', {}, L('Available release', '配布する版')), node('dd', {}, state.release?.version ?? '—')), p(statusText[status], 'muted'),
@@ -1052,10 +1052,10 @@ function showFirmware() {
       b.write.page === 'serial' ? node('div', { class: 'stack' },
         notice(L('Use the USB connector for the serial bridge / ROM download port. Close other serial tools. Hold BOOT, tap RESET, then release BOOT if automatic connection fails. P4 boards may have separate serial and native USB connectors.', 'シリアル変換・ROM書き込み用のUSB端子につなぎ、他のシリアルツールを閉じてください。自動接続できない場合はBOOTを押しながらRESETを押して離し、その後BOOTを離します。P4ではシリアル用とnative USB用の端子が別の場合があります。')),
         b.id === 'esp32s3' ? node('div', { class: 'stack' },
-          choiceCards('fw-esp-family', L('Chip family of your image', '画像に対応するチップ'), ['esp32s3', 'esp32c3', 'esp32c6'].map((value) => ({ value, title: value.toUpperCase().replace('32', '32-'), description: L('Requires a merged image built for this chip.', 'このチップ向けに作られたmerged画像が必要です。'), facts: [] })), 'esp32s3'),
-          notice(L('No prebuilt OepProbe image is distributed for S3 / C3 / C6. Upload a compatible merged image at offset 0, including its bootloader and partition table at 0x8000. An app-only image will not boot a blank board.', 'S3・C3・C6向けのOepProbe画像は未配布です。bootloaderと0x8000のpartition tableを含むoffset 0の対応merged画像を選んでください。app単体の画像では新品のボードは起動できません。'), 'warn'),
-          node('label', {}, L('Merged .bin image', 'merged .bin画像'), node('input', { id: 'fw-custom', type: 'file', accept: '.bin', onchange: (e) => { state.fwCustom = e.target.files[0] ?? null; render(); } })),
-          p(state.fwCustom?.name ?? L('No image selected', '画像未選択'))) : p(available ? `${available.file} · SHA-256 ${available.sha256}` : L('Waiting for the release image.', '配布画像を読み込むまでお待ちください。'), 'muted'),
+          choiceCards('fw-esp-family', L('Chip family of your image', 'ファームウェアイメージに対応するチップ'), ['esp32s3', 'esp32c3', 'esp32c6'].map((value) => ({ value, title: value.toUpperCase().replace('32', '32-'), description: L('Requires a merged image built for this chip.', 'このチップ向けに作られたmergedファームウェアイメージが必要です。'), facts: [] })), 'esp32s3'),
+          notice(L('No prebuilt OepProbe image is distributed for S3 / C3 / C6. Upload a compatible merged image at offset 0, including its bootloader and partition table at 0x8000. An app-only image will not boot a blank board.', 'S3・C3・C6向けのOepProbeファームウェアイメージは未配布です。bootloaderと0x8000のpartition tableを含むoffset 0の対応mergedファームウェアイメージを選んでください。app単体のファームウェアイメージでは新品のボードは起動できません。'), 'warn'),
+          node('label', {}, L('Merged .bin image', 'merged .binファームウェアイメージ'), node('input', { id: 'fw-custom', type: 'file', accept: '.bin', onchange: (e) => { state.fwCustom = e.target.files[0] ?? null; render(); } })),
+          p(state.fwCustom?.name ?? L('No image selected', 'ファームウェアイメージ未選択'))) : p(available ? `${available.file} · SHA-256 ${available.sha256}` : L('Waiting for the release image.', '配布ファームウェアイメージを読み込むまでお待ちください。'), 'muted'),
         p(state.fwSerial ? L('Serial port selected. Ready to write.', 'シリアルポートを選択済みです。書き込めます。') : L('First choose the serial port of the blank board.', 'まず未導入ボードのシリアルポートを選びます。')),
         actions(button(L('Select serial programming port', '書き込み用シリアルポートを選ぶ'), async () => {
           state.fwSerial = await deviceAPIs.serial.requestPort(); state.fwSerialBoard = b.id;
@@ -1074,9 +1074,9 @@ function showFirmware() {
             await flashFirmware(b.models[0], false); state.drafts.set('connect-method', 'usb');
           }, { primary: true, disabled: !available || !state.fwBoot || state.fwBootModel !== b.models[0] })))
         : notice(L('Browser installation is not supported for CH32. Choose ESP32 or Pico to complete initial installation here. An already programmed CH32 probe can be connected here.', 'CH32のブラウザ初回書き込みには未対応です。初回導入からここで完結する場合はESP32またはPicoを選んでください。導入済みのCH32プローブは接続できます。'), 'warn'),
-      actions(button(L('Reload release images', '配布画像を再取得'), loadRelease), link(L('Already installed? Connect', '書き込み済みの場合は接続へ'), '#connect'), link(L('Compare boards', 'ボードを比較'), '#help'))),
+      actions(button(L('Reload release images', '配布ファームウェアイメージを再取得'), loadRelease), link(L('Already installed? Connect', '書き込み済みの場合は接続へ'), '#connect'), link(L('Compare boards', 'ボードを比較'), '#help'))),
     card(L('Progress', '進行状況'), node('progress', { id: 'fw-progress', max: state.fwProgress?.total || 1, value: state.fwProgress?.done ?? 0, 'aria-label': L('Firmware progress', 'firmware書き込みの進行') }),
-      node('p', { id: 'fw-status' }, state.fwProgress?.text ?? L('Select a device to begin. The image is verified before writing.', '書き込み対象を選択してください。画像を検証してから書き込みます。')), node('pre', { id: 'fw-log', role: 'log' }, (state.fwLog ?? []).join('\n')))];
+      node('p', { id: 'fw-status' }, state.fwProgress?.text ?? L('Select a device to begin. The image is verified before writing.', '書き込み対象を選択してください。ファームウェアイメージを検証してから書き込みます。')), node('pre', { id: 'fw-log', role: 'log' }, (state.fwLog ?? []).join('\n')))];
 }
 $('language').addEventListener('change', (e) => {
   lang = /** @type {HTMLSelectElement} */ (e.target).value;

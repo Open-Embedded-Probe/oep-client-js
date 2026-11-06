@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Save a UI review checkpoint: recommend ESP32-P4, correct Japanese firmware-image wording, and prototype use-case-first setup with separate SWD/RVSWD/single-wire DIO (SWIO), UART and logic preparation paths. Names, scope and ordering remain provisional pending review of the OEP workflow documentation; hardware processing remains disconnected.
+- (JA) 画面検討の途中成果を保存。ESP32-P4を推奨として表示し、firmware imageの誤訳を修正。用途を先に選ぶ設定と、SWD・2線RVSWD・1線DIO（SWIO）、UART、ロジック観測準備の分岐を試作。名称・範囲・順序はOEP側の手順文書のレビュー待ちで、実機処理は未接続。
+
 - (EN) Add a separate hardware-free UI prototype at `/preview/`: OEP introduction, board comparison, installation handoff scenarios, initial setup, editable wiring, purpose-based tools and external-tool guidance. Add Chromium workflow and responsive-layout checks; real device processing is not connected.
 - (JA) `/preview/` に実機処理のない画面プレビューを追加。OEPの紹介、ボード比較、導入後の引継ぎシナリオ、初期設定、配線編集、目的別操作と外部ツールへの案内を確認可能に。Chromiumで遷移と狭い画面での表示を検証。実機処理は未接続。
 
