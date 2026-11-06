@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Clarify the planned serial installation flow: reuse the programming port for OEP without classifying CDC versus external UART; record P4 UART enablement as firmware work in progress.
+- (JA) シリアル導入の仕様を明確化。CDC系/外付けUARTを判別・選択させず、書込ポートをOEP接続へ引き継ぐ。P4のUART有効化はfirmware側で対応中として整理。
+
 - (EN) Redefine the next browser UI in documentation: an OEP introduction, use cases and board guidance, continuous installation and configuration, purpose-based tools, connection handoff rules, and acceptance criteria. No browser implementation changes in this documentation revision.
 - (JA) 次期ブラウザ画面の要件と仕様を再定義。OEPの概要・用途・ボード案内、導入から設定への連続した操作、目的別の機能画面、接続引継ぎと受入条件を文書化。この変更では画面実装は変更していません。
 
