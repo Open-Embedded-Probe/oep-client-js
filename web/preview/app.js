@@ -1,4 +1,4 @@
-import { BOARDS, TASKS, DEBUG_WIRES, LOGIC_TASK, SETUP_PATTERNS, SCENARIOS, DOCS } from './data.js';
+import { BOARDS, TASKS, DEBUG_WIRES, LOGIC_TASK, CONSOLE_TASK, ANALOG_TASK, LOG_PATHS, GUIDE_BASE, SETUP_PATTERNS, SCENARIOS, DOCS } from './data.js';
 
 // Isolated interaction prototype: no OEP library, device API, firmware download or persistent device settings.
 /** @type {any} */
@@ -33,18 +33,18 @@ const panel = (...children) => el('section', { class: 'panel' }, ...children);
 const board = () => BOARDS.find(b => b.id === state.board) ?? BOARDS[0];
 const probeBoard = () => BOARDS.find(b => b.id === state.connectedBoard) ?? BOARDS[0];
 const pinName = n => `${probeBoard().id === 'pico' ? 'GP' : 'GPIO'}${n}`;
-const taskById = id => id === 'logic' ? LOGIC_TASK : TASKS.find(t => t.id === id) ?? TASKS[0];
+const taskById = id => [LOGIC_TASK, CONSOLE_TASK, ANALOG_TASK, ...TASKS].find(t => t.id === id) ?? TASKS[0];
 const wireById = id => DEBUG_WIRES.find(w => w.id === id);
-const groupSpec = g => g.type === 'debug' ? { ...taskById('debug'), ...(wireById(g.wire) ?? { short: 'デバッグ方式を選択', roles: [] }) } : taskById(g.type);
+const groupSpec = g => ['debug', 'console'].includes(g.type) ? { ...taskById(g.type), ...(wireById(g.wire) ?? { short: 'デバッグ方式を選択', roles: [] }) } : taskById(g.type);
 const pinChoices = () => Array.from({ length: 23 }, (_, n) => [String(n), pinName(n)]);
-const groupPins = g => [...g.pins, ...(g.resetPin ? [g.resetPin] : [])];
-const groupOptions = g => [...taskById(g.type).options, ...(g.type === 'debug' && g.wire === 'rvswd' ? [['クロックの待機状態', 'ターゲットの既定値']] : [])];
-function debugChoices(onChoose, selected = '') {
-  return el('div', { class: 'three-grid debug-choices' }, ...DEBUG_WIRES.map(w => el('button', { type: 'button', class: `pattern-card${selected === w.id ? ' selected' : ''}`, 'data-wire': w.id, 'aria-pressed': selected === w.id, onclick: () => onChoose(w.id) },
+const groupPins = g => [...g.pins.filter(Boolean), ...(g.resetPin ? [g.resetPin] : [])];
+const groupOptions = g => taskById(g.type).options;
+function debugChoices(onChoose, selected = '', consoleOnly = false) {
+  return el('div', { class: 'three-grid debug-choices' }, ...DEBUG_WIRES.filter(w => !consoleOnly || w.id !== 'swd').map(w => el('button', { type: 'button', class: `pattern-card${selected === w.id ? ' selected' : ''}`, 'data-wire': w.id, 'aria-pressed': selected === w.id, onclick: () => onChoose(w.id) },
     el('strong', {}, w.title), el('span', {}, w.description), el('span', { class: 'pattern-next' }, `${w.roles.join(' + ')} / GND共通`), el('small', {}, w.note))));
 }
 function patternChoices(from = 'setup') {
-  return [el('div', { class: 'two-grid' }, ...SETUP_PATTERNS.map(t => el('a', { class: 'pattern-card', href: t.id === 'debug' || t.tasks ? `#/setup/${t.id}?from=${from}` : `#/connection/new?purpose=${t.id}&from=${from}`, 'data-pattern': t.id },
+  return [el('div', { class: 'two-grid' }, ...SETUP_PATTERNS.map(t => el('a', { class: 'pattern-card', href: `#/setup/${['debug', 'logs', 'logic'].includes(t.id) || t.tasks ? t.id : 'task'}?task=${t.id}&from=${from}`, 'data-pattern': t.id },
     el('small', { class: 'eyebrow' }, t.label), el('strong', {}, t.title), el('span', {}, t.description), el('span', { class: 'pattern-next' }, t.next + ' →'))))];
 }
 const routeNow = () => location.hash.startsWith('#/') ? location.hash.slice(1) : '/home';
@@ -85,7 +85,7 @@ function previewControls() {
   const details = el('details', { class: 'review-controls', open: state.controlOpen, ontoggle: e => { state.controlOpen = e.target.open; } },
     el('summary', {}, 'プレビューの確認用：接続シナリオ・最初からやり直す'),
     el('div', { class: 'review-content' }, field('書き込み後のシナリオ', state.scenario, v => { state.scenario = v; }, '次の書き込みプレビューに反映されます。', SCENARIOS),
-      button('最初からやり直す', () => discardThen(() => { clearInterval(flashTimer); Object.assign(state, { board: 'p4', connectedBoard: 'p4', connected: false, selected: false, installation: false, flash: 'idle', progress: 0, records: [], draft: null, dirty: false, active: {}, operations: {}, settings: {}, settingsApplied: false, settingsSaved: false, notice: '', intent: '', transferDone: false, maintenance: '' }); location.hash = '/home'; render(); })),
+      button('最初からやり直す', () => discardThen(() => { clearInterval(flashTimer); Object.assign(state, { board: 'p4', connectedBoard: 'p4', connected: false, selected: false, installation: false, flash: 'idle', progress: 0, records: [], draft: null, dirty: false, active: {}, operations: {}, settings: {}, capture: null, passthrough: null, settingsApplied: false, settingsSaved: false, notice: '', intent: '', transferDone: false, maintenance: '' }); location.hash = '/home'; render(); })),
       p('設定はこのタブ内だけに保持します。再読み込みすると初期状態に戻ります。日本語で画面構成を確認する段階です。')));
   return details;
 }
@@ -207,7 +207,7 @@ function install(view) {
 function beginFlash() {
   clearInterval(flashTimer);
   state.flash = 'writing'; state.installation = true; state.connected = false; state.records = []; state.active = {}; state.operations = {};
-  state.settings = {}; state.settingsApplied = false; state.settingsSaved = false; state.maintenance = ''; state.notice = ''; state.transferDone = false;
+  state.capture = null; state.passthrough = null; state.settings = {}; state.settingsApplied = false; state.settingsSaved = false; state.maintenance = ''; state.notice = ''; state.transferDone = false;
   state.progress = 0; state.handoff = state.scenario === 'auto' ? board().handoff : state.scenario;
   go('/install/writing');
   flashTimer = setInterval(() => { state.progress = Math.min(100, state.progress + 20);
@@ -228,19 +228,51 @@ function setup(view, query) {
   }
   const pattern = SETUP_PATTERNS.find(t => t.id === view);
   if (pattern?.tasks) return installFrame(3, [heading(pattern.title, '目的に合う方式を選ぶと、その配線と条件へ進みます。', 'SETUP / USE CASE'),
-    el('div', { class: 'two-grid' }, ...pattern.tasks.map(id => { const t = taskById(id); return el('a', { class: 'pattern-card', href: `#/connection/new?purpose=${id}&from=${query.get('from') === 'connections' ? 'connections' : 'setup'}` }, el('strong', {}, t.title), el('span', {}, t.description), el('span', { class: 'pattern-next' }, `${t.short}の配線と条件へ →`)); })),
+    el('div', { class: 'two-grid' }, ...pattern.tasks.map(id => { const t = taskById(id); return el('a', { class: 'pattern-card', href: `#/setup/task?task=${id}&from=${query.get('from') === 'connections' ? 'connections' : 'setup'}` }, el('strong', {}, t.title), el('span', {}, t.description), el('span', { class: 'pattern-next' }, `${t.short}の配線と条件へ →`)); })),
     actions(link('利用パターンに戻る', query.get('from') === 'connections' ? '/connection/new' : '/setup'))]);
+  if (['logs', 'logic', 'task'].includes(view)) return setupPath(view, query);
   if (view === 'debug') return installFrame(3, [heading('ターゲットのデバッグ方式を選ぶ。', 'プローブの種類ではなく、つなぐ相手の方式です。型番の資料を確認し、必要な信号を選びます。', 'SETUP / DEBUG'),
-    debugChoices(wire => go(`/connection/new?purpose=debug&wire=${wire}&from=${query.get('from') === 'connections' ? 'connections' : 'setup'}`)),
+    debugChoices(wire => go(`/setup/task?task=debug&wire=${wire}&from=${query.get('from') === 'connections' ? 'connections' : 'setup'}`)),
     note('2線・1線はデバッグ信号の数です。どの方式もGNDを共通にし、電圧を確認します。例示した系列のすべての型番への対応を保証するものではありません。'),
     actions(link('利用パターンに戻る', query.get('from') === 'connections' ? '/connection/new' : '/setup'))]);
   return installFrame(3, [heading(state.installation ? 'OEPの導入が完了しました。' : 'このプローブを、何に使いますか。', 'まず利用パターンを選びます。用途に合う配線と条件を整えて、そのまま作業へ進みます。', 'READY TO CONFIGURE'),
     el('div', { class: 'demo-device' }, el('span', { class: 'chip-mark' }, probeBoard().code), el('div', {}, el('strong', {}, `${probeBoard().model} · 起動確認済み（デモ）`), p('同じ接続のまま設定を続けます。ターゲットは未接続でかまいません。'))),
     state.notice ? note(state.notice) : null,
     el('h2', {}, 'どのように使いますか？'), ...patternChoices(),
+    panel(el('h2', {}, '治具・ほかの環境で使う'), actions(link('据え置き治具の設定順を確認', '/fixture'), link('自動テスト・開発ツールへ', '/handoff'), link('ネットワーク設定', '/settings?from=setup')), external('用途別ガイド', GUIDE_BASE + 'use-cases.ja.md')),
     p('用途はひとつに固定されません。後から追加でき、同じ相手にデバッグとUARTなどを組み合わせられます。', 'muted mt'),
     el('details', { class: 'panel mt' }, el('summary', {}, '本体設定・復元・配線を保存せず試す'), actions(link('プローブ本体を設定する', '/settings?from=setup'), link('設定ファイルから戻す', '/maintenance?from=setup'), link('配線を保存せず試す', '/operations'))),
     actions(link('あとで設定する・作業ホームへ →', '/work'))]);
+}
+function setupPath(view, query) {
+  if (view === 'logs') return installFrame(3, [heading('相手のログを、どの方法で見ますか。', '相手が出すログと、読みたい道具に合わせて選びます。'),
+    el('div', { class: 'stack' }, ...LOG_PATHS.map(([id, title, description]) => el('a', { class: 'pattern-card', 'data-log-path': id, href: id === 'passthrough' ? '#/passthrough' : `#/setup/task?task=${id}` }, el('strong', {}, title), el('span', {}, description)))), external('ログ取得・素通しの説明', GUIDE_BASE + 'use-cases.ja.md#2-相手のログを見るコマンドを送る')]);
+  if (view === 'logic') return installFrame(3, [heading('どのように波形を取りますか。', 'キャプチャだけなら、本体設定も配線名の登録も不要です。'),
+    el('div', { class: 'two-grid' }, ...[
+      ['standalone', '今回だけ、ピンを直接選んで取る', '信号名・ピン・取得条件を指定してWireSkeinへ。本体には何も保存しません。'],
+      ['named', '登録済みの配線を観測する', 'デバッグやUARTなどの配線を、その名前で観測します。ロジック取得は出力せず、使用中のピンも観測できます。'],
+      ['during', '操作の最中の波形を取る', '書き込み・リセット・通信とキャプチャを、同じPython処理で実行します。'],
+      ['test', '波形を自動テストで照合する', 'WireSkeinとpytestで記録・期待値・合否を残します。']
+    ].map(([mode, title, description]) => el('a', { class: 'pattern-card', 'data-capture-mode': mode, href: `#/capture?mode=${mode}` }, el('strong', {}, title), el('span', {}, description)))), external('キャプチャの使い分け', GUIDE_BASE + 'capture.ja.md')]);
+  const id = query.get('task') ?? 'uart', t = taskById(id), wire = query.get('wire');
+  if (id === 'console' && !wireById(wire)) return installFrame(3, [heading('ログを出す相手のデバッグ線を選ぶ。', 'WCHのRVSWDまたは1線DIO（SWIO）を使います。'), debugChoices(w => go(`/setup/task?task=console&wire=${w}`), '', true)]);
+  if (id === 'analog') return installFrame(3, [heading(t.title, t.description), note('ロジックとの同一ピン共有はできません。同じ信号を同時に見るなら別々のピンに接続します。'), actions(link('アナログ取得の準備へ', '/capture?mode=analog', true))]);
+  return installFrame(3, [heading(t.title, t.description), wire ? panel(badge(wireById(wire)?.title ?? wire), p(wireById(wire)?.note)) : null,
+    el('div', { class: 'two-grid' }, panel(el('h2', {}, 'まず一度使う'), p('操作画面でピンと条件を指定します。名前の登録は不要で、画面を開いても動作は始まりません。'), button('保存せず操作の準備へ →', () => { state.operations[id] = { values: {}, wire, recordId: '' }; startTask(id); }, 'primary')),
+      panel(el('h2', {}, '同じ相手を繰り返し使う'), p('配線に名前を付け、相手の型番やメモを記録します。速度やアドレスは、操作を始める画面で決めます。'), link('配線に名前を付ける →', `/connection/new?purpose=${id}${wire ? '&wire=' + wire : ''}&from=${query.get('from') === 'connections' ? 'connections' : 'setup'}`))),
+    actions(link('利用パターンに戻る', '/setup'))]);
+}
+function fixture() {
+  if (!state.connected) return needConnection('/fixture');
+  return [heading('プローブを据え置きの治具にする。', '毎回同じ配線・待機状態で使うための本体設定です。ターゲットが未接続でも準備できます。'),
+    el('div', { class: 'stack' }, ...[
+      ['1', '触らせないピンを決める', 'LED・ボタン・起動用の端子など、使わせないピンを指定します。', '/settings?section=disable'],
+      ['2', '配線に名前を付ける', '相手ごとに接続名を付けます。分かっている固定配線を登録すれば、スキャンは不要です。', '/connections'],
+      ['3', '空き時間のピン状態を決める', 'BOOT0、リセット、チップセレクトなどの待機状態を決めます。', '/settings?section=idle'],
+      ['4', '必要ならログを素通しする', 'セッションがない間だけ、普通のシリアルモニタへログを流します。', '/passthrough'],
+      ['5', '保存して控えを取る', '本体の現在値全体を保存し、更新・別個体への移行に備えます。秘密値は控えに含めません。', '/maintenance?from=fixture']
+    ].map(([num, title, desc, route]) => el('a', { class: 'setup-choice', href: '#' + route }, el('span', { class: 'number' }, num), el('div', {}, el('h3', {}, title), p(desc)), el('span', { class: 'arrow' }, '→')))),
+    note('画面を開いただけでは設定を適用しません。適用するとその場で効き、保存すると再起動後も残る、という違いを確認してください。'), external('治具として据え置く手順', GUIDE_BASE + 'use-cases.ja.md#10-プローブを治具として据え置く')];
 }
 function connect() {
   return el('div', { class: 'page' }, heading('手元のプローブを使う。', '導入済みの機器を選びます。ボードの種類と使える機能は、接続してから確認します。', 'CONNECT YOUR PROBE'),
@@ -254,7 +286,7 @@ function needConnection(returnTo) {
   state.connectReturn = returnTo;
   return el('div', { class: 'page' }, heading('プローブに接続して、続きを開きます。', '選んだ作業は保持されます。接続後にこの画面へ戻ります。'), actions(link('プローブを選ぶ（デモ）', '/connect', true), link('ボードから作る', '/install/select')));
 }
-function startTask(id) { const next = id === 'logic' ? '/capture' : `/operate/${id}`; if (!state.connected) state.connectReturn = next; go(state.connected ? next : '/connect'); }
+function startTask(id) { if (id === 'logic' && state.operations.logic?.recordId) state.capture = { mode: 'named', recordId: state.operations.logic.recordId, channels: [], values: {}, reviewed: false }; const next = id === 'logic' ? '/capture?mode=named' : id === 'analog' ? '/capture?mode=analog' : `/operate/${id}`; if (!state.connected) state.connectReturn = next; go(state.connected ? next : '/connect'); }
 function sampleRecord() { return { id: 'sample-sensor', name: 'sensor', part: 'I2C温度センサ（例）', note: 'ベンチ上のセンサ評価用。3.3 V / 共通GND。', groups: [{ type: 'i2c', pins: ['4', '5'] }] }; }
 function workspaceShell(content) {
   const nav = [['/work', '作業ホーム'], ['/connections', '配線・接続先'], ['/operations', '目的別の操作'], ['/settings', '本体設定'], ['/maintenance', '更新・保守'], ['/handoff', '外部ツールとの連携']];
@@ -275,7 +307,7 @@ function work() {
 }
 function emptyConnections() { return el('div', { class: 'empty' }, el('h3', {}, 'まだ配線を登録していません。'), p('相手の型番や、どの信号をどのピンにつなぐかを保存できます。', 'muted'), actions(link('配線を登録する →', '/connection/new', true), link('登録せずに操作する', '/operations'))); }
 function wiringSummary(record) {
-  return el('div', { class: 'wiring-summary' }, ...record.groups.flatMap(g => [badge(groupSpec(g).short, 'gray'), ...groupSpec(g).roles.map((r, i) => el('span', {}, `${r} → ${pinName(g.pins[i] ?? '—')}`)), g.resetPin ? el('span', {}, `NRST → ${pinName(g.resetPin)}`) : null]));
+  return el('div', { class: 'wiring-summary' }, ...record.groups.flatMap(g => [badge(groupSpec(g).short, 'gray'), ...groupSpec(g).roles.flatMap((r, i) => g.pins[i] ? [el('span', {}, `${r} → ${pinName(g.pins[i])}`)] : []), g.resetPin ? el('span', {}, `NRST → ${pinName(g.resetPin)}`) : null]));
 }
 function recordCard(record) {
   return el('article', { class: 'connection-card' }, el('header', {}, el('div', {}, el('h2', {}, record.name), p(record.part || '相手の型番は未記入', 'muted mb0')), badge('タブ内に保存（デモ）')),
@@ -297,24 +329,24 @@ function wiringEditor(g, index, draft) {
   g.config ??= {};
   return el('section', { class: 'wire-group', 'data-group': g.type },
     el('div', { class: 'wire-head' }, el('h3', {}, spec.short), button('この信号を外す', () => { draft.groups.splice(index, 1); changed(); render(false); })),
-    g.type === 'debug' ? debugChoices(wire => { if (wire === g.wire) return; g.wire = wire; g.pins = groupSpec(g).roles.map(() => ''); g.resetPin = ''; g.config = {}; changed(); render(false); }, g.wire) : null,
+    ['debug', 'console'].includes(g.type) ? debugChoices(wire => { if (wire === g.wire) return; g.wire = wire; g.pins = groupSpec(g).roles.map(() => ''); g.resetPin = ''; g.config = {}; changed(); render(false); }, g.wire, g.type === 'console') : null,
     p(spec.description, 'compact muted'),
-    g.type === 'debug' && !g.wire ? note('方式を選ぶと、そのターゲットに必要な配線と条件が表示されます。') : [
-      el('div', { class: 'wire-pins' }, ...spec.roles.map((role, i) => field(role === 'RX' ? 'プローブRX ← 相手TX' : role === 'TX' ? 'プローブTX → 相手RX' : role, g.pins[i] ?? '', v => { g.pins[i] = v; changed(); }, '', [['', 'ピンを選ぶ'], ...pinChoices()]))),
+    ['debug', 'console'].includes(g.type) && !g.wire ? note('方式を選ぶと、そのターゲットに必要な配線と条件が表示されます。') : [
+      el('div', { class: 'wire-pins' }, ...spec.roles.map((role, i) => field(role === 'RX' ? 'プローブRX ← 相手TX' : role === 'TX' ? 'プローブTX → 相手RX' : role, g.pins[i] ?? '', v => { g.pins[i] = v; changed(); }, g.type === 'uart' && role === 'TX' ? 'ログを受けるだけなら未接続でかまいません。' : '', [['', g.type === 'uart' && role === 'TX' ? '接続しない（受信のみ）' : 'ピンを選ぶ'], ...pinChoices()]))),
       g.type === 'debug' ? field('NRST（任意）', g.resetPin ?? '', v => { g.resetPin = v; changed(); }, '相手が対応し、リセット線を使う場合だけ指定します。', [['', '接続しない'], ...pinChoices()]) : null,
       p('GNDは相手と共通にします。信号の電圧と、相手の端子名を確認してください。', 'compact muted mt'),
-      el('div', { class: 'field-grid' }, ...groupOptions(g).map(([label, value]) => field(label, g.config[label] ?? value, v => { g.config[label] = v; changed(); }))),
-      g.type === 'logic' ? note('4チャネルの配線例です。入力として観測します。取得条件はWireSkeinに引き継ぐための控えで、このページでは取得しません。') : null]);
+      p('ここで記録するのは配線と相手の情報です。速度・アドレスなどは操作を始める画面で指定し、本体には保存しません。', 'compact muted'),
+      g.type === 'logic' ? note('繰り返し使う4チャネルの配線例です。今回だけの取得なら配線名の登録は不要です。取得条件は次の画面で決めます。') : null]);
 }
 function editor(id, query) {
   if (!state.connected) return needConnection(currentRoute);
   const purpose = query.get('purpose');
   if (id === 'new' && !purpose && !state.draft) return [heading('どの用途の配線を登録しますか。', '利用パターンに合った信号と条件から設定します。ターゲットは未接続でもかまいません。'), ...patternChoices(query.get('from') === 'setup' ? 'setup' : 'connections')];
-  if (id === 'new' && purpose === 'debug' && !wireById(query.get('wire')) && !state.draft) return [heading('ターゲットのデバッグ方式を選ぶ。', '方式ごとに必要な配線が異なります。'), debugChoices(wire => go(`/connection/new?purpose=debug&wire=${wire}&from=${query.get('from') ?? 'connections'}`))];
+  if (id === 'new' && ['debug', 'console'].includes(purpose) && !wireById(query.get('wire')) && !state.draft) return [heading('ターゲットのデバッグ方式を選ぶ。', '方式ごとに必要な配線が異なります。'), debugChoices(wire => go(`/connection/new?purpose=${purpose}&wire=${wire}&from=${query.get('from') ?? 'connections'}`), '', purpose === 'console')];
   if (!state.draft || state.draft.editId !== id) {
     const record = state.records.find(r => r.id === id);
     if (id !== 'new' && !record) return [heading('この配線は見つかりません。', '再読み込みすると、プレビュー中の記録は初期状態に戻ります。'), link('配線の一覧へ', '/connections')];
-    state.returnTo = query.get('from') === 'setup' ? '/setup' : query.get('from') === 'capture' ? '/capture' : query.get('from')?.startsWith('operate-') ? `/operate/${query.get('from').slice(8)}` : '/connections';
+    state.returnTo = query.get('from') === 'setup' ? '/setup' : query.get('from') === 'capture' ? '/capture?mode=named' : query.get('from')?.startsWith('operate-') ? `/operate/${query.get('from').slice(8)}` : '/connections';
     state.draft = { ...(record ? structuredClone(record) : { id: `connection-${Date.now()}`, name: '', part: '', note: '', purpose, groups: [newGroup(purpose, query.get('wire'))] }), editId: id }; state.dirty = false;
   }
   const d = state.draft;
@@ -337,8 +369,8 @@ function saveRecord() {
   let error = '';
   if (!/^[A-Za-z][A-Za-z0-9-]{0,15}$/.test(name)) error = '接続名は英字で始まる、16文字以内の英数字・ハイフンにしてください。';
   else if (state.records.some(r => r.id !== d.id && r.name.toLowerCase() === name.toLowerCase())) error = 'その接続名はすでに使われています。別の名前にしてください。';
-  else if (d.groups.some(g => g.type === 'debug' && !wireById(g.wire))) error = 'ターゲットのデバッグ方式を選んでください。';
-  else if (!d.groups.length || pins.some(v => v === '')) error = '信号を追加し、それぞれの役割にピンを選んでください。';
+  else if (d.groups.some(g => ['debug', 'console'].includes(g.type) && !wireById(g.wire))) error = 'ターゲットのデバッグ方式を選んでください。';
+  else if (!d.groups.length || d.groups.some(g => groupSpec(g).roles.some((role, i) => !g.pins[i] && !(g.type === 'uart' && role === 'TX')))) error = '信号を追加し、それぞれの役割にピンを選んでください。';
   else if (new Set(pins).size !== pins.length) error = '同じピンが複数の役割に選ばれています。配線を確認してください。';
   else if (state.records.some(r => r.id !== d.id && r.groups.some(g => groupPins(g).some(pin => pins.includes(pin))))) error = '他の接続先で使用しているピンが含まれています。別のピンを選んでください。';
   if (error) { document.getElementById('form-error').textContent = error; return; }
@@ -351,73 +383,116 @@ function saveRecord() {
 function operations() { return [heading('目的に合う道具を開く。', '配線と条件を確認してから開始します。ここでは機能ごとの画面例を確認できます。'), el('div', { class: 'three-grid' }, ...TASKS.map(t => taskCard(t, false))), actions(link('波形・外部ツールはこちら', '/handoff'))]; }
 function stopTask(id) { state.active[id] = false; state.operations[id] = { ...(state.operations[id] ?? {}), stopped: true }; render(false); announce('サンプルの操作を終了しました'); }
 function operate(id) {
+  if (id === 'analog') return capture(new URLSearchParams('mode=analog'));
   const t = taskById(id);
   if (!state.connected) { state.connectReturn = `/operate/${id}`; return [heading(t.title, t.description), note('プローブに接続すると、この作業へ戻ります。'), actions(link('プローブを選ぶ（デモ）', '/connect', true), link('ボードをプローブにする', '/install/select'))]; }
   const o = state.operations[id] ??= { recordId: '', values: {} }; o.values ??= {};
-  const records = state.records.filter(r => r.groups.some(g => g.type === id));
+  const records = state.records.filter(r => r.groups.some(g => g.type === id || id === 'console' && g.type === 'debug' && g.wire !== 'swd'));
   const selected = records.find(r => r.id === o.recordId);
-  const g = selected?.groups.find(g => g.type === id) ?? { type: id, wire: o.wire, config: o.values };
-  if (id === 'debug' && !wireById(g.wire)) return [heading('ターゲットのデバッグ方式を選ぶ。', '使う方式に合った配線と条件を表示します。'), debugChoices(wire => { o.wire = wire; o.recordId = ''; o.values = {}; render(false); })];
-  const spec = groupSpec(g), config = selected ? { ...g.config, ...o.values } : o.values;
+  const g = selected?.groups.find(g => g.type === id || id === 'console' && g.type === 'debug' && g.wire !== 'swd') ?? { type: id, wire: o.wire, config: o.values };
+  if (['debug', 'console'].includes(id) && !wireById(g.wire)) return [heading('ターゲットのデバッグ方式を選ぶ。', '使う方式に合った配線と条件を表示します。'), debugChoices(wire => { o.wire = wire; o.recordId = ''; o.values = {}; render(false); }, '', id === 'console')];
+  const spec = groupSpec(g), config = o.values;
+  const canReset = selected ? !!g.resetPin : !!o.values.resetPin;
   return [heading(t.title, t.description),
-    id === 'debug' ? panel(badge(spec.short), p(spec.note), !selected ? actions(button('デバッグ方式を選び直す', () => { state.active[id] = false; state.operations[id] = { values: {} }; render(false); })) : null) : null,
+    ['debug', 'console'].includes(id) ? panel(badge(spec.short), p(spec.note), !selected ? actions(button('デバッグ方式を選び直す', () => { state.active[id] = false; state.operations[id] = { values: {} }; render(false); })) : null) : null,
     id === 'dac' && !['esp32', 'ch32'].includes(probeBoard().id) ? note('このボードにはDAC出力がありません。以下は、DAC対応プローブの操作画面例です。', 'amber') : null,
     el('div', { class: 'operation-grid' }, panel(el('h2', {}, '01 / 対象と配線'), field('使う配線', o.recordId ?? '', v => { o.recordId = v; o.values = {}; o.result = false; state.active[id] = false; render(false); }, '配線を選んでも、動作は始まりません。', [['', '保存せず、この場でピンを指定'], ...records.map(r => [r.id, `${r.name} — ${r.part || '型番未記入'}`])]),
-      selected ? [wiringSummary(selected), link('この配線を編集', `/connection/${selected.id}?from=operate-${id}`)] : el('div', { class: 'wire-pins' }, ...spec.roles.map((r, i) => field(r, o.values[`pin-${i}`] ?? String(i), v => { o.values[`pin-${i}`] = v; }, '', Array.from({ length: 23 }, (_, n) => [String(n), pinName(n)])))),
-      el('h2', { class: 'mt' }, '02 / 条件'), ...groupOptions(g).map(([label, value]) => field(label, config[label] ?? value, v => { o.values[label] = v; })),
-      actions(button(t.action, () => { o.result = true; o.stopped = false; o.snapshot = structuredClone(o.values); state.active[id] = !['counter', 'i2c', 'spi', 'gpio'].includes(id); render(false); announce('サンプル結果を表示しました'); }, 'primary', { id: 'start-operation' }), (o.result && !o.stopped) ? button(t.stop, () => stopTask(id)) : null)),
+      selected ? [wiringSummary(selected), link('この配線を編集', `/connection/${selected.id}?from=operate-${id}`)] : el('div', { class: 'wire-pins' }, ...spec.roles.map((r, i) => field(r, o.values[`pin-${i}`] ?? String(i), v => { o.values[`pin-${i}`] = v; if (id === 'uart' && r === 'TX') render(false); }, id === 'uart' && r === 'TX' ? '受信だけなら接続不要です。' : '', [...(id === 'uart' && r === 'TX' ? [['', '接続しない（受信のみ）']] : []), ...pinChoices()]))),
+      id === 'debug' && !selected ? field('NRST（任意）', o.values.resetPin ?? '', v => { o.values.resetPin = v; render(false); }, 'リセットしながら接続するときだけ必要です。', [['', '接続しない'], ...pinChoices()]) : null,
+      el('h2', { class: 'mt' }, '02 / 今回の操作条件'), p('本体には保存しません。開始時に道具から渡す条件です。', 'compact muted'),
+      id === 'debug' ? el('details', {}, el('summary', {}, '接続条件を変更する（通常は自動）'), ...groupOptions(g).map(([label, value]) => field(label, config[label] ?? value, v => { o.values[label] = v; })), field('接続時の動作', config.attach ?? 'running', v => { o.values.attach = v; render(false); }, '', [['running', '動かしたまま接続'], ['halt', '停止して接続'], ['reset', 'リセットしながら接続（NRSTが必要）']]))
+        : id === 'console' ? field('相手のログ出力方式', config.mechanism ?? 'dmseq', v => { o.values.mechanism = v; o.result = false; state.active[id] = false; render(false); }, '相手のアプリが使う方式を選びます。sdiは相手→PCのみ。', [['sdi', 'sdi（受信のみ）'], ['dmdata', 'dmdata（双方向）'], ['dmseq', 'dmseq（双方向）']])
+        : groupOptions(g).map(([label, value]) => field(label, config[label] ?? value, v => { o.values[label] = v; })),
+      id === 'debug' && config.attach === 'reset' && !canReset ? note('NRSTの配線を指定してから接続してください。', 'amber') : null,
+      actions(button(t.action, () => { o.result = true; o.stopped = false; o.snapshot = structuredClone(o.values); state.active[id] = !['counter', 'i2c', 'spi', 'gpio'].includes(id); render(false); announce('サンプル結果を表示しました'); }, 'primary', { id: 'start-operation', disabled: id === 'debug' && config.attach === 'reset' && !canReset }), (o.result && !o.stopped) ? button(t.stop, () => stopTask(id)) : null)),
       panel(el('h2', {}, '03 / 状態と結果'), badge(o.stopped ? '終了（デモ）' : o.result ? (state.active[id] ? '使用中（デモ）' : '単発操作が完了（デモ）') : '未開始', o.result ? '' : 'gray'),
         el('div', { class: 'mt' }, o.result ? el('div', { class: 'terminal', role: 'log', 'aria-label': 'サンプル結果' }, o.stopped ? '使用を終了しました（デモ）。\n終了後のピン状態は本体設定と機能の仕様に従います。' : id === 'debug' ? `方式: ${spec.short}\n対象: ${spec.target}（サンプル）\n状態: 接続済み / ${o.debugState ?? '実行中'}` : t.output) : el('div', { class: 'result-placeholder' }, 'まだ操作を開始していません。', el('br'), '左の配線と条件を確認してから実行します。')),
-        o.result && !o.stopped && id === 'uart' ? [field('送る文字列', o.text ?? '', v => { o.text = v; }, '送信も画面上のシミュレーションです。'), button('送信する（デモ）', () => { o.sent = o.text || '(空)'; render(false); }), o.sent ? p(`送信例: ${o.sent}`, 'mt') : null] : null,
+        o.result && !o.stopped && (id === 'uart' && (selected ? !!g.pins[1] : (o.values['pin-1'] ?? '1') !== '') || id === 'console' && (config.mechanism ?? 'dmseq') !== 'sdi') ? [field('送る文字列', o.text ?? '', v => { o.text = v; }, '送信も画面上のシミュレーションです。'), button('送信する（デモ）', () => { o.sent = o.text || '(空)'; render(false); }), o.sent ? p(`送信例: ${o.sent}`, 'mt') : null] : null,
         o.result && !o.stopped && id === 'debug' ? actions(button('停止（デモ）', () => { o.debugState = '停止中'; render(false); }), button('再開（デモ）', () => { o.debugState = '実行中'; render(false); }), o.debugState ? badge(o.debugState) : null) : null,
         p('表示される結果は固定のサンプルです。入力した値による実際の送受信・計測は行いません。', 'compact muted mt'))),
+    id === 'debug' ? panel(el('h2', {}, 'このターゲットを開発ツールで使う'), p(g.wire === 'swd' ? 'ARM Cortex-MはPythonで操作します。現行ツールにはflash loaderとGDB serverはありません。' : 'CH32の書き込み・GDBはch32rv、Arduino IDEからの書き込みはArduinoCore-CH32RVを使います。'), external('対応ターゲットと注意点', GUIDE_BASE + 'debug-targets.ja.md'), link('開発ツールへの引継ぎ', '/handoff')) : null,
     note('使用を終了しても、ピンの待機設定やデバッグ線の保持状態は別に扱います。実機版では終了後の状態を案内します。')];
 }
-function capture() {
-  if (!state.connected) return needConnection('/capture');
-  const o = state.operations.logic ??= { recordId: '', values: {} };
-  const records = state.records.filter(r => r.groups.some(g => g.type === 'logic'));
-  const record = records.find(r => r.id === o.recordId), group = record?.groups.find(g => g.type === 'logic');
-  return [heading('ロジックアナライザとして使う準備。', '観測する配線と取得条件を確認して、WireSkeinの取得環境へ進みます。'),
-    panel(el('h2', {}, '観測する信号'), field('使う配線', o.recordId, v => { o.recordId = v; render(false); }, '', [['', '配線を選ぶ'], ...records.map(r => [r.id, r.name])]),
-      record ? [wiringSummary(record), link('観測する配線を編集', `/connection/${record.id}?from=capture`), keyValues(LOGIC_TASK.options.map(([label, value]) => [label, group.config?.[label] ?? value]))] : link('観測する配線を設定', '/connection/new?purpose=logic&from=setup', true)),
-    panel(el('h2', {}, '取得から表示まで'), el('ol', {}, el('li', {}, 'このページで観測する配線と条件を用意'), el('li', {}, 'WireSkeinの取得環境からプローブに接続して取得'), el('li', {}, '取得したファイルをブラウザのWireSkein Viewerで表示')),
-      p('ここでは取得条件の控えを表示します。Viewer単体では機器から取得しません。実際のチャネル数・サンプルレートはプローブの宣言に合わせます。'), actions(link('WireSkeinへの引継ぎを確認 →', '/handoff', true))),
-    actions(link('別の利用パターンを設定', '/setup'))];
+function capture(query) {
+  if (!state.connected) return needConnection(currentRoute);
+  const mode = query.get('mode') ?? 'standalone';
+  if (['during', 'test'].includes(mode)) return [heading(mode === 'during' ? '操作と波形取得を一緒に行う。' : '波形を自動テストで照合する。', '操作と取得を外部の同じ処理で組み立てます。ブラウザで別々に開始して同期したことにはしません。'),
+    panel(el('h2', {}, '用意するものと手順'), el('ol', {}, ...['必要なら配線名を登録し、操作と観測で同じ名前を使う', 'WireSkein / Pythonで取得条件と操作の手順を用意する', mode === 'during' ? '取得を待機させて操作し、波形ファイルを残す' : '期待する波形を記述し、記録・照合して合否を残す'].map(t => el('li', {}, t))),
+      actions(link('登録済みの配線を確認', '/connections'), link('利用を終了して外部環境へ', '/handoff')), external('具体的な手順', GUIDE_BASE + 'capture.ja.md'))];
+  const c = state.capture ??= { mode, recordId: '', channels: [{ name: 'signal-1', pin: '6' }, { name: 'signal-2', pin: '7' }], values: {}, reviewed: false };
+  if (c.mode !== mode) { c.mode = mode; c.reviewed = false; }
+  const record = state.records.find(r => r.id === c.recordId);
+  const channels = mode === 'named' ? (record?.groups.flatMap(g => groupSpec(g).roles.flatMap((role, i) => g.pins[i] ? [{ name: `${record.name}.${role.toLowerCase() === 'dio' ? 'swio' : role.toLowerCase()}`, pin: g.pins[i] }] : [])) ?? []) : c.channels;
+  const summaryRows = [['プローブ', `${probeBoard().model} / demo-oep-01`], ['信号', channels.map(ch => `${ch.name} → ${pinName(ch.pin)}`).join(', ')], ['速さ', `${c.values.rate ?? '1000000'} Hz（希望値）`], ['取り方', c.values.kind ?? 'oneshot'], ...(c.values.kind === 'stream' ? [['取得時間', `${c.values.duration ?? '100'} ms`]] : [['サンプル数', c.values.samples ?? '10000'], ['トリガ', c.values.trigger ?? '指定なし'], ['プリトリガ', c.values.pretrigger ?? '0']]), ['上限', '実機の宣言・接続経路に合わせてWireSkeinで確認']];
+  c.summary = summaryRows;
+  const setValue = (key, value) => { c.values[key] = value; c.reviewed = false; document.getElementById('capture-summary')?.remove(); };
+  return [heading(mode === 'analog' ? 'アナログ取得の準備。' : '観測する信号と取得条件を決める。', mode === 'named' ? '既存の配線名で観測します。ロジックは使用中のデバッグ・UART等のピンも観測でき、配線の所有を変更しません。' : '今回だけの取得条件です。本体設定や配線名の登録は不要です。'),
+    panel(el('h2', {}, '01 / 観測する信号'), mode === 'named' ? [field('使う配線', c.recordId, v => { c.recordId = v; c.reviewed = false; render(false); }, '', [['', '配線を選ぶ'], ...state.records.map(r => [r.id, r.name])]),
+      record ? [wiringSummary(record), link('配線を編集', `/connection/${record.id}?from=capture`)] : link('繰り返し使う配線を登録', '/connection/new?purpose=logic&from=setup')]
+      : [ ...c.channels.map((ch, i) => el('div', { class: 'field-grid mb' }, field(`信号${i + 1}の表示名`, ch.name, v => { ch.name = v; c.reviewed = false; document.getElementById('capture-summary')?.remove(); }, '取得ファイル内の名前。本体のラベルは変更しません。'), field(`信号${i + 1}のピン`, ch.pin, v => { ch.pin = v; c.reviewed = false; document.getElementById('capture-summary')?.remove(); }, mode === 'analog' ? '実機ではADC対応ピンに限定します。ここでは候補の表示例です。' : '', pinChoices()))),
+        actions(button('観測する信号を追加', () => { c.channels.push({ name: `signal-${c.channels.length + 1}`, pin: String(6 + c.channels.length) }); c.reviewed = false; render(false); }), c.channels.length > 1 ? button('末尾の信号を外す', () => { c.channels.pop(); c.reviewed = false; render(false); }) : null)],
+      note(mode === 'analog' ? 'アナログ取得はピンを専有します。同じ信号をロジックでも見るなら別のピンへ配線します。' : 'ロジック取得は聞くだけで、ピンを駆動しません。GNDと信号電圧を確認します。')),
+    panel(el('h2', {}, '02 / WireSkeinで指定する取得条件'),
+      field('取り方', c.values.kind ?? 'oneshot', v => { setValue('kind', v); render(false); }, '利用できる取り方と上限は実機の宣言で確認します。', [['oneshot', 'ワンショット'], ['stream', 'PCへ流し続ける'], ['repeat', 'トリガごとに繰り返す']]),
+      field('サンプルレート（Hz）', c.values.rate ?? '1000000', v => setValue('rate', v)),
+      c.values.kind === 'stream' ? field('取得時間（ms）', c.values.duration ?? '100', v => setValue('duration', v)) : [field('サンプル数', c.values.samples ?? '10000', v => setValue('samples', v)), field('トリガ', c.values.trigger ?? '指定なし', v => setValue('trigger', v), '信号とエッジ/レベルを指定する入力例。'), field('プリトリガ（サンプル）', c.values.pretrigger ?? '0', v => setValue('pretrigger', v))],
+      p('このタブ内で準備する値です。ここでは取得を実行せず、プローブへ保存もしません。', 'muted'),
+      button('引継ぎ内容を確認（デモ）', () => { c.reviewed = true; render(false); }, 'primary', { disabled: !channels.length })),
+    c.reviewed ? panel(el('div', { id: 'capture-summary' }, el('h2', {}, '外部環境に渡す内容'), keyValues(summaryRows), link('WireSkeinへの引継ぎを確認 →', '/handoff', true))) : null,
+    actions(link('取得の使い分けに戻る', '/setup/logic')), external('キャプチャの使い分け', GUIDE_BASE + 'capture.ja.md')];
+}
+function passthrough() {
+  if (!state.connected) return needConnection('/passthrough');
+  const d = state.passthrough ??= { source: 'uart', wire: 'rvswd', rx: '6', dio: '6', clk: '7', port: 'cdc0', baud: '115200', format: '8n1', mechanism: 'dmseq', applied: false, saved: false };
+  const update = (key, value) => { d[key] = value; d.applied = d.saved = false; const summary = document.getElementById('passthrough-status'); if (summary) summary.textContent = '未適用'; const save = /** @type {HTMLButtonElement} */ (document.getElementById('save-passthrough')); if (save) save.disabled = true; };
+  return [heading('普通のシリアルモニタへログを流す。', 'OEPセッションがない間だけ働く、本体の素通し設定です。相手 → PCの受信専用で、相手へは送信しません。'),
+    panel(el('h2', {}, '01 / 相手がログを出す経路'), field('ログの入力元', d.source, v => { update('source', v); render(false); }, '', [['uart', 'UART'], ['console', 'デバッグ線（WCH）']]),
+      d.source === 'uart' ? [field('受信ピン（相手TXから）', d.rx, v => update('rx', v), '', pinChoices()), field('素通しの通信速度（baud）', d.baud, v => update('baud', v)), field('素通しの形式', d.format, v => update('format', v))]
+      : [field('デバッグ線', d.wire, v => { update('wire', v); render(false); }, '', [['rvswd', 'RVSWD（2線）'], ['swio', '1線DIO（SWIO）']]), field(d.wire === 'rvswd' ? 'SWDIO' : 'DIO', d.dio, v => update('dio', v), '', pinChoices()), d.wire === 'rvswd' ? field('SWCLK', d.clk, v => update('clk', v), '', pinChoices()) : null,
+        field('相手のログ出力方式', d.mechanism, v => update('mechanism', v), '', [['sdi', 'sdi'], ['dmdata', 'dmdata'], ['dmseq', 'dmseq']]), p('相手を停止・リセットする設定ではありません。ただしRVSWDでは接続時に相手がリセットされる場合があります。', 'muted')]),
+    panel(el('h2', {}, '02 / ログを出すプローブのポート'), field('出力先シリアルポート', d.port, v => update('port', v), '接続方式を選び直す操作ではありません。実機では宣言されたポートを表示し、1ポートに素通し1つだけを設定します。以下は構成例です。', [['cdc0', 'cdc0 — USBシリアルの例'], ['bridge0', 'bridge0 — UART bridgeの例'], ['usj0', 'usj0 — USB-Serial/JTAGの例']]),
+      note('OEPツールが使用中は止まり、セッションが終わると再開します。現在のブラウザ接続を閉じる操作は最後に行います。'),
+      el('p', { id: 'passthrough-status' }, d.saved ? '保存済み（デモ）' : d.applied ? '適用済み・未保存（デモ）' : '未適用'),
+      actions(button('素通し設定を適用（デモ）', () => { d.applied = true; render(false); }, 'primary'), button('本体の現在値全体を保存（デモ）', () => { d.saved = true; render(false); }, '', { id: 'save-passthrough', disabled: !d.applied })),
+      d.applied ? link('接続を終了してシリアルモニタへ', '/handoff') : null),
+    external('素通し設定と制約', GUIDE_BASE + 'settings.ja.md#素通し'), actions(link('据え置き治具の手順へ', '/fixture'), link('ログの方法を選び直す', '/setup/logs'))];
 }
 function settings(query) {
-  if (!state.connected) return needConnection('/settings');
+  if (!state.connected) return needConnection(currentRoute);
   const update = (key, value) => { state.settings[key] = value; state.settingsApplied = false; state.settingsSaved = false; document.getElementById('settings-summary').textContent = '入力中・未適用'; (/** @type {HTMLButtonElement} */ (document.getElementById('save-settings'))).disabled = true; };
   return [heading('プローブ本体の動作を整える。', '配線の名前とは別に、待機時や次回起動後の動作を設定します。必要な項目だけ変更してください。'),
     note('ここは設定項目の構成例です。実機版では、接続したプローブが提供する設定だけを表示します。'),
+    panel(el('h2', {}, '触らせないピン'), field('使用禁止にするピン（例）', state.settings.disabledPins ?? '', v => update('disabledPins', v), 'ボードのLED・ボタン・起動用端子など。ピン名を記録する画面例です。')),
     el('div', { class: 'two-grid' }, panel(el('h2', {}, '空いているピンの状態'), p('治具の制御線など、機能が使っていないときの状態を設定します。', 'muted'),
       field('対象のピン', state.settings.pin ?? '4', v => update('pin', v), '', Array.from({ length: 23 }, (_, n) => [String(n), pinName(n)])),
       el('div', { class: 'mt' }, field('空き状態', state.settings.idle ?? 'hi-z', v => update('idle', v), '空いているピンには適用時に、使用中なら解放時に反映されます。', [['hi-z', 'Hi-Z（入力・pullなし）'], ['pull-up', 'pull-up'], ['pull-down', 'pull-down'], ['low', '出力 Low'], ['high', '出力 High']]))),
-      panel(el('h2', {}, 'ネットワーク'), p('Wi-Fi対応の構成で、プローブをベンチのネットワークにつなぐ設定です。', 'muted'),
-        field('SSID', state.settings.ssid ?? '', v => update('ssid', v), '入力はこのタブ内だけに保持します。'), el('div', { class: 'mt' }, field('パスワード', state.settings.password ?? '', v => update('password', v), '実際のパスワードを入力する必要はありません。', null, 'password')))),
+      probeBoard().id === 'esp32' ? panel(el('h2', {}, 'ネットワーク'), p('Wi-Fi対応の構成で、プローブをベンチのネットワークにつなぐ設定です。', 'muted'),
+        field('SSID', state.settings.ssid ?? '', v => update('ssid', v), '入力はこのタブ内だけに保持します。'), el('div', { class: 'mt' }, field('パスワード', state.settings.password ?? '', v => update('password', v), '実際のパスワードを入力する必要はありません。', null, 'password'))) : panel(el('h2', {}, 'ネットワーク'), p('このサンプルのプローブにはWi-Fi設定がありません。対応するプローブだけにSSIDの入力を表示します。'))),
     el('div', { class: 'save-bar mt' }, el('p', { id: 'settings-summary' }, state.settingsSaved ? '保存済み（デモ）' : state.settingsApplied ? '適用済み・永続保存はまだです（デモ）' : '入力中・未適用'), actions(button('現在の設定に適用（デモ）', () => { state.settingsApplied = true; render(false); }, 'primary'), button('次回起動用に保存（デモ）', () => { state.settingsSaved = true; render(false); }, '', { disabled: !state.settingsApplied, id: 'save-settings' }))),
     p('永続保存は、本体の現在の設定全体を保存する操作です。Wi-Fiを設定しても、このページから直接TCP接続できるわけではありません。', 'compact muted'),
-    query.get('from') === 'setup' ? actions(link('初期設定の続きへ', '/setup')) : null];
+    actions(link('据え置き治具の手順へ', '/fixture'), link('初期設定の続きへ', '/setup'))];
 }
 function maintenance(query) {
   if (!state.connected) return needConnection('/maintenance');
   return [heading('更新・復元と、困ったときの確認。', '作業内容を確認してから実行し、終わったら同じプローブの作業に戻ります。'),
     el('div', { class: 'two-grid' }, panel(el('h2', {}, 'ファームウェアの更新'), p(`${probeBoard().model}のファームウェアイメージと、設定を保持できる条件を確認します。`, 'muted'), badge('版・ファームウェアイメージはプレビュー用'),
       actions(button('更新内容の確認例を見る', () => { state.maintenance = 'update'; render(false); }))),
-      panel(el('h2', {}, '設定の控え・復元'), p('復元前に、別個体の設定や未対応の項目、上書き内容を確認します。', 'muted'), actions(button('設定ファイルの確認例を見る', () => { state.maintenance = 'restore'; render(false); })))),
+      panel(el('h2', {}, '設定の控え・復元'), p('復元前に、別個体の設定や未対応の項目、上書き内容を確認します。', 'muted'), actions(link('本体の保存状態を確認', '/settings'), button('控えの内容例を見る', () => { state.maintenance = 'backup'; render(false); }), button('設定ファイルの確認例を見る', () => { state.maintenance = 'restore'; render(false); })))),
+    state.maintenance === 'backup' ? panel(el('h2', {}, '控えに含める内容の例'), keyValues([['本体設定', '配線名・使用禁止・待機状態・素通し等'], ['操作条件', 'UART速度やキャプチャ条件は対象外'], ['秘密値', 'Wi-Fiパスフレーズは含めない'], ['メモ', '型番・メモは本体設定とは別の記録']]), p('ファイルはまだ生成しません。本体の現在値全体を保存したうえで控えを取る流れの表示例です。')) : null,
     state.maintenance === 'restore' ? panel(el('h2', {}, '復元する変更の例'), keyValues([['配線', 'sensor: SDA → GP4 / SCL → GP5'], ['記録', '相手の型番・メモは別の保存対象'], ['秘密値', 'Wi-Fiパスワードは含まれていません']]), actions(button('この変更を適用（デモ）', () => { state.maintenance = 'restored'; render(false); }, 'primary'))) : null,
     state.maintenance === 'update' ? panel(el('h2', {}, '更新前の確認'), p('個体・チップ・revision・ファームウェアイメージの適合性と、既存設定への影響を確認する画面です。'), note('今回は実際の更新を行いません。導入と同じ、起動後の接続引継ぎを使用します。'), button('更新後の状態を見る（デモ）', () => { state.maintenance = 'updated'; render(false); }, 'primary')) : null,
     ['restored', 'updated'].includes(state.maintenance) ? note(state.maintenance === 'restored' ? '復元を適用した状態の例です。次回起動にも残す場合は、本体設定で永続保存します。' : '更新後、同じ個体と起動版を確認した状態の例です。設定は維持されています。') : null,
     el('details', { class: 'panel mt' }, el('summary', {}, '診断・機能の宣言・保存領域'), p('通常の配線編集では開く必要はありません。接続状態や対応機能を調べ、問題を切り分けるための詳細画面です。', 'mt'), keyValues([['接続', '確認済み（デモ）'], ['個体ID', 'demo-oep-01'], ['保存領域', 'タブ内のサンプル'], ['記録', '秘密値を含まない診断情報を表示する想定']])),
-    actions(link(query.get('from') === 'setup' ? '初期設定の続きへ' : '作業ホームへ戻る', query.get('from') === 'setup' ? '/setup' : '/work'))];
+    actions(link('据え置き治具の手順へ', '/fixture'), link(query.get('from') === 'setup' ? '初期設定の続きへ' : '作業ホームへ戻る', query.get('from') === 'setup' ? '/setup' : '/work'))];
 }
 function handoff() {
   return [heading('目的に合う道具へ、つなぐ。', 'このページで整えたプローブと配線を、観測や開発・自動化にも使えます。', 'CONNECTED TOOLS'),
+    state.capture?.reviewed ? panel(el('h2', {}, '今回の取得条件の控え'), keyValues(state.capture.summary), p('外部のWireSkeinで指定する内容です。ブラウザから設定や接続を自動転送するものではありません。')) : null,
     el('div', { class: 'two-grid' }, panel(badge('ファイル表示 / ブラウザ'), el('h2', { class: 'mt' }, '取得した波形をWireSkeinで見る'), p('取得済みの .wireskein / .sr ファイルを、公開Viewerで表示します。ファイルを開くだけなら、このページの機器接続を終了する必要はありません。'), external('WireSkein Viewerを開く', 'https://open-embedded-probe.github.io/wireskein-web/')),
       panel(badge('取得・解析 / 外部環境'), el('h2', { class: 'mt' }, 'プローブから波形を取得する'), p('取得と高度な解析はPython側のWireSkeinを使います。公開Viewerだけで機器から取得することはできません。'), external('WireSkeinの導入・使い方', 'https://github.com/Open-Embedded-Probe/wireskein'))),
     el('section', { class: 'panel mt' }, el('h2', {}, 'IDEやPythonから使う'), p('ターゲット固有の書き込みや自動テストは、対応する開発ツールへ。個体と配線を特定する情報を確認できます。'),
       keyValues([['プローブ', state.connected ? `${probeBoard().model} / demo-oep-01` : 'プローブ未接続'], ['接続先', state.records.map(r => r.name).join(', ') || '配線は未登録'], ['アドレス例', `oep://demo-oep-01${state.records[0] ? '/' + state.records[0].name : ''}`]]),
-      actions(external('Python・CLIの使い方', DOCS[5][2]), state.connected ? button('このページでの利用を終了して渡す（デモ）', () => { state.active = {}; state.connected = false; state.transferDone = true; render(false); }) : null),
+      actions(external('Python・CLIの使い方', DOCS[5][2]), external('CH32の書き込み・GDB（ch32rv）', 'https://github.com/ch32-riscv-ug/ch32rv'), external('自動テストの手順', GUIDE_BASE + 'use-cases.ja.md#8-自動テストの治具にする'), state.connected ? button('このページでの利用を終了して渡す（デモ）', () => { state.active = {}; state.connected = false; state.transferDone = true; render(false); }) : null),
       state.transferDone ? note('デモ接続と操作を終了しました。実機版では変更権と通信を解放して、別の道具で接続できる状態にします。') : null)];
 }
 function notFound() { return el('div', { class: 'page' }, heading('この画面は見つかりません。', '入口から、確認したい作業を選んでください。'), link('OEPの入口へ戻る', '/home', true)); }
@@ -426,7 +501,7 @@ function render(focus = true) {
   const route = routeNow(); currentRoute = route;
   const [path, params] = route.split('?'), query = new URLSearchParams(params);
   const [, view, id] = path.split('/');
-  const workspace = ['work', 'connections', 'connection', 'operations', 'operate', 'capture', 'settings', 'maintenance', 'handoff'].includes(view);
+  const workspace = ['work', 'connections', 'connection', 'operations', 'operate', 'capture', 'passthrough', 'fixture', 'settings', 'maintenance', 'handoff'].includes(view);
   let content;
   if (view === 'home') content = home();
   else if (view === 'boards') content = boards();
@@ -441,7 +516,9 @@ function render(focus = true) {
   else if (view === 'connection') content = editor(id, query);
   else if (view === 'operations') content = operations();
   else if (view === 'operate') content = operate(id);
-  else if (view === 'capture') content = capture();
+  else if (view === 'capture') content = capture(query);
+  else if (view === 'passthrough') content = passthrough();
+  else if (view === 'fixture') content = fixture();
   else if (view === 'settings') content = settings(query);
   else if (view === 'maintenance') content = maintenance(query);
   else if (view === 'handoff') content = handoff();

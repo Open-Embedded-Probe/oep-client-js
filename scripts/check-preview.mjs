@@ -63,10 +63,10 @@ try {
   await install('esp32');
   await until('location.hash==="#/setup"'); await shot('03-setup');
   assert.match(await evaluate('document.querySelector("h1").textContent'), /導入が完了/);
-  await choosePattern('uart');
+  await choosePattern('logs'); await evaluate('document.querySelector("[data-log-path=uart]").click()'); await delay(100); await click('配線に名前を付ける →');
   await set('接続名', 'board-1'); await set('相手のIC・基板の型番（任意）', 'STM32F103C8T6'); await set('用途・配線メモ（任意）', 'ログとデバッグ。相手は未接続。');
   await set('プローブRX ← 相手TX', '1'); await set('プローブTX → 相手RX', '0');
-  await set('通信速度（baud）', '9600');
+  assert.equal(await evaluate('[...document.querySelectorAll("label")].some(e=>e.firstChild.textContent==="通信速度（baud）")'), false);
   await click('＋ デバッグ'); await chooseWire('swd');
   for (const [label, pin] of [['SWDIO','2'],['SWCLK','3'],['NRST（任意）','4']]) await set(label, pin);
   await shot('04-connection-editor'); await click('配線を保存');
@@ -84,6 +84,8 @@ try {
   assert.match(await evaluate('document.body.innerText'), /STM32F103C8T6/);
   await click('UARTで使う →');
   assert.match(await evaluate('document.body.innerText'), /未開始/);
+  await set('通信速度（baud）', '9600');
+  await route('/work'); await route('/operate/uart');
   assert.equal(await evaluate('[...document.querySelectorAll("label")].find(e=>e.firstChild.textContent==="通信速度（baud）").querySelector("input").value'), '9600');
   await click('受信を開始'); await shot('06-uart');
   await set('送る文字列', '<img src=x onerror=alert(1)>'); await click('送信する（デモ）');
@@ -105,37 +107,59 @@ try {
   // Each debug protocol keeps its own required pins, optional reset and method through save/edit/use.
   for (const [wire, roles, title] of [['swd', ['SWDIO','SWCLK'], 'SWD'], ['rvswd', ['SWDIO','SWCLK'], 'RVSWD'], ['swio', ['DIO'], '1線DIO（SWIO）']]) {
     await reset(); await route('/setup'); await click('プローブを選ぶ（デモ）'); await click('機器を選んで接続（デモ）');
-    await choosePattern('debug'); await chooseWire(wire);
+    await choosePattern('debug'); await chooseWire(wire); await click('配線に名前を付ける →');
     assert.equal(await evaluate('document.querySelectorAll("[data-group=debug] .wire-pins select").length'), roles.length);
     await set('接続名', 'debug-'+wire);
     for (const [i, label] of roles.entries()) await set(label, String(6+i));
-    await set('速度（kHz）','500');
+    assert.equal(await evaluate('[...document.querySelectorAll("label")].some(e=>e.textContent.includes("速度上限"))'), false);
     await shot('16-debug-'+wire); await click('配線を保存');
     await until('location.hash.startsWith("#/setup/ready?")');
     await click(title+'の操作へ →');
     assert.match(await evaluate('document.body.innerText'), /未開始/);
+    await set('速度上限（kHz、空欄は自動）', '500');
     await click('ターゲットに接続'); assert.ok((await evaluate('document.querySelector(".terminal").textContent')).includes(title));
     await click('ターゲットを切り離す'); await click('この配線を編集');
     assert.equal(await evaluate('document.querySelector("[data-wire][aria-pressed=true]").dataset.wire'), wire);
     assert.equal(await evaluate('document.querySelectorAll("[data-group=debug] .wire-pins select").length'), roles.length);
     await click('キャンセル'); await until('location.hash==="#/operate/debug"');
   }
-  // Logic setup prepares a named wiring record and hands off acquisition; it never pretends to capture.
+  // Standalone capture needs no label. Named capture can observe an existing I2C wiring record.
   await reset(); await route('/setup'); await click('プローブを選ぶ（デモ）'); await click('機器を選んで接続（デモ）');
-  await choosePattern('logic'); await set('接続名','logic-test');
-  for (let i=0;i<4;i++) await set('CH'+i,String(6+i));
-  await set('サンプルレート（Hz）','2000000'); await click('配線を保存');
-  await until('location.hash.startsWith("#/setup/ready?")'); await click('取得条件とWireSkeinへの引継ぎへ →');
-  assert.match(await evaluate('document.body.innerText'), /2000000/); await shot('17-logic');
-  await click('観測する配線を編集'); await click('キャンセル'); await until('location.hash==="#/capture"');
-  await click('WireSkeinへの引継ぎを確認 →'); await until('location.hash==="#/handoff"');
+  await choosePattern('logic'); await evaluate('document.querySelector("[data-capture-mode=standalone]").click()'); await delay(100);
+  assert.equal(await evaluate('!!document.querySelector("#connection-form")'), false);
+  await set('信号1の表示名','SDA'); await set('サンプルレート（Hz）','2000000'); await set('トリガ','SDA:fall');
+  await click('引継ぎ内容を確認（デモ）'); await shot('17-logic');
+  assert.match(await evaluate('document.querySelector("#capture-summary").textContent'), /2000000/);
+  await click('WireSkeinへの引継ぎを確認 →'); assert.match(await evaluate('document.body.innerText'), /SDA:fall/);
+  await route('/capture?mode=named'); await set('使う配線','sample-sensor'); await click('引継ぎ内容を確認（デモ）');
+  assert.match(await evaluate('document.querySelector("#capture-summary").textContent'), /sensor.sda/);
+  await click('配線を編集'); await click('キャンセル'); await until('location.hash==="#/capture?mode=named"');
+  await route('/connections'); assert.equal(await evaluate('document.querySelectorAll(".connection-card").length'), 1);
+  for (const mode of ['during','test','analog']) { await route('/capture?mode='+mode); assert.equal(await evaluate('!!document.querySelector("h1")'), true); }
+  // Receive-only UART wiring and console direction are distinct from idle-time passthrough settings.
+  await route('/connection/new?purpose=uart'); await set('接続名','rx-only'); await set('プローブRX ← 相手TX','8'); await click('配線を保存');
+  await until('location.hash.startsWith("#/setup/ready?record=")'); await click('UARTの操作へ →'); await click('受信を開始');
+  assert.equal(await evaluate('[...document.querySelectorAll("button")].some(e=>e.textContent=== "送信する（デモ）")'), false);
+  await click('受信を停止');
+  await route('/setup/logs'); await evaluate('document.querySelector("[data-log-path=console]").click()'); await delay(100);
+  assert.equal(await evaluate('!!document.querySelector("[data-wire=swd]")'), false); await chooseWire('swio'); await click('保存せず操作の準備へ →');
+  await set('相手のログ出力方式','sdi'); await click('ログの受信を開始');
+  assert.equal(await evaluate('[...document.querySelectorAll("button")].some(e=>e.textContent=== "送信する（デモ）")'), false);
+  await set('相手のログ出力方式','dmseq'); await click('ログの受信を開始'); await set('送る文字列','test'); await click('送信する（デモ）'); await shot('18-console');
+  await route('/passthrough'); await set('ログの入力元','console'); await set('デバッグ線','swio');
+  assert.equal(await evaluate('[...document.querySelectorAll("label")].some(e=>e.firstChild.textContent==="SWCLK")'), false);
+  await click('素通し設定を適用（デモ）'); await click('本体の現在値全体を保存（デモ）'); assert.match(await evaluate('document.getElementById("passthrough-status").textContent'), /保存済み/);
+  await set('出力先シリアルポート','bridge0'); assert.equal(await evaluate('document.getElementById("save-passthrough").disabled'), true); await shot('19-passthrough');
+  await route('/fixture'); assert.equal(await evaluate('document.querySelectorAll(".setup-choice").length'), 5); await shot('20-fixture');
+  await route('/settings'); assert.equal(await evaluate('[...document.querySelectorAll("label")].some(e=>e.firstChild.textContent==="SSID")'), false);
+  await route('/maintenance?from=fixture'); await click('控えの内容例を見る'); assert.match(await evaluate('document.body.innerText'), /ファイルはまだ生成しません/);
   for (const pattern of ['bus','signal']) { await route('/setup'); await choosePattern(pattern); assert.ok((await evaluate('document.querySelectorAll(".pattern-card").length')) >= 2); }
   // Existing-device entry skips board selection. A direct operation link retains the requested task.
   await reset(); await route('/operate/uart'); await click('プローブを選ぶ（デモ）'); await click('機器を選んで接続（デモ）'); await until('location.hash==="#/operate/uart"');
   await route('/connections'); await click('配線・相手の情報を編集'); await set('接続名','edited'); await click('変更を保存'); assert.match(await evaluate('document.body.innerText'), /edited/);
   // Mobile widths and no horizontal document overflow on representative screens.
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-  for (const [path, name] of [['/home','10-mobile-home'],['/install/select','11-mobile-boards'],['/setup','12-mobile-setup'],['/connection/new?purpose=debug&wire=swio','13-mobile-editor'],['/operate/uart','14-mobile-operation'],['/learn','15-mobile-learn']]) {
+  for (const [path, name] of [['/home','10-mobile-home'],['/install/select','11-mobile-boards'],['/setup','12-mobile-setup'],['/connection/new?purpose=debug&wire=swio','13-mobile-editor'],['/operate/uart','14-mobile-operation'],['/learn','15-mobile-learn'],['/setup/logs','21-mobile-logs'],['/capture?mode=standalone','22-mobile-capture'],['/passthrough','23-mobile-passthrough'],['/fixture','24-mobile-fixture']]) {
     await route(path); await shot(name);
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'), true, 'overflow at '+path);
   }

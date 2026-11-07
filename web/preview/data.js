@@ -11,7 +11,7 @@ export const BOARDS = [
   { id: 'p4', name: 'ESP32-P4 / P4X', chip: 'ESP32-P4', tag: '推奨ボード', recommended: true, title: '通信と観測を、ひとつの治具に。',
     description: '高速USBや多チャネルの観測に対応する構成。シリアルから導入し、同じ経路で設定を続けます。',
     features: ['SWD / RVSWD / SWIO', 'UART 2系統・バス通信', '高速USB・ロジック取得'],
-    note: 'P4とP4Xはファームウェアイメージが異なります。チップのrevisionを確認して選びます。UART有効化はfirmware側で対応中です。', install: '書き込みに使えるUSB端子へ接続', port: '書き込みに使ったシリアルポート', handoff: 'direct', installable: true, model: 'ESP32-P4', code: 'P4' },
+    note: 'P4とP4Xはファームウェアイメージが異なります。チップのrevisionを確認して選びます。UART bridgeはfirmwareで既定有効です。配布版と実機経路の確認は別途必要です。', install: '書き込みに使えるUSB端子へ接続', port: '書き込みに使ったシリアルポート', handoff: 'direct', installable: true, model: 'ESP32-P4', code: 'P4' },
   { id: 's3', name: 'ESP32-S3 / C3 / C6', chip: '独自のOEP構成', tag: '互換ファームウェアイメージを持っている方', title: '自分の構成を、OEPにつなぐ。',
     description: '互換firmwareの持ち込み用。共通の配布OepProbeファームウェアイメージはなく、ファームウェアイメージによって使える機能も異なります。',
     features: ['ファームウェアイメージで機能が変わる', '互換mergedファームウェアイメージを使用', '起動後のUSB構成に注意'],
@@ -30,22 +30,30 @@ export const TASKS = [
   { id: 'pwm', num: '05', title: 'PWM信号を出す', short: 'PWM', description: '周波数とdutyを指定して、繰り返す信号を出力します。', result: '出力中の設定値', category: '信号', roles: ['OUT'], options: [['周波数（Hz）', '1000'], ['duty（%）', '50']], action: '出力を開始', stop: '出力を停止', output: '出力中（サンプル）\n周波数: 1,000 Hz / duty: 50 %' },
   { id: 'counter', num: '06', title: 'パルスを数える', short: 'カウンタ', description: '一定時間のエッジ数を計測し、信号の頻度を確かめます。', result: 'カウントと実計測時間', category: '信号', roles: ['IN'], options: [['計測窓（ms）', '100'], ['エッジ', '立上り']], action: '計測する', stop: 'ピンを解放', output: '100 edges / 100.00 ms\n算出周波数: 1.00 kHz（サンプル）' },
   { id: 'dac', num: '07', title: 'アナログ値を出す', short: 'DAC', description: '対応プローブのDACで出力値を設定します。実測値とは区別します。', result: '設定値と出力状態', category: '信号', roles: ['OUT'], options: [['設定値（8 bitの例）', '128']], action: '出力を適用', stop: '出力を終了', output: '設定値: 128 / 255\nサンプル設定値です。電圧を実測した結果ではありません。' },
-  { id: 'debug', num: '08', title: 'ターゲットをデバッグ', short: 'デバッグ', description: '固定配線で接続し、停止・再開やメモリの確認を行います。', result: 'ターゲットの応答と実行状態', category: 'デバッグ', roles: [], options: [['速度（kHz）', '1000']], action: 'ターゲットに接続', stop: 'ターゲットを切り離す', output: '対象: ARM Cortex-M（サンプル）\n状態: 接続済み / 実行中' },
+  { id: 'debug', num: '08', title: 'ターゲットをデバッグ', short: 'デバッグ', description: '固定配線で接続し、停止・再開やメモリの確認を行います。', result: 'ターゲットの応答と実行状態', category: 'デバッグ', roles: [], options: [['速度上限（kHz、空欄は自動）', '']], action: 'ターゲットに接続', stop: 'ターゲットを切り離す', output: '対象: ARM Cortex-M（サンプル）\n状態: 接続済み / 実行中' },
   { id: 'peer', num: '09', title: 'I2C / SPIの相手機器になる', short: '相手機器として応答', description: '開発中の基板が通信を開始し、プローブがセンサなどの代役として応答します。', result: '相手から来た要求と返したデータ', category: '通信', roles: ['SDA', 'SCL'], options: [['方式', 'I2C target'], ['応答アドレス', '0x48'], ['応答データ（hex）', '18 A0']], action: '待ち受けを開始', stop: '待ち受けを停止', output: '待ち受け中（サンプル）\n要求: READ 0x48 / 2 bytes\n応答: 18 A0' },
 ];
 export const DEBUG_WIRES = [
-  { id: 'swd', short: 'SWD', title: 'SWD（2線）', description: 'SWDに対応するARMターゲット向け。例: STM32。', roles: ['SWDIO', 'SWCLK'], target: 'ARM Cortex-M', part: 'STM32F103C8T6', note: 'データ線とクロック線を指定します。必要な場合だけ、別途NRSTを追加します。' },
-  { id: 'rvswd', short: 'RVSWD', title: 'RVSWD（2線）', description: '2線デバッグに対応するWCH RISC-V向け。例: CH32V203。', roles: ['SWDIO', 'SWCLK'], target: 'WCH RISC-V', part: 'CH32V203C8T6', note: 'SWDとは異なる方式です。同じ信号名でも互換ではありません。ターゲットに応じてクロックの待機状態を確認します。' },
-  { id: 'swio', short: '1線DIO（SWIO）', title: '1線DIO（SWIO）', description: '1線デバッグに対応するWCHターゲット向け。例: CH32V003。', roles: ['DIO'], target: 'WCH 1線デバッグ', part: 'CH32V003F4P6', note: 'データ線1本を指定します。独立したクロック線は使いません。OEPの仕様・APIではSWIOと呼びます。' },
+  { id: 'swd', short: 'SWD', title: 'SWD（2線）', description: 'SWDに対応するARMターゲット向け。例: STM32。', roles: ['SWDIO', 'SWCLK'], target: 'ARM Cortex-M', part: 'STM32F103C8T6', note: 'データ線とクロック線を指定します。必要な場合だけ、別途NRSTを追加します。ARM用のflash loader・GDB serverは現行ツールにありません。' },
+  { id: 'rvswd', short: 'RVSWD', title: 'RVSWD（2線）', description: '2線デバッグに対応するWCH RISC-V向け。例: CH32V203。', roles: ['SWDIO', 'SWCLK'], target: 'WCH RISC-V', part: 'CH32V203C8T6', note: 'SWDとは異なる方式です。同じ信号名でも互換ではありません。待機状態と速度は通常プローブ・道具に任せます。CH32X035はPC18/PC19、CH32V203はPA13/PA14の例です。' },
+  { id: 'swio', short: '1線DIO（SWIO）', title: '1線DIO（SWIO）', description: '1線デバッグに対応するWCHターゲット向け。例: CH32V003。', roles: ['DIO'], target: 'WCH 1線デバッグ', part: 'CH32V003F4P6', note: 'データ線1本を指定します。独立したクロック線は使いません。OEPの仕様・APIではSWIOと呼びます。CH32V003はPD1。NRSTはoption bytesで無効の場合があります。' },
 ];
-export const LOGIC_TASK = { id: 'logic', short: 'ロジックアナライザ', description: '観測する信号と入力ピンを登録し、WireSkeinの取得環境へ進みます。', roles: ['CH0', 'CH1', 'CH2', 'CH3'], options: [['サンプルレート（Hz）', '1000000'], ['取得時間（ms）', '10']] };
+export const LOGIC_TASK = { id: 'logic', short: 'ロジックアナライザ', description: '繰り返し使う観測配線に名前を付けます。今回だけの取得には登録不要です。', roles: ['CH0', 'CH1', 'CH2', 'CH3'], options: [] };
 export const SETUP_PATTERNS = [
-  { id: 'debug', title: 'ターゲットをデバッグする', label: 'SWD / RVSWD / 1線DIO', description: '開発中のICの実行を止め、内部の状態を調べる。', next: '相手のデバッグ方式 → 配線・速度 → 接続・停止・再開' },
-  { id: 'uart', title: 'ログを読む・コマンドを送る', label: 'UART転送', description: '相手の起動ログをPCで読み、文字やバイト列を送る。', next: '相手のRX / TX → 通信速度・形式 → 送受信' },
-  { id: 'logic', title: '波形・タイミングを観測する', label: 'ロジックアナライザ', description: '動作中の信号を入力として取り込み、通信やタイミングを調べる。', next: '観測信号・入力ピン → 取得条件 → WireSkeinの取得環境' },
+  { id: 'debug', title: 'ターゲットをデバッグする', label: 'SWD / RVSWD / 1線DIO', description: '開発中のICの実行を止め、内部の状態を調べる。', next: '相手の方式・配線 → 操作時の接続条件 → デバッグ / 開発ツール' },
+  { id: 'logs', title: 'ログを読む・コマンドを送る', label: 'UART / デバッグ線 / 素通し', description: '相手がログを出す方法と、使う道具に合わせて選ぶ。', next: 'ログの経路 → 配線 → 操作条件、または素通しの本体設定' },
+  { id: 'logic', title: '波形・タイミングを観測する', label: 'ロジックアナライザ', description: '動作中の信号を入力として取り込み、通信やタイミングを調べる。', next: '今回だけ取る / 名前付き配線を使う → 取得条件 → WireSkein' },
   { id: 'bus', title: 'センサ・周辺ICと通信する', label: 'I2C / SPI コントローラ', description: 'プローブから通信を開始して、レジスタやデータを読み書きする。', next: '相手のバス方式 → 配線・通信条件 → 読み書き', tasks: ['i2c', 'spi'] },
-  { id: 'signal', title: '信号を出す・状態を測る', label: 'GPIO / PWM / カウンタ / DAC', description: 'ピンの状態を確認・制御したり、パルスやアナログ値を扱ったりする。', next: '出したい・測りたい信号 → ピン・条件 → 操作', tasks: ['gpio', 'pwm', 'counter', 'dac'] },
+  { id: 'signal', title: '信号を出す・状態を測る', label: 'GPIO / PWM / カウンタ / DAC', description: 'ピンの状態を確認・制御したり、パルスやアナログ値を扱ったりする。', next: '出したい・測りたい信号 → ピン・条件 → 操作', tasks: ['gpio', 'pwm', 'counter', 'dac', 'analog'] },
   { id: 'peer', title: '通信相手の代役になる', label: 'I2C / SPI レスポンダ', description: '開発中の基板からの要求に応答し、センサなどの代わりとして試す。', next: '応答側の方式 → 配線・応答データ → 待ち受け（今回はI2Cの例）' },
+];
+export const GUIDE_BASE = 'https://github.com/Open-Embedded-Probe/oep-probe-arduino/blob/main/docs/guide/';
+export const CONSOLE_TASK = { id: 'console', short: 'デバッグ線ログ', title: 'デバッグ線でログを読む', description: 'UARTを使わず、WCHのdebug module経由で相手が出すログを読みます。相手側にも対応する出力実装が必要です。', roles: [], options: [], action: 'ログの受信を開始', stop: 'ログの受信を停止', output: '[サンプル] debug console: ready', result: 'debug module経由のログ', category: '通信' };
+export const ANALOG_TASK = { id: 'analog', short: 'アナログ取得', title: 'アナログ電圧を取り込む', description: '対応するADCピンで電圧の変化を取り込みます。取り込み中は他の機能と同じピンを共有できません。', roles: ['AIN'], options: [], result: '電圧の波形', category: '信号' };
+export const LOG_PATHS = [
+  ['uart', 'UARTで読む・送る', '相手TX → プローブRX。送る場合だけ相手RXへのTXも接続。速度・形式は操作時に指定。'],
+  ['console', 'デバッグ線で読む・送る', 'RVSWD / 1線DIOの配線を使い、相手の出力方式を選択。sdiは受信のみ、dmdata / dmseqは双方向。'],
+  ['passthrough', '普通のシリアルモニタで見る', 'UARTまたはデバッグ線のログを、OEPセッションがない間だけシリアルポートへ流す本体設定。相手 → PCの一方向。'],
 ];
 export const SCENARIOS = [
   ['auto', 'ボードに応じた流れ'], ['direct', '同じポートで自動続行'], ['permission', '起動後のOEPを再許可'],

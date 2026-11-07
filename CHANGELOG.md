@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Review the new probe use-case guides and align the hardware-free preview: separate saved wiring from operation conditions, offer capture without registration, distinguish UART/debug-console/passthrough logging, and guide fixture setup in order. Record guide/spec discrepancies and keep hardware validation separate.
+- (JA) 新しい用途別ガイドをレビューし、画面プレビューへ反映。配線保存と操作条件を分け、登録不要の波形取得準備、UART・デバッグ線・素通しの区別、据え置き治具の設定順を追加。ガイドと規範の不一致を記録し、実機検証とは区別。
+
 - (EN) Save a UI review checkpoint: recommend ESP32-P4, correct Japanese firmware-image wording, and prototype use-case-first setup with separate SWD/RVSWD/single-wire DIO (SWIO), UART and logic preparation paths. Names, scope and ordering remain provisional pending review of the OEP workflow documentation; hardware processing remains disconnected.
 - (JA) 画面検討の途中成果を保存。ESP32-P4を推奨として表示し、firmware imageの誤訳を修正。用途を先に選ぶ設定と、SWD・2線RVSWD・1線DIO（SWIO）、UART、ロジック観測準備の分岐を試作。名称・範囲・順序はOEP側の手順文書のレビュー待ちで、実機処理は未接続。
 
