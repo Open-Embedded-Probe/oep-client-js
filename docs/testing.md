@@ -22,6 +22,12 @@ OEP_CHROME=chromium OEP_PYTHON=/path/to/python npm run test:browser
 
 The test starts its own headless Chromium, static HTTP server and Python virtual probe. A test-only HTTP byte transport
 connects the real browser host library to the virtual probe; it is never included in the published page.
-It checks direct routes, resuming a requested screen after connecting, capability forms, GPIO/PWM/UART/I2C/SPI/counter/DAC operations,
-target debugging, settings, language switching, mobile width and session cleanup. A simulated ESP ROM verifies initial installation at offset zero, progress, reset, serial cleanup and the post-install connection. Fixed wiring tests remove scan capability, allow editing before taking a change session, and reject any scan/attach/pin-apply during registration and loading. The post-flash flow checks automatic navigation to configuration, reuse of the same serial port, reconnect failure and USB permission waiting without reopening an unrelated device. Editing tests cover rename/move, collision rejection, browser and probe metadata, unknown-field preservation and record migration. The actual bundled loader is also imported in Chromium. Unit tests reject wrong chips, images and P4 revisions, and check cleanup after failures. Real USB permission dialogs, electrical
-signals and firmware flashing require hardware verification.
+It checks the public pages and old addresses; the ESP32 install (a simulated ROM: offset zero, the same serial port reused, a
+retry that does not write again); the Pico install by BOOTSEL (the one new device opened without another chooser); the
+Pico and P4 (DFU) updates; connecting with the purpose kept; wiring registered with the target absent (no scan, attach or
+pin assignment; the part and note go to the memo area), editing and the connection check; debug operations and the
+debug-wire console; UART, GPIO, I2C, SPI, PWM, counter, DAC and the I2C / SPI peers; debug and UART at once;
+passthrough, idle pins and Wi-Fi; settings and memo backups restored after their difference is shown; capture
+preparation; hand-over; a 390 px wide screen. DAC and Wi-Fi run on a second virtual probe (the classic ESP32 profile). CI
+runs it after `npm run check`. Flashing, DFU, the boot ROM, USB permission dialogs and electrical signals are stand-ins
+or out of scope here and are checked on hardware.
