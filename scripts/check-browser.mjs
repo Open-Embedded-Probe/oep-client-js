@@ -237,6 +237,13 @@ try {
   await go('/operate/debug?port=x035'); await press('ターゲットに接続'); assert.match(await text(), /接続中 · dmstatus/);
   assert.equal(await evaluate('[...document.querySelectorAll(".active-work")].length'), 1, 'the running debug shows in the status bar');
   await press('停止'); await press('メモリを読む'); await press('ターゲットを切り離す'); assert.match(await text(), /未接続/);
+  // Debug and UART at once on their own pins: both stay, both in the status bar, each stopped by itself (A22).
+  await go('/operate/debug?port=x035'); await press('ターゲットに接続');
+  await go('/operate/uart?port=dut'); await press('受信を開始');
+  assert.equal(await evaluate('document.querySelectorAll(".active-work").length'), 2, 'debug and UART run together');
+  await tap('[data-stop=uart]'); await ok('stop uart from the bar');
+  assert.equal(await evaluate('document.querySelectorAll(".active-work").length'), 1, 'the debug connection stays');
+  await go('/operate/debug?port=x035'); await press('ターゲットを切り離す');
   // W04 UART on the saved RX; GPIO with pins chosen on the spot.
   await go('/operate/uart?port=dut'); await press('受信を開始'); await delay(1200); await press('受信を停止');
   await go('/operate/gpio'); await pick('[data-role="1"]', 5); await press('ピンを割り当てて開始'); await press('レベルを読む'); await press('停止してピンを解放');
@@ -305,7 +312,7 @@ try {
   await snapshot('04-mobile');
   await press('接続を終了');
   assert.deepEqual(exceptions, []);
-  console.log('Browser page: public pages, ESP install with the port reused and a retry without rewriting, Pico install by BOOTSEL and the new device taken, Pico and P4 (DFU) updates, purpose kept through connecting, wiring saved without target I/O (memo records), edit, connection check, debug attach / halt / memory / detach, UART, GPIO, I2C, SPI, PWM, counter, I2C / SPI peers, the debug-wire console, passthrough apply and save, idle pins, settings and memo backup and restore, declarations, capture preparation, DAC and Wi-Fi (classic ESP32), hand-over and narrow screens passed.');
+  console.log('Browser page: public pages, ESP install with the port reused and a retry without rewriting, Pico install by BOOTSEL and the new device taken, Pico and P4 (DFU) updates, purpose kept through connecting, wiring saved without target I/O (memo records), edit, connection check, debug attach / halt / memory / detach, UART, GPIO, I2C, SPI, PWM, counter, I2C / SPI peers, debug and UART at once, the debug-wire console, passthrough apply and save, idle pins, settings and memo backup and restore, declarations, capture preparation, DAC and Wi-Fi (classic ESP32), hand-over and narrow screens passed.');
 } finally {
   browserSocket?.close(); socket?.destroy(); if (waiting) waiting.end(); server?.closeAllConnections(); server?.close();
   for (const child of children) { child.stdin?.end(); child.kill(); }
