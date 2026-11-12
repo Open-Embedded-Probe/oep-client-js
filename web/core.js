@@ -1,5 +1,6 @@
 // The page's own state (inputs kept while moving between screens) and the busy / feedback rules every action uses.
 import { el } from './ui.js';
+import { t } from './i18n.js';
 
 export const state = {
   /** the purpose chosen before installing or connecting (§4.2): kept through board choice, permissions and retries */
@@ -33,9 +34,9 @@ export function feedback(text, kind = '') {
 export function discardThen(next) {
   if (!state.dirty) { next(); return; }
   const dialog = el('dialog', { class: 'exit-dialog', 'aria-labelledby': 'discard-title' },
-    el('h2', { id: 'discard-title' }, '保存していない変更があります'), el('p', {}, '編集を続けるか、変更を破棄して移動してください。'),
-    el('div', { class: 'actions' }, el('button', { type: 'button', class: 'btn primary', onclick: () => { dialog.close(); dialog.remove(); } }, '編集を続ける'),
-      el('button', { type: 'button', class: 'btn', onclick: () => { state.dirty = false; state.draft = null; dialog.close(); dialog.remove(); next(); } }, '破棄して移動')));
+    el('h2', { id: 'discard-title' }, t('You have unsaved changes', '保存していない変更があります')), el('p', {}, t('Keep editing, or discard the changes and leave.', '編集を続けるか、変更を破棄して移動してください。')),
+    el('div', { class: 'actions' }, el('button', { type: 'button', class: 'btn primary', onclick: () => { dialog.close(); dialog.remove(); } }, t('Keep editing', '編集を続ける')),
+      el('button', { type: 'button', class: 'btn', onclick: () => { state.dirty = false; state.draft = null; dialog.close(); dialog.remove(); next(); } }, t('Discard and leave', '破棄して移動'))));
   dialog.addEventListener('cancel', () => dialog.remove()); document.body.append(dialog); dialog.showModal();
 }
 export function go(route) {
@@ -51,10 +52,10 @@ export async function run(title, fn) {
   feedback(`${title}…`, 'busy');
   try {
     const out = await fn();
-    feedback(out === false ? '' : `${title}：完了`, 'good');
+    feedback(out === false ? '' : `${title}${t(': done', '：完了')}`, 'good');
   } catch (error) {
     const cancelled = error?.name === 'NotFoundError' || error?.name === 'AbortError';
-    feedback(cancelled ? '機器の選択をキャンセルしました。' : `${title}：${errorText(error)}`, cancelled ? '' : 'bad');
+    feedback(cancelled ? t('The device choice was cancelled.', '機器の選択をキャンセルしました。') : `${title}${t(': ', '：')}${errorText(error)}`, cancelled ? '' : 'bad');
     if (!cancelled) console.warn(error);
   } finally {
     state.busy = false; document.body.dataset.busy = 'false'; render();

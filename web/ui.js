@@ -1,4 +1,5 @@
 // DOM helpers shared by every screen. Text from a probe or a file is always inserted as text, never as HTML.
+import { t } from './i18n.js';
 let fieldCount = 0;
 export function resetFieldIds() { fieldCount = 0; }
 /** @template {keyof HTMLElementTagNameMap} T
@@ -45,11 +46,11 @@ export function table(headings, rows) {
   return el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, headings.map((x) => el('th', { scope: 'col' }, x)))),
     el('tbody', {}, rows.map((r) => el('tr', {}, r.map((x) => el('td', {}, x)))))));
 }
-export function terminal(text, label = '結果') { return el('pre', { class: 'terminal', role: 'log', 'aria-label': label }, text); }
+export function terminal(text, label = t('Result', '結果')) { return el('pre', { class: 'terminal', role: 'log', 'aria-label': label }, text); }
 export function copyLine(text) {
   return el('div', { class: 'copy-line' }, el('code', {}, text), el('button', { type: 'button', class: 'btn small', onclick: async (e) => {
-    try { await navigator.clipboard.writeText(text); e.target.textContent = 'コピーしました'; } catch { e.target.textContent = 'コピーできません'; }
-  } }, 'コピー'));
+    try { await navigator.clipboard.writeText(text); e.target.textContent = t('Copied', 'コピーしました'); } catch { e.target.textContent = t('Cannot copy', 'コピーできません'); }
+  } }, t('Copy', 'コピー')));
 }
 export function download(name, data, type = 'application/octet-stream') {
   const url = URL.createObjectURL(new Blob([data], { type }));

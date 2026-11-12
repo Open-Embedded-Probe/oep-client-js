@@ -4,6 +4,7 @@
 import * as oep from './oep-client.js';
 import { connectionChange } from './connections.js';
 import { validateBindings } from './model.js';
+import { t } from './i18n.js';
 import { flashEsp, detectEsp } from './esp-flash.js';
 
 const usbApi = /** @type {any} */ (navigator).usb, serialApi = /** @type {any} */ (navigator).serial, hidApi = /** @type {any} */ (navigator).hid;
@@ -53,9 +54,9 @@ export function roleLine(name, role) {
 export const WIRES = { rvswd: 'oep.wire.rvswd', swio: 'oep.wire.swio', swd: 'oep.wire.swd' };
 
 export function errorText(error) {
-  if (error instanceof oep.Locked) return `${error.owner ?? '別の道具'}が使用中です。そちらを終了してから、もう一度操作してください。強制的に奪うことはしません。`;
-  if (error instanceof oep.NoSession) return '変更権が失われました。ピンの割当やターゲットとの接続は終了しています。もう一度開始してください。';
-  if (error instanceof oep.TransportFailed) return `応答を受け取れず、操作の結果は不明です。再接続して状態を確かめてから操作してください。（${error.message}）`;
+  if (error instanceof oep.Locked) return t(`${error.owner ?? 'Another tool'} is using it. End that first, then try again. It is never taken by force.`, `${error.owner ?? '別の道具'}が使用中です。そちらを終了してから、もう一度操作してください。強制的に奪うことはしません。`);
+  if (error instanceof oep.NoSession) return t('The right to change was lost. Pin assignments and the target connection have ended. Start again.', '変更権が失われました。ピンの割当やターゲットとの接続は終了しています。もう一度開始してください。');
+  if (error instanceof oep.TransportFailed) return t(`No answer came, so the result is unknown. Reconnect and check the state before operating. (${error.message})`, `応答を受け取れず、操作の結果は不明です。再接続して状態を確かめてから操作してください。（${error.message}）`);
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -80,9 +81,9 @@ export async function connectWith(open, expected = null) {
   try {
     h = await open();
     const [info, caps] = await Promise.all([oep.core.probeInfo(h), oep.dump.collect(h)]);
-    if (!info.unitId) throw new Error('このプローブは個体IDを宣言していません。');
-    if (expected?.unitId && info.unitId.toLowerCase() !== expected.unitId.toLowerCase()) throw new Error('書き込んだ個体とは別のプローブです。書き込んだボードを選んでください。');
-    if (expected?.models?.length && !expected.models.includes(info.model)) throw new Error(`書き込んだボード（${expected.models.join(' / ')}）と、接続した機器（${info.model}）が一致しません。`);
+    if (!info.unitId) throw new Error(t('This probe does not declare a unit ID.', 'このプローブは個体IDを宣言していません。'));
+    if (expected?.unitId && info.unitId.toLowerCase() !== expected.unitId.toLowerCase()) throw new Error(t('This is not the unit that was written. Choose the board you wrote.', '書き込んだ個体とは別のプローブです。書き込んだボードを選んでください。'));
+    if (expected?.models?.length && !expected.models.includes(info.model)) throw new Error(t(`The written board (${expected.models.join(' / ')}) and the connected device (${info.model}) do not match.`, `書き込んだボード（${expected.models.join(' / ')}）と、接続した機器（${info.model}）が一致しません。`));
     Object.assign(dev, { host: h, info, caps, epoch: h.epoch, lost: '', unsaved: false });
     await refresh();
     remember();
@@ -113,7 +114,7 @@ export async function disconnect() {
 /** The change right, taken inside the action that needs it (§8): never a separate step, never forced. */
 export async function ensureSession() {
   const h = dev.host;
-  if (!h) throw new Error('プローブが接続されていません。');
+  if (!h) throw new Error(t('No probe is connected.', 'プローブが接続されていません。'));
   if (h.session) return;
   await oep.core.take(h, 10000, { owner: OWNER });
   dev.epoch = h.epoch;
@@ -134,7 +135,7 @@ export async function releaseSession() {
 export function checkEpoch() {
   if (dev.host && dev.host.epoch !== dev.epoch) {
     dev.clients.clear(); dev.plans.clear(); dev.debug = null; dev.console = null; dev.active.clear(); dev.epoch = dev.host.epoch;
-    throw new Error('プローブの状態が変わりました（再起動か変更権の喪失）。一時的な割当と接続は終わっています。読み直してから、もう一度開始してください。');
+    throw new Error(t('The probe\'s state changed (a restart or lost right to change). Temporary assignments and connections have ended. Read it again, then start again.', 'プローブの状態が変わりました（再起動か変更権の喪失）。一時的な割当と接続は終わっています。読み直してから、もう一度開始してください。'));
   }
 }
 
@@ -188,18 +189,18 @@ export function portLines(port) {
 export async function saveConnection(c) {
   await ensureSession();
   await refresh();
-  if (!dev.changeable) throw new Error('このプローブは設定を変更できないため、配線を登録できません。');
+  if (!dev.changeable) throw new Error(t('This probe\'s settings cannot be changed, so wiring cannot be registered.', 'このプローブは設定を変更できないため、配線を登録できません。'));
   const plan = connectionChange({ name: c.name, labels: dev.labels, original: c.original, desired: c.desired });
   const st = new oep.settings.Settings(dev.host);
   const done = [];
-  let stage = 'ピン名（配線）の適用';
+  let stage = t('applying pin names (wiring)', 'ピン名（配線）の適用');
   try {
     if (plan.unset.length) await st.unsetNamed('core', plan.unset.map((ch) => `channel.${pinName(ch)}.label`));
     if (plan.set.length) await st.setNamed('core', Object.fromEntries(plan.set.map(([ch, label]) => [`channel.${pinName(ch)}.label`, label])));
-    if (plan.unset.length || plan.set.length) { dev.unsaved = true; done.push('配線を適用'); }
-    stage = 'プローブへの永続保存';
-    if (dev.saveable) { await st.save(); dev.unsaved = false; done.push('永続保存'); }
-    stage = '相手の型番・メモの保存';
+    if (plan.unset.length || plan.set.length) { dev.unsaved = true; done.push(t('wiring applied', '配線を適用')); }
+    stage = t('storing in the probe', 'プローブへの永続保存');
+    if (dev.saveable) { await st.save(); dev.unsaved = false; done.push(t('stored', '永続保存')); }
+    stage = t('saving the part number and memo', '相手の型番・メモの保存');
     const previous = c.original ? recordOf(c.original.name) : {};
     const wiringChanged = plan.unset.length > 0 || plan.set.length > 0;
     const fields = { ...previous, part: c.connector ? null : c.part, note: c.note, ...(wiringChanged || c.connector ? { target: null } : {}) };
@@ -216,9 +217,9 @@ export async function saveConnection(c) {
       if (web) localStorage.setItem(localKey(c.name, 'web'), JSON.stringify(web)); else localStorage.removeItem(localKey(c.name, 'web'));
       if (renamed) { localStorage.removeItem(localKey(c.original.name)); localStorage.removeItem(localKey(c.original.name, 'web')); }
     }
-    done.push(dev.memo ? '型番・メモをプローブに保存' : '型番・メモをこのブラウザに保存');
+    done.push(dev.memo ? t('part number and memo saved in the probe', '型番・メモをプローブに保存') : t('part number and memo saved in this browser', '型番・メモをこのブラウザに保存'));
   } catch (error) {
-    throw new Error(`${stage}でエラーになりました。${done.length ? `済んだもの: ${done.join('、')}。` : '何も変更していません。'}一覧を読み直してから、もう一度保存してください。（${errorText(error)}）`);
+    throw new Error(t(`Failed while ${stage}. ${done.length ? `Done: ${done.join(', ')}. ` : 'Nothing was changed. '}Read the list again, then save again. (${errorText(error)})`, `${stage}でエラーになりました。${done.length ? `済んだもの: ${done.join('、')}。` : '何も変更していません。'}一覧を読み直してから、もう一度保存してください。（${errorText(error)}）`));
   } finally { await refresh(); changed(); }
   return { done, persistent: dev.saveable, inProbe: !!dev.memo };
 }
@@ -251,7 +252,7 @@ async function attachWire(offer, { dio, clk, nrst = null, maxSpeed = null, halt 
   if (offer.entry.name === WIRES.swd) {
     try { const r = await client.attach(opts); return { client, conn: r.conn, id: `DPIDR 0x${(r.dpidr >>> 0).toString(16).padStart(8, '0')}`, arm: true, pins }; }
     catch (first) {
-      try { const r = await client.attach({ ...opts, targetsel: RP2040_CORE0 }); return { client, conn: r.conn, id: `DPIDR 0x${(r.dpidr >>> 0).toString(16).padStart(8, '0')}（RP2040 コア0、multi-drop）`, arm: true, pins, targetsel: RP2040_CORE0 }; }
+      try { const r = await client.attach({ ...opts, targetsel: RP2040_CORE0 }); return { client, conn: r.conn, id: t(`DPIDR 0x${(r.dpidr >>> 0).toString(16).padStart(8, '0')} (RP2040 core 0, multi-drop)`, `DPIDR 0x${(r.dpidr >>> 0).toString(16).padStart(8, '0')}（RP2040 コア0、multi-drop）`), arm: true, pins, targetsel: RP2040_CORE0 }; }
       catch { throw first; }
     }
   }
@@ -261,8 +262,8 @@ async function attachWire(offer, { dio, clk, nrst = null, maxSpeed = null, halt 
 /** Attach once, report what answered, detach (§5.2): the result is shown, never saved as wiring. */
 export async function checkDebug(wire, pins) {
   const offer = wireOffer(wire);
-  if (!offer) throw new Error('このプローブはこのデバッグ方式を持っていません。');
-  if (dev.debug) throw new Error('デバッグ操作でターゲットに接続中です。先に切り離してください。');
+  if (!offer) throw new Error(t('This probe does not have this debug method.', 'このプローブはこのデバッグ方式を持っていません。'));
+  if (dev.debug) throw new Error(t('A debug operation is connected to the target. Detach it first.', 'デバッグ操作でターゲットに接続中です。先に切り離してください。'));
   await ensureSession();
   try {
     const a = await attachWire(offer, pins);
@@ -276,27 +277,27 @@ export async function checkDebug(wire, pins) {
 /** Scan declared candidate pairs among `pins` (A42): results are candidates for the editor, not saved. */
 export async function scanDebug(wire, pins) {
   const offer = wireOffer(wire);
-  if (!offer || !supports(offer, oep.riscv.WireBase.SCAN)) throw new Error('このプローブは、この方式の自動検索を持っていません。ピンを明示して登録してください。');
+  if (!offer || !supports(offer, oep.riscv.WireBase.SCAN)) throw new Error(t('This probe cannot search for this method. Name the pins and register them.', 'このプローブは、この方式の自動検索を持っていません。ピンを明示して登録してください。'));
   await ensureSession();
   const client = wireClient(offer);
   const chosen = new Set(pins.map(Number));
   const pairs = (await client.candidatePairs()).filter(([a, b]) => chosen.has(a) && (b === 65535 || chosen.has(b)));
-  if (!pairs.length) throw new Error('選んだピンの組は、この方式の候補として宣言されていません。');
+  if (!pairs.length) throw new Error(t('The chosen pins are not declared as candidates for this method.', '選んだピンの組は、この方式の候補として宣言されていません。'));
   const found = await client.scan(pairs);
   return { tried: pairs.length, found: found.map((f) => ({ dio: f.pins[0], clk: f.pins[1] === 65535 ? '' : f.pins[1], id: `dmstatus 0x${(f.dmstatus >>> 0).toString(16).padStart(8, '0')}` })) };
 }
 export const scanOffered = (wire) => { const o = wireOffer(wire); return !!o && supports(o, oep.riscv.WireBase.SCAN); };
 export async function attachDebug(wire, pins) {
   const offer = wireOffer(wire);
-  if (!offer) throw new Error('このプローブはこのデバッグ方式を持っていません。');
-  if (dev.debug) throw new Error('すでにターゲットに接続しています。');
+  if (!offer) throw new Error(t('This probe does not have this debug method.', 'このプローブはこのデバッグ方式を持っていません。'));
+  if (dev.debug) throw new Error(t('Already connected to the target.', 'すでにターゲットに接続しています。'));
   await ensureSession();
   const a = await attachWire(offer, pins);
   dev.debug = { ...a, wire, offer, target: null, mem: null, cpu: null, mechanisms: [] };
   if (!a.arm && offered('oep.target.console').length) {
     try { dev.debug.mechanisms = await (await oep.targetConsole.Console.open(dev.host)).mechanisms(); } catch { dev.debug.mechanisms = []; }
   }
-  dev.active.set('debug', { title: `デバッグ（${wire.toUpperCase()}）`, route: '/operate/debug', stop: detachDebug });
+  dev.active.set('debug', { title: t(`Debug (${wire.toUpperCase()})`, `デバッグ（${wire.toUpperCase()}）`), route: '/operate/debug', stop: detachDebug });
   changed();
   return a.id;
 }
@@ -308,7 +309,7 @@ export async function detachDebug() {
 }
 async function debugTarget() {
   const d = dev.debug;
-  if (!d) throw new Error('先にターゲットに接続してください。');
+  if (!d) throw new Error(t('Connect to the target first.', '先にターゲットに接続してください。'));
   checkEpoch();
   if (!d.target) {
     if (d.arm) { d.target = await oep.arm.ArmAdi.on(dev.host, d.conn, {}); await d.target.powerUp(); d.mem = await oep.arm.MemAp.open(d.target, 0); d.cpu = new oep.arm.CortexM(d.mem, 0, 0); }
@@ -327,10 +328,10 @@ export async function debugRead(address, words) { const d = await debugTarget();
 export async function debugWrite(address, value) { const d = await debugTarget(); await (d.arm ? d.mem : d.target).write32(address, value); }
 export async function debugRegister(n) { const d = await debugTarget(); return d.arm ? d.cpu.reg(n) : d.target.readRegister(n); }
 export async function openConsole(mechanism) {
-  if (!dev.debug) throw new Error('先にターゲットに接続してください。');
+  if (!dev.debug) throw new Error(t('Connect to the target first.', '先にターゲットに接続してください。'));
   const c = await oep.targetConsole.Console.open(dev.host); await c.open(dev.debug.conn, mechanism);
   dev.console = { source: c, io: new oep.targetConsole.ConsoleIO(c), mechanism };
-  dev.active.set('console', { title: `デバッグ線のログ（${mechanism}）`, route: '/operate/console', stop: closeConsole });
+  dev.active.set('console', { title: t(`Debug-wire log (${mechanism})`, `デバッグ線のログ（${mechanism}）`), route: '/operate/console', stop: closeConsole });
   changed();
 }
 export async function closeConsole() { try { if (dev.console) await dev.console.source.close(); } finally { dev.console = null; dev.active.delete('console'); changed(); } }
@@ -409,18 +410,18 @@ export async function exportMemo() {
 }
 const bytesOf = (o) => o.text !== undefined ? new TextEncoder().encode(o.text) : Uint8Array.from(atob(o.base64), (c) => c.charCodeAt(0));
 export async function planMemoRestore(doc) {
-  if (!dev.memo) throw new Error('このプローブにはメモ領域がありません。');
-  if (!doc || typeof doc.objects !== 'object') throw new Error('メモの控えのファイルではありません。');
+  if (!dev.memo) throw new Error(t('This probe has no memo area.', 'このプローブにはメモ領域がありません。'));
+  if (!doc || typeof doc.objects !== 'object') throw new Error(t('This is not a memo backup file.', 'メモの控えのファイルではありません。'));
   const now = new Map((await dev.memo.list()).map((e) => [new TextDecoder().decode(e.name), e]));
   const todo = [];
   for (const [name, o] of Object.entries(doc.objects)) {
     const data = bytesOf(o);
-    if (!now.has(name)) todo.push({ name, data, why: '無い' });
-    else { const cur = await dev.memo.read(name); if (cur.length !== data.length || cur.some((b, i) => b !== data[i])) todo.push({ name, data, why: '内容が違う' }); }
+    if (!now.has(name)) todo.push({ name, data, why: t('missing', '無い') });
+    else { const cur = await dev.memo.read(name); if (cur.length !== data.length || cur.some((b, i) => b !== data[i])) todo.push({ name, data, why: t('differs', '内容が違う') }); }
   }
   return { otherProbe: doc.unit_id && doc.unit_id.toLowerCase() !== unit().toLowerCase(), todo };
 }
-export async function applyMemoRestore(plan) { await ensureSession(); for (const t of plan.todo) await dev.memo.write(t.name, t.data); await refresh(); changed(); }
+export async function applyMemoRestore(plan) { await ensureSession(); for (const tk of plan.todo) await dev.memo.write(tk.name, tk.data); await refresh(); changed(); }
 export async function memoRead(name) { return dev.memo.read(name); }
 export async function memoWrite(name, data) { await ensureSession(); await dev.memo.write(name, data); await refresh(); changed(); }
 export async function memoDelete(name) { await ensureSession(); await deleteMemo(name); await refresh(); changed(); }
@@ -449,7 +450,7 @@ export async function loadRelease() {
 export const releaseEntry = (model, kind) => release.manifest && oep.pickFirmware(release.manifest, { model, kind });
 async function firmwareImage(model, kind) {
   const entry = releaseEntry(model, kind);
-  if (!entry) throw new Error('このサイトには、このボード向けのファームウェアイメージがありません。');
+  if (!entry) throw new Error(t('This site has no firmware image for this board.', 'このサイトには、このボード向けのファームウェアイメージがありません。'));
   const response = await fetch(`./firmware/${entry.file}`);
   if (!response.ok) throw new Error(`${entry.file}: HTTP ${response.status}`);
   return oep.verifyFirmware(new Uint8Array(await response.arrayBuffer()), entry);
@@ -457,19 +458,19 @@ async function firmwareImage(model, kind) {
 /** Choose the device to install on, once (§5.1 step 2), and read what it is: ESP from its ROM, RP2 from its boot ROM. */
 export async function chooseInstallTarget(method) {
   if (method === 'serial') {
-    if (!browser.serial) throw new Error('Web Serial に対応したデスクトップの Chrome・Edge で、HTTPS か localhost から開いてください。');
+    if (!browser.serial) throw new Error(t('Open it in desktop Chrome or Edge with Web Serial, from HTTPS or localhost.', 'Web Serial に対応したデスクトップの Chrome・Edge で、HTTPS か localhost から開いてください。'));
     const port = await serialApi.requestPort();
     const chip = await detectEsp(port);
     return { method, port, chip: chip.name, revision: chip.major, model: chip.model };
   }
   if (method === 'bootsel') {
-    if (!browser.usb) throw new Error('WebUSB に対応した Chrome・Edge で、HTTPS か localhost から開いてください。');
+    if (!browser.usb) throw new Error(t('Open it in Chrome or Edge with WebUSB, from HTTPS or localhost.', 'WebUSB に対応した Chrome・Edge で、HTTPS か localhost から開いてください。'));
     const device = await usbApi.requestDevice({ filters: Object.entries(oep.RP2_BOOT_PID).map(([, productId]) => ({ vendorId: oep.RP2_BOOT_VID, productId })) });
     const model = Object.entries(oep.RP2_BOOT_PID).find(([, pid]) => pid === device.productId)?.[0];
-    if (!model) throw new Error('RP2040 / RP2350 の BOOTSEL の機器ではありません。');
+    if (!model) throw new Error(t('Not an RP2040 / RP2350 BOOTSEL device.', 'RP2040 / RP2350 の BOOTSEL の機器ではありません。'));
     return { method, device, chip: model.toUpperCase(), model };
   }
-  throw new Error('このボードはこのページから導入できません。');
+  throw new Error(t('This board cannot be installed from this page.', 'このボードはこのページから導入できません。'));
 }
 /** Write the image (verified first) to the chosen device. custom: a File for S3/C3/C6. */
 /** @param {any} target @param {{ custom?: any, onProgress?: (done:number, total:number, text:string) => void, log?: (line:string) => void }} [opts] */
@@ -479,7 +480,7 @@ export async function writeInstall(target, { custom = null, onProgress = () => {
     let image;
     if (custom) image = new Uint8Array(await custom.arrayBuffer());
     else image = await firmwareImage(target.model, 'merged');
-    onProgress(0, 1, 'ファームウェアイメージを確認しました。書き込みを始めます');
+    onProgress(0, 1, t('Firmware image checked. Starting to write', 'ファームウェアイメージを確認しました。書き込みを始めます'));
     return flashEsp({ port: target.port, model: target.model, image, onProgress, log });
   }
   const image = await firmwareImage(target.model, 'uf2');
@@ -495,7 +496,7 @@ export async function reconnectAfterInstall(target, tries = 4) {
       if (target.method === 'serial') { await connectWith(openSerial(target.port), { models: [target.model] }); return { ok: true }; }
       const devices = (await grantedUsbProbes()).filter((d) => !target.knownSerials?.includes(d.serialNumber));
       if (devices.length === 1) { await connectWith(openUsb(devices[0]), { models: [target.model] }); return { ok: true }; }
-      last = devices.length > 1 ? '同じ種類の機器が複数あり、書き込んだ個体を決められません。' : '起動した OEP の機器を、このページはまだ開けません。';
+      last = devices.length > 1 ? t('There are several devices of the same kind, so the written unit cannot be told apart.', '同じ種類の機器が複数あり、書き込んだ個体を決められません。') : t('This page cannot open the booted OEP device yet.', '起動した OEP の機器を、このページはまだ開けません。');
     } catch (error) { last = errorText(error); }
   }
   return { ok: false, reason: last };
@@ -511,18 +512,18 @@ export async function knownSerials() { try { return (await grantedUsbProbes()).m
 export function updateMethod() { return IMAGE_KIND[dev.info?.model] ?? null; }
 export async function updateFirmware(onProgress) {
   const model = dev.info.model, kind = IMAGE_KIND[model], unitId = unit();
-  if (!kind) throw new Error('このプローブは、このページからの更新に対応していません。導入と同じ手順で書き直してください。');
+  if (!kind) throw new Error(t('This probe cannot be updated from this page. Rewrite it with the installation steps.', 'このプローブは、このページからの更新に対応していません。導入と同じ手順で書き直してください。'));
   const image = await firmwareImage(model, kind);
   if (kind === 'app') {
     const d = await oep.requestDfuDevice();
-    if ((d.serialNumber ?? '').toLowerCase() !== unitId.toLowerCase()) throw new Error('選んだ機器は、接続中のプローブと個体IDが違います。');
+    if ((d.serialNumber ?? '').toLowerCase() !== unitId.toLowerCase()) throw new Error(t('The chosen device\'s unit ID differs from the connected probe.', '選んだ機器は、接続中のプローブと個体IDが違います。'));
     await disconnect();
     await oep.dfuUpdate(d, image, { onProgress: (p) => onProgress(p.written, p.total, `${p.phase}: ${p.written} / ${p.total} bytes`) });
   } else {
     const d = await oep.requestUsbProbe();
-    if ((d.serialNumber ?? '').toLowerCase() !== unitId.toLowerCase()) throw new Error('選んだ機器は、接続中のプローブと個体IDが違います。');
+    if ((d.serialNumber ?? '').toLowerCase() !== unitId.toLowerCase()) throw new Error(t('The chosen device\'s unit ID differs from the connected probe.', '選んだ機器は、接続中のプローブと個体IDが違います。'));
     await disconnect();
-    if (!await oep.rp2ResetToBoot(d)) throw new Error('この機器には USB からの再起動の機能がありません。BOOTSEL を押しながら挿し、導入の手順で書き直してください。');
+    if (!await oep.rp2ResetToBoot(d)) throw new Error(t('This device cannot be restarted over USB. Plug it in holding BOOTSEL and rewrite it with the installation steps.', 'この機器には USB からの再起動の機能がありません。BOOTSEL を押しながら挿し、導入の手順で書き直してください。'));
     let boot = null;
     for (let i = 0; i < 30 && !boot; i++) {
       boot = (await usbApi.getDevices()).find((x) => x.vendorId === oep.RP2_BOOT_VID && x.productId === oep.RP2_BOOT_PID[model]);

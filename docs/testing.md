@@ -28,6 +28,7 @@ Pico and P4 (DFU) updates; connecting with the purpose kept; wiring registered w
 pin assignment; the part and note go to the memo area), editing and the connection check; debug operations and the
 debug-wire console; UART, GPIO, I2C, SPI, PWM, counter, DAC and the I2C / SPI peers; debug and UART at once;
 passthrough, idle pins and Wi-Fi; settings and memo backups restored after their difference is shown; capture
-preparation; hand-over; a 390 px wide screen. DAC and Wi-Fi run on a second virtual probe (the classic ESP32 profile). CI
+preparation; hand-over; a 390 px wide screen; the language from the browser and from the header's selector (inputs, route and
+connection kept, remembered over a reload), and every screen in English without Japanese left. DAC and Wi-Fi run on a second virtual probe (the classic ESP32 profile). CI
 runs it after `npm run check`. Flashing, DFU, the boot ROM, USB permission dialogs and electrical signals are stand-ins
 or out of scope here and are checked on hardware.

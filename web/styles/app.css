@@ -33,6 +33,7 @@ li{margin:6px 0}
 .public-nav a{padding:8px 0;white-space:nowrap}
 .public-nav a.active{color:var(--green);box-shadow:0 2px var(--green)}
 .header-action{font-size:.85rem!important;padding:10px 17px!important;min-height:44px!important}
+.language select{min-height:44px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:white;color:var(--ink);font-size:.85rem}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:50px;padding:12px 23px;border:1px solid var(--line);border-radius:9px;background:white;color:var(--ink);font-size:.95rem;font-weight:600;line-height:1.5;text-align:center;transition:background .15s,border-color .15s}
 .btn:hover{border-color:var(--green);background:#f1f8f5}
 .btn.primary{background:var(--green);color:white;border-color:var(--green)}
@@ -227,7 +228,7 @@ pre{overflow:auto}
 .prototype-actions{width:100%;justify-content:space-between}
 .site-header{padding:17px 22px;flex-wrap:wrap;gap:16px}
 .public-nav{order:3;width:100%;overflow:auto;gap:24px}
-.header-action{margin-left:auto}
+.language{margin-left:auto}
 .hero{grid-template-columns:1fr;padding:44px 0;gap:28px}
 .hero h1{font-size:2.5rem}
 .bench{min-height:300px;padding:30px}

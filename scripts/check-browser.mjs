@@ -162,10 +162,17 @@ try {
   const noOverflow = async (what) => assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, `overflow: ${what}`);
   await send('Runtime.enable'); await send('Page.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
+  // The page language follows the browser's languages until one is chosen (A29): English here, then Japanese.
+  const userAgent = (await send('Browser.getVersion')).userAgent;
+  const browserLanguage = (acceptLanguage) => send('Emulation.setUserAgentOverride', { userAgent, acceptLanguage });
+  await browserLanguage('en-US,en');
   await send('Page.navigate', { url: base });
+  await until('document.querySelector("h1")');
+  assert.match(await h1(), /common probe/); assert.equal(await evaluate('document.documentElement.lang'), 'en');
+  await browserLanguage('fr-FR,ja,en'); await send('Page.reload'); await delay(300);
   await until('document.querySelector("h1")'); await snapshot('01-home');
   // P01-P04 need no device permission (A01).
-  assert.match(await h1(), /共通プローブ/);
+  assert.match(await h1(), /共通プローブ/); assert.equal(await evaluate('document.documentElement.lang'), 'ja');
   assert.equal(await evaluate('document.querySelector(".hero .btn.primary").hash'), '#/install/select', 'creating a probe is the primary action');
   for (const r of ['/usecases', '/usecase/debug', '/usecase/uart', '/boards', '/learn']) { await go(r); assert.ok(await h1(), r); await noOverflow(r); }
   // Old addresses still land somewhere sensible (acceptance §4).
@@ -310,9 +317,42 @@ try {
   await go('/connect'); await press('機器を選んで接続');
   for (const r of ['/setup', '/work', '/connections', '/connection/x035', '/operate/debug', '/operate/uart', '/passthrough', '/settings', '/maintenance', '/handoff']) { await go(r); assert.ok(await h1(), r); await noOverflow(r); }
   await snapshot('04-mobile');
+  // Changing the language keeps the inputs, the route and the probe (A15), and is remembered over a reload.
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
+  // Japanese text on a screen, the language selector's own name aside.
+  const japanese = () => evaluate(`(()=>{const c=document.body.cloneNode(true);c.querySelectorAll('#language,script,noscript').forEach(e=>e.remove());
+    const attrs=[...c.querySelectorAll('*')].flatMap(e=>['aria-label','title','placeholder'].map(a=>e.getAttribute(a)??''));
+    return [c.textContent,...attrs].join(' ').match(/[\u3040-\u30ff\u4e00-\u9fff]+/g);})()`);
+  await go('/connection/new?purpose=uart'); await pick('#conn-name', 'keepme');
+  assert.notEqual(await japanese(), null, 'the Japanese check finds Japanese');
+  await pick('#language', 'en'); await delay(120);
+  assert.equal(await evaluate('document.getElementById("conn-name").value'), 'keepme', 'the input survives the language change');
+  assert.equal(await evaluate('location.hash'), '#/connection/new?purpose=uart'); assert.equal(await evaluate('document.documentElement.lang'), 'en');
+  assert.equal(await evaluate('!!document.querySelector("[data-action=disconnect]")'), true, 'still connected');
+  await press('Disconnect');
+  await send('Page.reload'); await delay(300); await until('document.querySelector("h1")');
+  assert.equal(await evaluate('document.documentElement.lang'), 'en', 'the chosen language is remembered');
+  // Every screen in English carries no Japanese.
+  const english = async (r) => { await go(r); await until('document.querySelector("h1")'); assert.equal(await japanese(), null, `Japanese left on ${r}`); };
+  for (const r of ['/home', '/usecases', ...['debug', 'logs', 'logic', 'bus', 'signal', 'peer', 'uart', 'i2c'].map((x) => `/usecase/${x}`), '/boards', '/learn', '/install/select', '/install/prepare', '/install/review', '/connect', '/work', '/nowhere']) await english(r);
+  await go('/connect'); await press('Choose a device and connect');
+  for (const r of ['/setup', ...['debug', 'debug-scan', 'logs', 'logic'].map((x) => `/setup/${x}`), '/setup/ready?port=dut', '/work', '/connections', '/connection/new',
+    ...['debug', 'uart', 'i2c', 'spi', 'custom'].map((x) => `/connection/new?purpose=${x}`), '/connection/x035', '/connection/dut', '/operations',
+    ...['debug', 'console', 'uart', 'i2c', 'spi', 'gpio', 'pwm', 'counter', 'dac', 'i2c-target', 'spi-target'].map((x) => `/operate/${x}`),
+    ...['standalone', 'named', 'during', 'test', 'analog'].map((x) => `/capture?mode=${x}`), '/passthrough', '/fixture', '/settings', '/maintenance', '/handoff']) await english(r);
+  await go('/operate/debug?port=x035'); await press('Connect to the target'); assert.equal(await japanese(), null, 'Japanese left on the attached debug screen');
+  await press('Detach the target');
+  await go('/capture?mode=standalone'); await choose('#capture-pin-0', 3); await press('Review the hand-over'); assert.equal(await japanese(), null, 'Japanese left on the capture review');
+  await go('/handoff'); assert.equal(await japanese(), null, 'Japanese left on the hand-over with a capture');
+  await go('/settings'); await snapshot('05-english');
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  for (const r of ['/home', '/boards', '/work', '/settings', '/maintenance']) { await go(r); await noOverflow(`${r} in English`); }
+  await go('/work'); await snapshot('06-english-mobile');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
+  await pick('#language', 'ja'); await delay(120); assert.match(await h1(), /[\u3040-\u30ff\u4e00-\u9fff]/, 'back to Japanese');
   await press('接続を終了');
   assert.deepEqual(exceptions, []);
-  console.log('Browser page: public pages, ESP install with the port reused and a retry without rewriting, Pico install by BOOTSEL and the new device taken, Pico and P4 (DFU) updates, purpose kept through connecting, wiring saved without target I/O (memo records), edit, connection check, debug attach / halt / memory / detach, UART, GPIO, I2C, SPI, PWM, counter, I2C / SPI peers, debug and UART at once, the debug-wire console, passthrough apply and save, idle pins, settings and memo backup and restore, declarations, capture preparation, DAC and Wi-Fi (classic ESP32), hand-over and narrow screens passed.');
+  console.log('Browser page: public pages, ESP install with the port reused and a retry without rewriting, Pico install by BOOTSEL and the new device taken, Pico and P4 (DFU) updates, purpose kept through connecting, wiring saved without target I/O (memo records), edit, connection check, debug attach / halt / memory / detach, UART, GPIO, I2C, SPI, PWM, counter, I2C / SPI peers, debug and UART at once, the debug-wire console, passthrough apply and save, idle pins, settings and memo backup and restore, declarations, capture preparation, DAC and Wi-Fi (classic ESP32), hand-over, narrow screens, the language from the browser and from the selector (inputs kept, remembered) and every screen in English passed.');
 } finally {
   browserSocket?.close(); socket?.destroy(); if (waiting) waiting.end(); server?.closeAllConnections(); server?.close();
   for (const child of children) { child.stdin?.end(); child.kill(); }

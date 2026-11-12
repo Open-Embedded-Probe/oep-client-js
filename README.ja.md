@@ -182,7 +182,7 @@ npm run test:browser # ChromiumとPython仮想プローブで画面操作を確�
 
 ブラウザのページは[要件定義・画面仕様](docs/page.ja.md)、[接続引継ぎ](docs/page-connection.ja.md)、[受入条件](docs/page-acceptance.ja.md)に沿って作っています。
 OEPの紹介と用途・ボードの説明（機器なしで読める）、プローブの作成（ESP32・P4・P4XはUSBシリアル、Pico・Pico 2はBOOTSEL）から初期設定、配線と相手の記録（相手固定とコネクタ、複数の口）、用途ごとの操作（デバッグ、デバッグ線のログ、UART、I2C、SPI、GPIO、PWM、カウンタ、DAC、I2C・SPIの相手役）、本体設定（素通し、待機状態、Wi-Fi）、更新・控え・復元・診断、IDE・WireSkein・Pythonへの引継ぎを扱います。
-画面は日本語だけです。S3/C3/C6は対応するmergedファームウェアイメージの持ち込みで導入します。CH32の初回書き込みは対象外です。実機での確認は、受入条件の §3.2 に残っています。
+画面は英語と日本語です。既定はブラウザの言語で選び（どちらでもなければ英語）、ヘッダの選択でこのブラウザの言語を変えられます。S3/C3/C6は対応するmergedファームウェアイメージの持ち込みで導入します。CH32の初回書き込みは対象外です。実機での確認は、受入条件の §3.2 に残っています。
 ESP書き込み用の固定版 `esptool-js` はサイトに同梱し、npmライブラリの実行時依存には加えません。
 `npm run serve` は初回に配布ファームウェアイメージを取得し、`.cache/firmware` に保存します。再取得は `node scripts/fetch-firmware.js` で行えます。
 
