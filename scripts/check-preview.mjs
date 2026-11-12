@@ -44,8 +44,8 @@ try {
   const choosePattern = async pattern => { await evaluate(`document.querySelector('[data-pattern="${pattern}"]').click()`); await delay(100); };
   const shot = async name => { const { data } = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); await writeFile(join(artifacts, name + '.png'), Buffer.from(data, 'base64')); };
   const reset = async () => { await send('Page.navigate', { url: base + '/preview/' }); await until('!!document.querySelector(".hero")'); };
-  const install = async (board, scenario = 'auto') => {
-    await route('/install/select');
+  const install = async (board, scenario = 'auto', keepPurpose = false) => {
+    if (!keepPurpose) await route('/install/select');
     await evaluate(`document.querySelector('[data-board="${board}"]').click()`);
     await set('書き込み後のシナリオ', scenario);
     await route('/install/prepare'); await click('書き込み先を選ぶ（デモ）'); await click('内容を確認する →'); await click('OEPの導入をプレビュー →');
@@ -55,6 +55,17 @@ try {
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
   await reset(); await shot('01-home');
   assert.match(await evaluate('document.body.innerText'), /OEPは|Open Embedded Probeは/);
+  // Public information and connected work use the same purposes; reading never needs a probe.
+  const purposes = ['debug', 'logs', 'logic', 'bus', 'signal', 'peer'];
+  assert.deepEqual(await evaluate('[...document.querySelectorAll("[data-pattern]")].map(e=>e.dataset.pattern)'), purposes);
+  for (const purpose of purposes) {
+    await route('/usecases'); await choosePattern(purpose);
+    assert.equal(await evaluate('location.hash'), '#/usecase/' + purpose);
+    assert.match(await evaluate('document.body.innerText'), /用意するもの/);
+    assert.match(await evaluate('document.body.innerText'), /このページと、組み合わせる道具/);
+    assert.deepEqual(await evaluate('__deviceCalls'), []);
+  }
+  await route('/usecase/logic'); await shot('25-public-logic');
   await route('/boards'); await shot('02-boards');
   assert.equal(await evaluate('document.querySelectorAll(".board-card").length'), 5);
   assert.match(await evaluate('document.querySelector(".board-card").innerText'), /ESP32-P4.*|推奨ボード/);
@@ -104,6 +115,36 @@ try {
   await reset(); await install('pico'); await until('location.hash==="#/install/permission"'); await shot('08-permission'); await click('起動したOEPを許可（デモ）'); await until('location.hash==="#/setup"');
   await reset(); await install('s3'); await until('location.hash==="#/install/replug"'); await shot('09-replug'); await click('つなぎ直した状態を確認（デモ）'); await click('起動したOEPを許可（デモ）'); await until('location.hash==="#/setup"');
   await reset(); await install('p4','timeout'); await until('location.hash==="#/install/timeout"'); await click('同じ機器で再試行（デモ）'); await until('location.hash==="#/setup"');
+  // A purpose chosen before installation survives board changes and every runtime handoff.
+  for (const [purpose, board, scenario, next] of [['logs','p4','auto','/setup/logs'], ['debug','pico','auto','/setup/debug'], ['logic','s3','auto','/setup/logic'], ['uart','p4','timeout','/setup/task?task=uart']]) {
+    await reset(); await route('/usecase/' + purpose); await click('この用途でプローブを作る →');
+    await click('選んだボードで次へ →'); await click('ボード選択に戻る');
+    assert.equal(await evaluate('location.hash'), '#/install/select?purpose=' + purpose);
+    await install(board, scenario, true);
+    if (board === 'pico') { await until('location.hash==="#/install/permission"'); await click('起動したOEPを許可（デモ）'); }
+    if (board === 's3') { await until('location.hash==="#/install/replug"'); await click('つなぎ直した状態を確認（デモ）'); await click('起動したOEPを許可（デモ）'); }
+    if (scenario === 'timeout') { await until('location.hash==="#/install/timeout"'); await click('同じ機器で再試行（デモ）'); }
+    await until(`location.hash===${JSON.stringify('#' + next)}`);
+    assert.match(await evaluate('document.body.innerText'), /OEPの導入完了/);
+    assert.equal(await evaluate('document.querySelectorAll(".active-work").length'), 0);
+  }
+  // Existing-device entry goes to the chosen setup without an installation progress indicator.
+  for (const purpose of purposes) {
+    await reset(); await route('/usecase/' + purpose); await click('導入済みのプローブで準備する →'); await click('機器を選んで接続（デモ）');
+    assert.equal(await evaluate('location.hash'), '#/setup/' + (purpose === 'peer' ? 'task?task=peer' : purpose));
+    assert.equal(await evaluate('document.querySelectorAll(".stepper").length'), 0);
+  }
+  await route('/operations'); assert.deepEqual(await evaluate('[...document.querySelectorAll("[data-pattern]")].map(e=>e.dataset.pattern)'), purposes);
+  // A visitor who tries an existing device first can switch to installation with the same purpose.
+  await reset(); await route('/usecase/logs'); await click('導入済みのプローブで準備する →'); await click('ボードをプローブにする');
+  assert.equal(await evaluate('location.hash'), '#/install/select?purpose=logs');
+  // Direct setup links keep their purpose as well when the visitor needs to create a probe.
+  await reset(); await route('/setup/bus'); await click('ボードから作る');
+  assert.equal(await evaluate('location.hash'), '#/install/select?purpose=bus');
+  // Abandoning a purpose for the generic installation entry must not leave an old continuation.
+  await reset(); await route('/usecase/debug'); await click('この用途でプローブを作る →');
+  await click('用途を選び直す'); await choosePattern('logs'); await click('この用途でプローブを作る →');
+  await install('p4'); await until('location.hash==="#/setup"');
   // Each debug protocol keeps its own required pins, optional reset and method through save/edit/use.
   for (const [wire, roles, title] of [['swd', ['SWDIO','SWCLK'], 'SWD'], ['rvswd', ['SWDIO','SWCLK'], 'RVSWD'], ['swio', ['DIO'], '1線DIO（SWIO）']]) {
     await reset(); await route('/setup'); await click('プローブを選ぶ（デモ）'); await click('機器を選んで接続（デモ）');
@@ -159,7 +200,7 @@ try {
   await route('/connections'); await click('配線・相手の情報を編集'); await set('接続名','edited'); await click('変更を保存'); assert.match(await evaluate('document.body.innerText'), /edited/);
   // Mobile widths and no horizontal document overflow on representative screens.
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-  for (const [path, name] of [['/home','10-mobile-home'],['/install/select','11-mobile-boards'],['/setup','12-mobile-setup'],['/connection/new?purpose=debug&wire=swio','13-mobile-editor'],['/operate/uart','14-mobile-operation'],['/learn','15-mobile-learn'],['/setup/logs','21-mobile-logs'],['/capture?mode=standalone','22-mobile-capture'],['/passthrough','23-mobile-passthrough'],['/fixture','24-mobile-fixture']]) {
+  for (const [path, name] of [['/home','10-mobile-home'],['/install/select','11-mobile-boards'],['/setup','12-mobile-setup'],['/connection/new?purpose=debug&wire=swio','13-mobile-editor'],['/operate/uart','14-mobile-operation'],['/learn','15-mobile-learn'],['/setup/logs','21-mobile-logs'],['/capture?mode=standalone','22-mobile-capture'],['/passthrough','23-mobile-passthrough'],['/fixture','24-mobile-fixture'],['/usecase/debug','26-mobile-usecase'],['/operations','27-mobile-purposes']]) {
     await route(path); await shot(name);
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'), true, 'overflow at '+path);
   }

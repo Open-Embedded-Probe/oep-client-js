@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Unify public use cases, setup and workspace navigation around six purposes. Explain requirements, outcomes and external-tool boundaries before connecting; preserve the selected purpose across installation, permission, replug and retry, then continue directly into its setup. Link the new custom-command guide.
+- (JA) 公開入口・初期設定・作業画面を6つの用途に統一。接続前に必要なもの・結果・外部ツールとの役割分担を説明し、選んだ用途を書き込み・再許可・抜き差し・再試行後の設定へ引き継ぐ。独自コマンドの新ガイドへの導線も追加。
+
 - (EN) Review the new probe use-case guides and align the hardware-free preview: separate saved wiring from operation conditions, offer capture without registration, distinguish UART/debug-console/passthrough logging, and guide fixture setup in order. Record guide/spec discrepancies and keep hardware validation separate.
 - (JA) 新しい用途別ガイドをレビューし、画面プレビューへ反映。配線保存と操作条件を分け、登録不要の波形取得準備、UART・デバッグ線・素通しの区別、据え置き治具の設定順を追加。ガイドと規範の不一致を記録し、実機検証とは区別。
 

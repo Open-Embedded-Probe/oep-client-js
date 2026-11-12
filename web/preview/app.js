@@ -1,4 +1,4 @@
-import { BOARDS, TASKS, DEBUG_WIRES, LOGIC_TASK, CONSOLE_TASK, ANALOG_TASK, LOG_PATHS, GUIDE_BASE, SETUP_PATTERNS, SCENARIOS, DOCS } from './data.js';
+import { BOARDS, TASKS, DEBUG_WIRES, LOGIC_TASK, CONSOLE_TASK, ANALOG_TASK, LOG_PATHS, GUIDE_BASE, SETUP_PATTERNS, USE_CASE_DETAILS, SCENARIOS, DOCS } from './data.js';
 
 // Isolated interaction prototype: no OEP library, device API, firmware download or persistent device settings.
 /** @type {any} */
@@ -44,8 +44,28 @@ function debugChoices(onChoose, selected = '', consoleOnly = false) {
     el('strong', {}, w.title), el('span', {}, w.description), el('span', { class: 'pattern-next' }, `${w.roles.join(' + ')} / GND共通`), el('small', {}, w.note))));
 }
 function patternChoices(from = 'setup') {
-  return [el('div', { class: 'two-grid' }, ...SETUP_PATTERNS.map(t => el('a', { class: 'pattern-card', href: `#/setup/${['debug', 'logs', 'logic'].includes(t.id) || t.tasks ? t.id : 'task'}?task=${t.id}&from=${from}`, 'data-pattern': t.id },
+  return [el('div', { class: 'two-grid' }, ...SETUP_PATTERNS.map(t => el('a', { class: 'pattern-card', href: '#' + (from === 'public' ? `/usecase/${t.id}` : `${purposeRoute(t.id)}${purposeRoute(t.id).includes('?') ? '&' : '?'}from=${from}`), 'data-pattern': t.id },
     el('small', { class: 'eyebrow' }, t.label), el('strong', {}, t.title), el('span', {}, t.description), el('span', { class: 'pattern-next' }, t.next + ' →'))))];
+}
+function purposeRoute(id) {
+  if (['debug', 'logs', 'logic', 'bus', 'signal'].includes(id)) return `/setup/${id}`;
+  return `/setup/task?task=${id}`;
+}
+const purposeTitle = id => SETUP_PATTERNS.find(t => t.id === id)?.title ?? taskById(id).title;
+const installRoute = () => '/install/select' + (state.intent ? '?purpose=' + state.intent : '');
+function choosePurpose(id) {
+  const next = purposeRoute(id);
+  state.intent = state.connected ? '' : id; state.connectReturn = next;
+  go(state.connected ? next : '/connect');
+}
+function finishConnect() {
+  state.connected = true; state.connectedBoard = state.board;
+  if (!state.records.length) state.records = [sampleRecord()];
+  const next = state.connectReturn;
+  state.notice = ''; state.intent = ''; state.connectReturn = '/work'; go(next);
+}
+function installationContext() {
+  return state.intent ? panel(badge('導入後に続ける用途'), el('h2', {}, purposeTitle(state.intent)), p('書き込みと起動確認が終わると、この用途の設定に進みます。'), button('用途を選び直す', () => { state.intent = ''; go('/usecases'); })) : null;
 }
 const routeNow = () => location.hash.startsWith('#/') ? location.hash.slice(1) : '/home';
 const heading = (title, description, eyebrow = 'OEP WORKSPACE') => el('header', { class: 'page-heading' }, p(eyebrow, 'eyebrow'), el('h1', { tabindex: -1 }, title), p(description));
@@ -85,7 +105,7 @@ function previewControls() {
   const details = el('details', { class: 'review-controls', open: state.controlOpen, ontoggle: e => { state.controlOpen = e.target.open; } },
     el('summary', {}, 'プレビューの確認用：接続シナリオ・最初からやり直す'),
     el('div', { class: 'review-content' }, field('書き込み後のシナリオ', state.scenario, v => { state.scenario = v; }, '次の書き込みプレビューに反映されます。', SCENARIOS),
-      button('最初からやり直す', () => discardThen(() => { clearInterval(flashTimer); Object.assign(state, { board: 'p4', connectedBoard: 'p4', connected: false, selected: false, installation: false, flash: 'idle', progress: 0, records: [], draft: null, dirty: false, active: {}, operations: {}, settings: {}, capture: null, passthrough: null, settingsApplied: false, settingsSaved: false, notice: '', intent: '', transferDone: false, maintenance: '' }); location.hash = '/home'; render(); })),
+      button('最初からやり直す', () => discardThen(() => { clearInterval(flashTimer); Object.assign(state, { board: 'p4', connectedBoard: 'p4', connected: false, selected: false, installation: false, flash: 'idle', progress: 0, records: [], draft: null, dirty: false, active: {}, operations: {}, settings: {}, capture: null, passthrough: null, settingsApplied: false, settingsSaved: false, notice: '', intent: '', connectReturn: '/work', transferDone: false, maintenance: '' }); location.hash = '/home'; render(); })),
       p('設定はこのタブ内だけに保持します。再読み込みすると初期状態に戻ります。日本語で画面構成を確認する段階です。')));
   return details;
 }
@@ -98,11 +118,6 @@ function heroDiagram() {
     el('div', { class: 'bench-row' }, el('div', { class: 'diagram-box' }, '開発中のIC・基板', el('span', {}, 'ターゲット'))),
   );
 }
-function taskCard(task, browse = true) {
-  return el('a', { class: 'task-card', href: `#/${browse ? 'usecase' : 'operate'}/${task.id}` },
-    el('span', { class: 'task-number' }, `${task.num} / ${task.short}`), el('h3', {}, task.title), p(task.description),
-    el('span', { class: 'card-end' }, browse ? '使い方を見る →' : 'この作業を開く →'));
-}
 function sectionTitle(title, description, eyebrow) {
   return el('div', { class: 'section-head' }, el('div', {}, eyebrow ? p(eyebrow, 'eyebrow') : null, el('h2', {}, title)), description ? p(description) : null);
 }
@@ -113,9 +128,7 @@ function home() {
       actions(link('ボードをプローブにする →', '/install/select', true), link('導入済みのプローブを使う', '/connect')),
       p('まずはブラウザで導入・設定。必要に応じてIDEやテストツールへ。', 'hero-foot')), heroDiagram()),
     el('section', { class: 'section' }, sectionTitle('ひとつの接続から、いろいろな作業へ。', '利用できる機能は、ボードとファームウェアで異なります。', 'WHAT YOU CAN DO'),
-      el('div', { class: 'three-grid' }, ...[TASKS[0], TASKS[1], TASKS[3], TASKS[7]].map(t => taskCard(t)),
-        el('a', { class: 'task-card', href: '#/handoff' }, el('span', { class: 'task-number' }, 'OBSERVE / WireSkein'), el('h3', {}, '波形を観測・解析する'), p('取得した信号を見比べ、通信を読み解く。WireSkeinの取得・表示環境へ。'), el('span', { class: 'card-end' }, 'できることと必要な環境 →')),
-        el('a', { class: 'task-card', href: '#/learn' }, el('span', { class: 'task-number' }, 'AUTOMATE / Python・IDE'), el('h3', {}, 'いつもの開発につなげる'), p('配線に名前を付けて再利用。スクリプトや自動テストからも同じプローブを使えます。'), el('span', { class: 'card-end' }, '技術と開発ツールを見る →')))),
+      ...patternChoices('public'), actions(link('自動テスト・開発ツールを知る', '/learn'))),
     el('section', { class: 'section' }, sectionTitle('これから用意するなら、ESP32-P4。', '推奨ボードはESP32-P4です。手元の対応ボードからも始められます。導入済みなら、種類を選ばず接続できます。', 'BOARDS'),
       el('div', { class: 'three-grid' }, ...BOARDS.slice(0, 3).map(b => boardCard(b, false, true))), actions(link('すべてのボードと制約を見る', '/boards'))),
     el('section', { class: 'section' }, sectionTitle('書き込んだら、そのまま設定へ。', 'ターゲットがまだなくても、配線の登録はできます。', 'GET STARTED'),
@@ -131,7 +144,7 @@ function boardCard(b, select = false, compact = false) {
     el('h3', {}, b.name), p(b.title), !compact ? p(b.description) : null,
     el('ul', {}, ...b.features.map(f => el('li', {}, f))), !compact ? p(b.note, 'compact') : null,
     actions(select ? button(state.board === b.id ? '選択中 ✓' : 'このボードを選ぶ', () => { state.board = b.id; state.selected = false; render(false); }, state.board === b.id ? 'primary' : '', { disabled: !b.installable, 'data-board': b.id })
-      : button(b.installable ? 'このボードで始める →' : '導入済みの機器を使う', () => { state.board = b.id; state.selected = false; go(b.installable ? '/install/prepare' : '/connect'); }, '', { 'data-board': b.id })));
+      : button(b.installable ? 'このボードで始める →' : '導入済みの機器を使う', () => { state.board = b.id; state.selected = false; state.intent = ''; state.connectReturn = '/work'; go(b.installable ? '/install/prepare' : '/connect'); }, '', { 'data-board': b.id })));
 }
 function boards() {
   return el('div', { class: 'page' }, heading('手元のボードから、始められます。', '配布ファームウェア、使える機能、導入方法はボードごとに異なります。違いを見ながら、目的に合うものを選んでください。', 'SUPPORTED BOARDS'),
@@ -140,18 +153,25 @@ function boards() {
     external('ボードごとの機能・ピン・検証範囲', DOCS[1][2]));
 }
 function usecases() {
-  return el('div', { class: 'page' }, heading('何を確かめたいですか。', '使いたい信号の名前だけでなく、目的から作業を選べます。配線の登録は任意です。', 'WHAT YOU CAN DO'),
-    el('div', { class: 'three-grid' }, ...TASKS.map(t => taskCard(t))),
-    el('div', { class: 'guide-path' }, el('h2', {}, '波形・自動テスト・ターゲット固有の書き込み'), p('専用の道具と組み合わせる用途もあります。必要な環境と引き継ぐ情報を案内します。'), actions(link('外部ツールとの連携を見る', '/handoff'))));
+  return el('div', { class: 'page' }, heading('何を確かめたいですか。', '目的を選ぶと、用意するもの、このページでできる範囲、その後の手順が分かります。まだプローブがなくても読めます。', 'WHAT YOU CAN DO'),
+    ...patternChoices('public'),
+    el('div', { class: 'guide-path' }, el('h2', {}, '治具・自動テストとして使う'), p('毎回使う配線や待機状態を準備し、開発環境・スクリプトと組み合わせられます。'), external('用途別ガイドの全体を見る', GUIDE_BASE + 'use-cases.ja.md'), link('技術と開発ツールを見る', '/learn')));
 }
 function usecase(id) {
-  const t = taskById(id);
+  const pattern = SETUP_PATTERNS.find(t => t.id === id), detail = USE_CASE_DETAILS[id];
+  if (pattern && detail) return el('div', { class: 'page' }, heading(pattern.title, detail.example, `USE CASE / ${pattern.label}`),
+    el('div', { class: 'two-grid' }, panel(el('h2', {}, '得られるもの'), p(detail.result), el('h2', {}, 'このページと、組み合わせる道具'), p(detail.scope)),
+      panel(el('h2', {}, '用意するもの'), p(detail.needs), p('配線の準備はターゲット未接続でもできます。使える機能はプローブとファームウェアにより異なります。', 'muted'))),
+    el('section', { class: 'panel mt' }, el('h2', {}, 'この用途の進め方'), el('ol', { class: 'checklist' }, ...detail.steps.map((text, i) => el('li', {}, el('span', { class: 'check' }, i + 1), text)))),
+    actions(link('この用途でプローブを作る →', `/install/select?purpose=${id}`, true), button(state.connected ? '接続中のプローブで準備する →' : '導入済みのプローブで準備する →', () => choosePurpose(id))),
+    external('詳しい手順・対応範囲', GUIDE_BASE + detail.guide), link('ほかの用途を見る', '/usecases'));
+  const t = [CONSOLE_TASK, ANALOG_TASK, ...TASKS].find(t => t.id === id);
+  if (!t) return notFound();
   return el('div', { class: 'page' }, heading(t.title, t.description, `USE CASE / ${t.short}`),
-    el('div', { class: 'two-grid' }, panel(el('h2', {}, 'この作業でできること'), p(t.result), el('div', { class: 'terminal' }, '結果の表示例\n\n' + t.output)),
-      panel(el('h2', {}, '用意するもの'), el('ul', {}, el('li', {}, 'この機能を提供するOEPプローブ'), el('li', {}, `${t.roles.join(' / ')}とGNDの配線`), el('li', {}, '電圧と接続条件を確認した相手のIC・基板')),
-        p('相手の配線が決まっていれば、スキャンは不要です。保存済みの配線を呼び出すか、その場でピンを指定します。', 'muted'),
-        actions(button('この作業を始める →', () => startTask(t.id), 'primary'), button('プローブを作るところから', () => { state.intent = t.id; go('/install/select'); })))),
-    el('div', { class: 'guide-path' }, el('h2', {}, '操作の流れ'), el('ol', {}, ...['プローブに接続する', '配線と通信・信号の条件を確認する', `${t.action} → 結果を確認する`, t.stop].map(v => el('li', {}, v)))));
+    el('div', { class: 'two-grid' }, panel(el('h2', {}, 'この作業でできること'), p(t.result), t.output ? el('div', { class: 'terminal' }, '結果の表示例\n\n' + t.output) : null),
+      panel(el('h2', {}, '用意するもの'), el('ul', {}, el('li', {}, 'この機能を提供するOEPプローブ'), el('li', {}, t.roles.length ? `${t.roles.join(' / ')}とGNDの配線` : '相手のデバッグ方式に合う信号線とGND'), el('li', {}, '電圧と接続条件を確認した相手のIC・基板')),
+        p('固定配線が分かっていれば、スキャンや配線名の登録は不要です。', 'muted'))),
+    actions(link('この用途でプローブを作る →', `/install/select?purpose=${id}`, true), button(state.connected ? '接続中のプローブで準備する →' : '導入済みのプローブで準備する →', () => choosePurpose(id))), link('用途の一覧に戻る', '/usecases'));
 }
 function learn() {
   return el('div', { class: 'page' }, heading('OEPは、ボードとソフトウェアの共通の約束です。', '組み込み開発に使うプローブの機能を、特定のボードやアプリの組み合わせに閉じず、共通の意味で公開・利用するための仕様です。', 'TECHNOLOGY & DOCUMENTATION'),
@@ -161,27 +181,32 @@ function learn() {
 function stepper(n) {
   return el('ol', { class: 'stepper', 'aria-label': 'プローブ作成の進行' }, ...['ボードを選ぶ', '接続・内容確認', '書き込み・起動', '初期設定'].map((t, i) => el('li', { class: i === n ? 'current' : i < n ? 'done' : '', 'aria-current': i === n ? 'step' : 'false' }, el('span', {}, i < n ? '✓' : String(i + 1)), t)));
 }
-function installAside() {
-  const b = board();
-  return el('aside', { class: 'install-aside' }, el('span', { class: 'chip-mark' }, b.code), el('h3', {}, b.name), p('今回プローブにするボード'),
-    el('hr', { style: 'border:0;border-top:1px solid #cbdcd1;margin:20px 0' }), p('書き込んだ機器を引き継いで、初期設定へ進みます。'),
-    p('ターゲットはまだつながなくてかまいません。'), badge('サンプル機器 / 実機操作なし', 'gray'));
+function installAside(configure = false) {
+  const b = configure ? probeBoard() : board();
+  return el('aside', { class: 'install-aside' }, el('span', { class: 'chip-mark' }, b.code), el('h3', {}, b.name), p(configure ? '接続中のプローブ' : '今回プローブにするボード'),
+    el('hr', { style: 'border:0;border-top:1px solid #cbdcd1;margin:20px 0' }), p(configure ? 'この機器で使う配線と条件を準備します。画面を開いただけでは動作を開始しません。' : '書き込んだ機器を引き継いで、初期設定へ進みます。'),
+    p('ターゲットはまだつながなくてかまいません。'), !configure ? installationContext() : null, badge('サンプル機器 / 実機操作なし', 'gray'));
 }
 function installFrame(n, content) {
-  return el('div', { class: 'page' }, stepper(n), n === 0 ? content : el('div', { class: 'install-layout' }, el('div', {}, content), installAside()));
+  return el('div', { class: 'page' }, state.installation || n < 3 ? stepper(n) : null, n === 3 && state.flash === 'done' ? note('✓ OEPの導入完了 · 同じ機器に接続中（デモ）') : null, n === 0 ? content : el('div', { class: 'install-layout' }, el('div', {}, content), installAside(n === 3)));
 }
-function install(view) {
+function install(view, query) {
+  if (view === 'select') {
+    const requested = query.get('purpose');
+    state.intent = [...SETUP_PATTERNS, CONSOLE_TASK, ANALOG_TASK, ...TASKS].some(t => t.id === requested) ? requested : '';
+    state.connectReturn = state.intent ? purposeRoute(state.intent) : '/work';
+  }
   const b = board();
   if (view === 'select' && !b.installable) state.board = 'p4';
   if (view === 'select') return installFrame(0, [heading('どのボードをプローブにしますか。', '導入方法と特徴を見て選んでください。導入済みのプローブを使うときは、この選択は不要です。', 'CREATE A PROBE'),
-    note('これから用意するならESP32-P4を推奨します。デバッグ・UART転送・ロジック観測など、幅広い用途に使えます。'),
+    installationContext(), note('これから用意するならESP32-P4を推奨します。デバッグ・UART転送・ロジック観測など、幅広い用途に使えます。'),
     el('div', { class: 'two-grid' }, ...BOARDS.map(b => boardCard(b, true))), actions(link('選んだボードで次へ →', '/install/prepare', true), link('導入済みのプローブを使う', '/connect'))]);
   if (view === 'prepare') return installFrame(1, [heading(`${b.name}を用意する`, 'USBでつないだら、書き込み先を選びます。接続方式の種類を選ぶ必要はありません。', 'CREATE A PROBE'),
     panel(el('h2', {}, '最初にすること'), el('ol', { class: 'checklist' }, ...[b.install, 'ターゲットとの配線は、導入のあとで準備できます', '下のボタンから書き込み先の機器を選択'].map((t, i) => el('li', {}, el('span', { class: 'check' }, `0${i + 1}`), t))),
       b.id === 's3' ? note('持込ファームウェアイメージの選択も今回は表示例です。ファイルの読込やアップロードは行いません。') : null,
       state.selected ? el('div', { class: 'demo-device' }, el('span', { class: 'chip-mark' }, b.code), el('div', {}, el('strong', {}, `${b.model} — 選択済み`), p(`${b.port} / デモ機器`))) : null,
       actions(button(state.selected ? '書き込み先を選び直す（デモ）' : '書き込み先を選ぶ（デモ）', () => { state.selected = true; render(false); announce('サンプルの書き込み先を選択しました'); }, state.selected ? '' : 'primary', { id: 'choose-device' }), state.selected ? link('内容を確認する →', '/install/review', true) : null)),
-    actions(link('ボード選択に戻る', '/install/select'))]);
+    actions(link('ボード選択に戻る', installRoute()))]);
   if (!state.selected && ['review', 'writing'].includes(view)) return installFrame(1, [heading('書き込み先を選択してください', '先に、このボードの準備を行います。'), link('機器の選択へ', '/install/prepare', true)]);
   if (view === 'review') return installFrame(1, [heading('このボードにOEPを導入します。', '検出したチップと書き込む内容を確認します。今回は画面の動作だけを確認できます。', 'CREATE A PROBE'),
     panel(el('h2', {}, '導入内容'), keyValues([['対象', b.model], ['チップ', `${b.chip}（検出結果の例）`], ['ファームウェア', b.id === 's3' ? '持込ファームウェアイメージ（サンプル）' : 'OepProbe / 配布ファームウェアイメージの例'], ['書き込み先', b.port], ['次の画面', '起動を確認し、そのまま初期設定へ']]),
@@ -215,7 +240,12 @@ function beginFlash() {
     else if (currentRoute === '/install/writing') render(false);
   }, 450);
 }
-function finishInstall() { state.connected = true; state.connectedBoard = state.board; state.flash = 'done'; go('/setup'); }
+function finishInstall() {
+  state.connected = true; state.connectedBoard = state.board; state.flash = 'done';
+  const next = state.intent ? purposeRoute(state.intent) : '/setup';
+  state.notice = 'OEPの導入が完了しました。同じ接続のまま、用途の設定を続けられます（デモ）。';
+  state.intent = ''; go(next);
+}
 function keyValues(rows) { return el('dl', { class: 'key-value' }, ...rows.flatMap(([k, v]) => [el('dt', {}, k), el('dd', {}, v)])); }
 function setup(view, query) {
   if (!state.connected) return needConnection(currentRoute);
@@ -278,13 +308,15 @@ function connect() {
   return el('div', { class: 'page' }, heading('手元のプローブを使う。', '導入済みの機器を選びます。ボードの種類と使える機能は、接続してから確認します。', 'CONNECT YOUR PROBE'),
     el('div', { class: 'two-grid' }, panel(el('h2', {}, 'ブラウザから機器を選ぶ'), p('USBケーブルでプローブをつなぎ、一覧から使う個体を選びます。'),
       note('プレビューでは、接続済みのプローブと保存済み配線のサンプルを開きます。機器の許可は要求しません。'),
-      actions(button('機器を選んで接続（デモ）', () => { state.connected = true; state.connectedBoard = state.board; if (!state.records.length) state.records = [sampleRecord()]; state.notice = ''; go(state.connectReturn); }, 'primary', { id: 'connect-demo' }))),
-      panel(el('h2', {}, 'まだOEPを導入していない場合'), p('先に、ボードへOEPのファームウェアを入れます。書き込みのあと、そのまま設定を続けられます。'), actions(link('ボードをプローブにする', '/install/select')))),
-    el('details', { class: 'panel mt' }, el('summary', {}, '一覧に機器が見つからないとき'), p('ケーブル、使用中のアプリ、機器の起動を確認します。OEPのUSB端子から接続する案内は、必要なときにここへ表示します。', 'mt'), button('OEPのUSB機器を選ぶ（デモ）', () => { state.connected = true; state.connectedBoard = state.board; state.records = state.records.length ? state.records : [sampleRecord()]; go(state.connectReturn); })));
+      actions(button('機器を選んで接続（デモ）', finishConnect, 'primary', { id: 'connect-demo' }))),
+      panel(el('h2', {}, 'まだOEPを導入していない場合'), p('先に、ボードへOEPのファームウェアを入れます。書き込みのあと、そのまま設定を続けられます。'), actions(link('ボードをプローブにする', installRoute())))),
+    el('details', { class: 'panel mt' }, el('summary', {}, '一覧に機器が見つからないとき'), p('ケーブル、使用中のアプリ、機器の起動を確認します。OEPのUSB端子から接続する案内は、必要なときにここへ表示します。', 'mt'), button('OEPのUSB機器を選ぶ（デモ）', finishConnect)));
 }
 function needConnection(returnTo) {
   state.connectReturn = returnTo;
-  return el('div', { class: 'page' }, heading('プローブに接続して、続きを開きます。', '選んだ作業は保持されます。接続後にこの画面へ戻ります。'), actions(link('プローブを選ぶ（デモ）', '/connect', true), link('ボードから作る', '/install/select')));
+  const [path, params] = returnTo.split('?'), query = new URLSearchParams(params), id = path.split('/')[2];
+  state.intent = path.startsWith('/setup/') ? (id === 'task' ? query.get('task') : id) : path.startsWith('/capture') ? (query.get('mode') === 'analog' ? 'analog' : 'logic') : '';
+  return el('div', { class: 'page' }, heading('プローブに接続して、続きを開きます。', '選んだ作業は保持されます。接続後にこの画面へ戻ります。'), actions(link('プローブを選ぶ（デモ）', '/connect', true), link('ボードから作る', installRoute())));
 }
 function startTask(id) { if (id === 'logic' && state.operations.logic?.recordId) state.capture = { mode: 'named', recordId: state.operations.logic.recordId, channels: [], values: {}, reviewed: false }; const next = id === 'logic' ? '/capture?mode=named' : id === 'analog' ? '/capture?mode=analog' : `/operate/${id}`; if (!state.connected) state.connectReturn = next; go(state.connected ? next : '/connect'); }
 function sampleRecord() { return { id: 'sample-sensor', name: 'sensor', part: 'I2C温度センサ（例）', note: 'ベンチ上のセンサ評価用。3.3 V / 共通GND。', groups: [{ type: 'i2c', pins: ['4', '5'] }] }; }
@@ -302,7 +334,7 @@ function work() {
     state.notice ? note(state.notice) : null,
     el('section', { class: 'form-group' }, el('div', { class: 'mini-heading' }, el('h2', {}, '配線・接続先'), el('a', { href: '#/connections', class: 'text-link' }, '一覧・編集 →')),
       state.records.length ? el('div', { class: 'stack' }, ...state.records.map(r => recordCard(r))) : emptyConnections()),
-    el('section', {}, el('div', { class: 'mini-heading' }, el('h2', {}, '目的から操作を選ぶ'), el('a', { href: '#/operations', class: 'text-link' }, 'すべて見る →')), el('div', { class: 'three-grid' }, ...[TASKS[0], TASKS[1], TASKS[7]].map(t => taskCard(t, false)))),
+    el('section', {}, el('div', { class: 'mini-heading' }, el('h2', {}, '目的から操作を選ぶ'), el('a', { href: '#/operations', class: 'text-link' }, 'すべて見る →')), ...patternChoices('operations')),
     actions(link('初期設定の案内を開く', '/setup'), link('波形・外部ツールへ', '/handoff'))];
 }
 function emptyConnections() { return el('div', { class: 'empty' }, el('h3', {}, 'まだ配線を登録していません。'), p('相手の型番や、どの信号をどのピンにつなぐかを保存できます。', 'muted'), actions(link('配線を登録する →', '/connection/new', true), link('登録せずに操作する', '/operations'))); }
@@ -380,12 +412,12 @@ function saveRecord() {
   if (record.purpose && d.editId === 'new') { state.operations[record.purpose] = { recordId: record.id, values: {} }; go(`/setup/ready?record=${record.id}`); }
   else go(state.returnTo);
 }
-function operations() { return [heading('目的に合う道具を開く。', '配線と条件を確認してから開始します。ここでは機能ごとの画面例を確認できます。'), el('div', { class: 'three-grid' }, ...TASKS.map(t => taskCard(t, false))), actions(link('波形・外部ツールはこちら', '/handoff'))]; }
+function operations() { return [heading('目的に合う道具を開く。', '用途から必要な方式と配線・条件へ進みます。画面を開いただけでは動作を開始しません。'), ...patternChoices('operations'), actions(link('据え置き治具を準備する', '/fixture'), link('外部ツールへ引き継ぐ', '/handoff'))]; }
 function stopTask(id) { state.active[id] = false; state.operations[id] = { ...(state.operations[id] ?? {}), stopped: true }; render(false); announce('サンプルの操作を終了しました'); }
 function operate(id) {
   if (id === 'analog') return capture(new URLSearchParams('mode=analog'));
   const t = taskById(id);
-  if (!state.connected) { state.connectReturn = `/operate/${id}`; return [heading(t.title, t.description), note('プローブに接続すると、この作業へ戻ります。'), actions(link('プローブを選ぶ（デモ）', '/connect', true), link('ボードをプローブにする', '/install/select'))]; }
+  if (!state.connected) { state.connectReturn = `/operate/${id}`; state.intent = id; return [heading(t.title, t.description), note('プローブに接続すると、この作業へ戻ります。'), actions(link('プローブを選ぶ（デモ）', '/connect', true), link('ボードをプローブにする', installRoute()))]; }
   const o = state.operations[id] ??= { recordId: '', values: {} }; o.values ??= {};
   const records = state.records.filter(r => r.groups.some(g => g.type === id || id === 'console' && g.type === 'debug' && g.wire !== 'swd'));
   const selected = records.find(r => r.id === o.recordId);
@@ -434,12 +466,12 @@ function capture(query) {
       note(mode === 'analog' ? 'アナログ取得はピンを専有します。同じ信号をロジックでも見るなら別のピンへ配線します。' : 'ロジック取得は聞くだけで、ピンを駆動しません。GNDと信号電圧を確認します。')),
     panel(el('h2', {}, '02 / WireSkeinで指定する取得条件'),
       field('取り方', c.values.kind ?? 'oneshot', v => { setValue('kind', v); render(false); }, '利用できる取り方と上限は実機の宣言で確認します。', [['oneshot', 'ワンショット'], ['stream', 'PCへ流し続ける'], ['repeat', 'トリガごとに繰り返す']]),
-      field('サンプルレート（Hz）', c.values.rate ?? '1000000', v => setValue('rate', v)),
+      field('サンプルレート（Hz）', c.values.rate ?? '1000000', v => setValue('rate', v), '希望する速さです。実際の速さは本数・取り方・経路により変わり、取得環境で確認します。'),
       c.values.kind === 'stream' ? field('取得時間（ms）', c.values.duration ?? '100', v => setValue('duration', v)) : [field('サンプル数', c.values.samples ?? '10000', v => setValue('samples', v)), field('トリガ', c.values.trigger ?? '指定なし', v => setValue('trigger', v), '信号とエッジ/レベルを指定する入力例。'), field('プリトリガ（サンプル）', c.values.pretrigger ?? '0', v => setValue('pretrigger', v))],
       p('このタブ内で準備する値です。ここでは取得を実行せず、プローブへ保存もしません。', 'muted'),
       button('引継ぎ内容を確認（デモ）', () => { c.reviewed = true; render(false); }, 'primary', { disabled: !channels.length })),
     c.reviewed ? panel(el('div', { id: 'capture-summary' }, el('h2', {}, '外部環境に渡す内容'), keyValues(summaryRows), link('WireSkeinへの引継ぎを確認 →', '/handoff', true))) : null,
-    actions(link('取得の使い分けに戻る', '/setup/logic')), external('キャプチャの使い分け', GUIDE_BASE + 'capture.ja.md')];
+    actions(link('取得の使い分けに戻る', '/setup/logic')), external('キャプチャの使い分け・P4の速度条件', GUIDE_BASE + 'capture.ja.md')];
 }
 function passthrough() {
   if (!state.connected) return needConnection('/passthrough');
@@ -508,7 +540,7 @@ function render(focus = true) {
   else if (view === 'learn') content = learn();
   else if (view === 'usecases') content = usecases();
   else if (view === 'usecase') content = usecase(id);
-  else if (view === 'install') content = install(id);
+  else if (view === 'install') content = install(id, query);
   else if (view === 'setup') content = setup(id, query);
   else if (view === 'connect') content = connect();
   else if (view === 'work') content = work();

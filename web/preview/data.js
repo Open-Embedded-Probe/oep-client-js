@@ -48,6 +48,15 @@ export const SETUP_PATTERNS = [
   { id: 'peer', title: '通信相手の代役になる', label: 'I2C / SPI レスポンダ', description: '開発中の基板からの要求に応答し、センサなどの代わりとして試す。', next: '応答側の方式 → 配線・応答データ → 待ち受け（今回はI2Cの例）' },
 ];
 export const GUIDE_BASE = 'https://github.com/Open-Embedded-Probe/oep-probe-arduino/blob/main/docs/guide/';
+// Public explanations use the same purpose categories as setup, before any device permission.
+export const USE_CASE_DETAILS = {
+  debug: { example: '開発中のICが途中で止まる理由を調べたい。', needs: '相手の型番とデバッグ方式、対応する信号線、共通GND。相手の電圧も確認します。', result: '接続状態、停止・再開、メモリなどの内部状態。', scope: 'このページでは配線と接続条件を準備し、基本操作へ進みます。CH32の書き込み・GDBはch32rv等へ。現行ツールにARM用flash loader・GDB serverはありません。', steps: ['相手の方式を選ぶ（SWD / 2線RVSWD / 1線DIO）', '配線を指定する。繰り返し使うなら名前を付ける', '速度や停止条件を確認してから接続する'], guide: 'debug-targets.ja.md' },
+  logs: { example: '起動ログを読みたい。対話コマンドを送りたい。', needs: '相手のログ出力方法。UARTなら速度とTX/RX、デバッグ線ならRVSWD / SWIOと対応する出力実装。', result: '受信したログと、対応する経路でのコマンド送信。', scope: 'このページでUART・デバッグ線のログを扱います。普通のシリアルモニタを使う場合は本体の素通し設定へ。素通しは相手からPCへの一方向です。', steps: ['UART・デバッグ線・シリアルモニタ向け素通しを選ぶ', '経路に合う配線を用意する。UARTのTXは送信する場合だけ', '操作の通信条件、または素通しの本体設定を確認する'], guide: 'use-cases.ja.md' },
+  logic: { example: '通信のタイミングや、リセット前後の波形を確かめたい。', needs: '観測する信号と共通GND、対応プローブ、取得用のWireSkein環境。', result: '信号名・実際のサンプルレート・トリガ位置を含む波形ファイル。', scope: 'このページでは信号と取得条件を整理します。取得は外部のWireSkein環境、ファイルの表示・解析はWireSkeinのビューアへ進みます。操作との同時取得や自動テストはPythonで組み立てます。', steps: ['今回だけのピン指定・登録済み配線・操作と同時・自動テストから選ぶ', '信号と取得条件を準備する。本体設定や配線登録は必須ではない', '外部環境で取得し、波形を表示・解析する'], guide: 'capture.ja.md' },
+  bus: { example: 'センサの値や、周辺ICの識別情報を読みたい。', needs: '相手のデータシート、I2C / SPIの配線、アドレスや通信形式。', result: '送受信したデータと、応答の有無。', scope: 'このページからプローブが通信を開始します。開発中の基板が通信を開始する場合は「通信相手の代役になる」を選びます。', steps: ['I2CかSPIを選ぶ', '配線を指定する。繰り返し使うなら名前を付ける', 'アドレス・クロック・送受信データを指定して通信する'], guide: 'use-cases.ja.md' },
+  signal: { example: 'ピンの状態を確かめたい。信号を出したり、変化を測ったりしたい。', needs: '入力か出力か、信号の電圧、対応するGPIO・PWM・カウンタ・DAC・ADC。', result: '入力状態、出力設定、パルス数、またはアナログ波形。', scope: 'GPIO・PWM・カウンタ・DACはこのページで操作します。アナログ波形の取得は条件を整理してWireSkeinへ。使えるピンと範囲はプローブにより異なります。', steps: ['状態確認・信号出力・パルス計測・アナログ取得から選ぶ', '役割に合うピンと条件を指定する', '内容を確認して開始する。継続出力は使用後に停止する'], guide: 'use-cases.ja.md' },
+  peer: { example: '開発中の基板を、まだ用意できないセンサの代役につなぎたい。', needs: '基板側が使うI2C / SPIの仕様、応答するデータ、対応プローブ。', result: '基板から受けた要求と、プローブが返した応答。', scope: '基板が通信を開始し、プローブが応答します。現在の画面プレビューはI2Cの例です。SPI応答側の画面は今後追加します。', steps: ['相手から要求される通信方式と応答を確認する', '配線を指定する。繰り返し使うなら名前を付ける', '応答アドレスとデータを指定して待ち受ける'], guide: 'use-cases.ja.md' },
+};
 export const CONSOLE_TASK = { id: 'console', short: 'デバッグ線ログ', title: 'デバッグ線でログを読む', description: 'UARTを使わず、WCHのdebug module経由で相手が出すログを読みます。相手側にも対応する出力実装が必要です。', roles: [], options: [], action: 'ログの受信を開始', stop: 'ログの受信を停止', output: '[サンプル] debug console: ready', result: 'debug module経由のログ', category: '通信' };
 export const ANALOG_TASK = { id: 'analog', short: 'アナログ取得', title: 'アナログ電圧を取り込む', description: '対応するADCピンで電圧の変化を取り込みます。取り込み中は他の機能と同じピンを共有できません。', roles: ['AIN'], options: [], result: '電圧の波形', category: '信号' };
 export const LOG_PATHS = [
@@ -66,4 +75,5 @@ export const DOCS = [
   ['プローブを作る・拡張する', 'Arduino実装と、独自の機能を追加する方法。', 'https://github.com/Open-Embedded-Probe/oep-probe-arduino'],
   ['JavaScriptから使う', 'ブラウザやNodeからOEPを利用するライブラリ。', 'https://github.com/Open-Embedded-Probe/oep-client-js'],
   ['Python・CLI・自動テスト', 'スクリプトやテストから同じプローブを使う。', 'https://github.com/Open-Embedded-Probe/oep-client-python'],
+  ['独自のコマンドを追加する', 'SimpleInterfaceで操作・入力項目・結果を定義する。', GUIDE_BASE + 'simple-interface.ja.md'],
 ];
