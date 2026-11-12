@@ -23,8 +23,8 @@
 // probe's choice, so this client never relies on the order. The probe rounds samples down to its limit and the answer
 // (Config.samples / .segments) is what holds.
 //
-// Data formats (§1): 0 the packed samples, 1 the logic blocks (`blocks`, `columns`: captureblocks.js), 4 the test
-// counter. Streaming (§3.4): every data frame carries its generation and its segment (segment_info: the segment's
+// Data formats (§1): 0 the packed samples, 1 the logic blocks (`blocks`, `columns`: captureblocks.js; a segment's size
+// follows from its samples), 4 the test counter. Streaming (§3.4): every data frame carries its generation and its segment (segment_info: the segment's
 // position, the samples taken so far, start_ns and its uncertainty) and stays inside that segment;
 // `Received.segments` keeps what the frames said.
 //
@@ -54,7 +54,7 @@ const A = ANA.tlv.configure_answer;
 export const ACTUAL_RATE = A.actual_rate, LAYOUT = A.layout, ACTUAL_SAMPLES = A.actual_samples;
 export const ACTUAL_SEGMENTS = A.actual_segments, SCALE = A.scale, SKEW = A.skew, FRONTEND_USED = A.frontend_used;
 export const REFERENCE = A.reference, ANSWER_FORMAT = A.format, ANSWER_BLOCK = A.block, STREAM_BUFFER = A.stream_buffer;
-export const JUDGE_LATENCY = A.judge_latency_ns;
+export const JUDGE_LATENCY = A.judge_latency_ns, DATA_RATE = A.data_rate;
 export const DATA_FORMAT = CAP.enum.data_format;
 export const LOGIC_CARRIAGE = CAP.enum.logic_carriage;
 export const FACTORY = ANA.tlv.calibration_answer.factory, VREFINT = ANA.tlv.calibration_answer.vrefint;
@@ -178,7 +178,8 @@ export class Config {
     /** @type {number | null} judging a group's trigger source condition: the longest to know it (§3.3, §4.4) */
     this.judgeLatencyNs = null;
     /** @type {number[]} format 1: the raw channels' roles (as asked) */ this.rawRoles = [];
-    /** @type {Map<number, number>} format 1: events role -> D (as asked) */ this.eventD = new Map();
+    /** @type {Map<number, [number, number]>} format 1: reduced role -> [carriage, D] (as asked) */ this.reduced = new Map();
+    /** @type {number | null} streaming: the data's bytes a second (§3.3 data_rate; null: not said) */ this.dataRate = null;
   }
 
   /** The actual rate in Hz (a float; rateNum / rateDen exactly). */
@@ -187,12 +188,12 @@ export class Config {
   /** Length of one segment in the stream (§1.1 rule 4). */
   get bytes() { return segmentBytes(this, this.samples); }
 
-  /** Streaming: how long the host may stop reading before the probe drops, in s (§3.3: stream_buffer over the data
-   * rate; formats 1 / 2: pass their worst bandwidth, a lower bound). null when the probe does not say.
-   * @param {number | null} [worstBytesPerS] */
-  tolerableDelayS(worstBytesPerS = null) {
+  /** Streaming: how long the host may stop reading before the probe drops, in s (§3.3: stream_buffer over data_rate,
+   * or over `bytesPerS` when given; without either, the format 0 volume). null when the probe does not say.
+   * @param {number | null} [bytesPerS] */
+  tolerableDelayS(bytesPerS = null) {
     if (this.streamBuffer === null) return null;
-    const rate = worstBytesPerS ?? this.rate * (this.width ? this.width / 8 : (this.order.length * this.slot) / 8);
+    const rate = bytesPerS ?? (this.dataRate || this.rate * (this.width ? this.width / 8 : (this.order.length * this.slot) / 8));
     return rate ? this.streamBuffer / rate : null;
   }
 }
@@ -200,6 +201,7 @@ export class Config {
 /** Bytes of `samples` samples in the packed layout (§1.1 rule 4, §1.2 rule 3).
  * @param {Config} c @param {number} samples */
 export function segmentBytes(c, samples) {
+  if (c.format === DATA_FORMAT.logic_blocks) return blocks.segmentBytes(samples, c.rawRoles.length, c.reduced, c.block, c.width);
   if (c.width) return Math.floor((samples * c.width + 7) / 8);
   return Math.floor((samples * c.order.length * c.slot) / 8);
 }
@@ -211,7 +213,7 @@ export function segmentBytes(c, samples) {
 export function parseConfig(payload, analog) {
   const c = new Config();
   const once = new Set([ACTUAL_RATE, LAYOUT, ACTUAL_SAMPLES, ACTUAL_SEGMENTS, REFERENCE, ANSWER_FORMAT, ANSWER_BLOCK,
-    STREAM_BUFFER, JUDGE_LATENCY]);
+    STREAM_BUFFER, JUDGE_LATENCY, DATA_RATE]);
   const seen = new Set();
   for (const [tag, v] of tlvs(payload)) {
     if (once.has(tag)) {
@@ -230,6 +232,7 @@ export function parseConfig(payload, analog) {
     else if (tag === ANSWER_BLOCK && v.length === 4) c.block = getU32(v);
     else if (tag === STREAM_BUFFER && v.length === 4) c.streamBuffer = getU32(v);
     else if (tag === JUDGE_LATENCY && v.length === 4) c.judgeLatencyNs = getU32(v);
+    else if (tag === DATA_RATE && v.length === 4) c.dataRate = getU32(v);
     else if (tag === ACTUAL_SAMPLES && v.length === 4) c.samples = getU32(v);
     else if (tag === ACTUAL_SEGMENTS && v.length === 4) c.segments = getU32(v);
     else if (tag === SCALE && analog && v.length === 9) {
@@ -521,8 +524,9 @@ export class CaptureDrops {
  * @property {Map<number, number> | Record<number, number>} [frontends]  analog: role -> frontend (describe frontend)
  * @property {TriggerOpts} [triggerOpts]   sent critical (a probe without it refuses)
  * @property {number} [dataFormat]          DATA_FORMAT: 1 the logic blocks, 4 the test counter (critical)
- * @property {Map<number, number> | Record<number, number>} [events]  format 1: role -> D for the channels carried as
- *   events (the others raw)
+ * @property {Map<number, [number, number]> | Record<number, [number, number]>} [carriage]  format 1: role -> [carriage,
+ *   D] for the reduced channels (LOGIC_CARRIAGE sample / any_high / any_low / change_latch, D 2 or more; the roles not
+ *   named raw)
  * @property {number[]} [roles]             format 1: the plan's roles (to name the raw channels)
  * @property {number} [blockMax]            format 1: the longest block
  */
@@ -564,7 +568,7 @@ export class LogicCapture extends Interface {
    * .segments: the probe rounds samples down.
    * @param {ConfigureOptions} opts */
   async configure({ rate, mode = ONE_SHOT, samples, segments, trigger, pretrigger, query = false, frontends, triggerOpts,
-    dataFormat = 0, events, roles, blockMax }) {
+    dataFormat = 0, carriage, roles, blockMax }) {
     // §3.3's contract, before anything is sent
     for (const [n, v] of /** @type {[string, number | undefined][]} */ ([['rate', rate], ['samples', samples], ['segments', segments]])) {
       if (v !== undefined && !(v >= 1)) throw new RangeError(`capture configure: ${n} ${v} - 1 or more (oep-if-capture §3.3)`);
@@ -582,8 +586,8 @@ export class LogicCapture extends Interface {
     if (dataFormat === DATA_FORMAT.logic_blocks && roles === undefined) {
       throw new RangeError('capture configure: format 1 needs the plan\'s roles (to name the raw channels)');
     }
-    /** @param {Map<number, number> | Record<number, number> | undefined} x @returns {[number, number][]} */
-    const pairs = (x) => (x instanceof Map ? [...x] : Object.entries(x ?? {}).map(([k, v]) => /** @type {[number, number]} */ ([Number(k), v])))
+    /** @template T @param {Map<number, T> | Record<number, T> | undefined} x @returns {[number, T][]} */
+    const pairs = (x) => (x instanceof Map ? [...x] : Object.entries(x ?? {}).map(([k, v]) => /** @type {[number, T]} */ ([Number(k), v])))
       .sort((p, q) => p[0] - q[0]);
     const w = new Writer();
     /** @param {number} tag @param {Uint8Array} value @param {boolean} [critical] */
@@ -596,8 +600,8 @@ export class LogicCapture extends Interface {
     if (pretrigger !== undefined) put(PRETRIGGER, new Writer().u32(pretrigger).done());
     for (const [role, f] of pairs(frontends)) put(FRONTEND, Uint8Array.of(role, f));   // analog: the input range
     if (dataFormat) put(FORMAT, Uint8Array.of(dataFormat), true);   // critical: a probe without it refuses (§3.3)
-    const eventD = pairs(events);
-    for (const [role, d] of eventD) put(CARRIAGE, new Writer().u8(role).u8(LOGIC_CARRIAGE.events).u32(d).done(), true);
+    const carried = pairs(carriage);
+    for (const [role, [kind, d]] of carried) put(CARRIAGE, new Writer().u8(role).u8(kind).u32(d).done(), true);
     if (blockMax !== undefined) put(BLOCK_MAX, new Writer().u32(blockMax).done(), false);
     if (triggerOpts !== undefined) {
       const { arm = 1, rearm = 0, when = 0, hysteresis = 0 } = triggerOpts;
@@ -608,8 +612,8 @@ export class LogicCapture extends Interface {
     const c = parseConfig((await this.call(op, w.done(), { locked: !query })).payload, this.analog);
     c.pretrigger = pretrigger ?? 0;
     if (dataFormat === DATA_FORMAT.logic_blocks) {
-      c.eventD = new Map(eventD);
-      c.rawRoles = [.../** @type {number[]} */ (roles)].sort((x, y) => x - y).filter((r) => !c.eventD.has(r));
+      c.reduced = new Map(carried.filter(([, [kind]]) => kind !== LOGIC_CARRIAGE.raw));
+      c.rawRoles = [.../** @type {number[]} */ (roles)].sort((x, y) => x - y).filter((r) => !c.reduced.has(r));
     }
     if (mode === ONE_SHOT && !c.segments) c.segments = 1;          // one-shot's answer has no actual_segments (§3.3)
     if (!query) this.config = c;
@@ -903,8 +907,7 @@ export class LogicCapture extends Interface {
    * @param {Segment} segment */
   async readSegment(segment) {
     const c = this.cfg;
-    const data = c.format === DATA_FORMAT.logic_blocks ? await this.readBlocks(segment)
-      : await this.read(segment.position, segmentBytes(c, segment.samples), segment.generation || null);
+    const data = await this.read(segment.position, segmentBytes(c, segment.samples), segment.generation || null);
     const list = recorders.get(this.host);
     if (list && list.length) {
       /** @type {CaptureRecord} */
@@ -914,46 +917,18 @@ export class LogicCapture extends Interface {
     return data;
   }
 
-  /** A format 1 segment's bytes: its length is not in its record (§1.3), so it ends where the next segment begins, or
-   * at write_pos for the last; read at once, then cut by its blocks' headers. @param {Segment} segment */
-  async readBlocks(segment) {
-    const after = (await this.segments((segment.serial + 1) >>> 0))
-      .filter((x) => x.generation === segment.generation && x.position > segment.position).map((x) => x.position);
-    const end = after.length ? after[0] : (await this.status()).writePos;
-    const data = await this.read(segment.position, Number(end - segment.position), segment.generation || null);
-    return data.slice(0, this.blocksLength(data, segment.samples));
-  }
-
-  /** The bytes the blocks of `samples` samples take at the start of `data` (from their headers, §1.3).
-   * @param {Uint8Array} data @param {number} samples */
-  blocksLength(data, samples) {
-    const c = this.cfg;
-    const nb = (c.eventD.size + 7) >> 3;
-    let at = 0;
-    for (let first = 0; first < samples; first += c.block) {
-      const r = Math.min(c.block, samples - first);
-      if (at + 2 * nb + 4 > data.length) throw new ProtocolError(`format 1: the segment's bytes end inside block ${Math.floor(first / c.block)}`);
-      let fallbacks = 0;
-      for (let i = 0; i < nb; i++) for (let v = data[at + i]; v; v &= v - 1) fallbacks++;
-      const n = getU32(data, at + 2 * nb);
-      at += 2 * nb + 4 + Math.floor((r * (c.rawRoles.length + fallbacks) + 7) / 8) + blocks.EVENT_BYTES * n;
-    }
-    if (at > data.length) throw new ProtocolError("format 1: the segment's bytes end inside its last block");
-    return at;
-  }
-
-  /** A format 1 segment's bytes -> its blocks (raw channels as bits, events channels as ticks, §1.3).
+  /** A format 1 segment's bytes -> its blocks (raw channels as bits, reduced channels as interval values, §1.3).
    * @param {Uint8Array} data @param {number} samples */
   blocks(data, samples) {
     const c = this.cfg;
-    return blocks.readLogicBlocks(data, samples, c.rawRoles, c.eventD, c.block);
+    return blocks.readLogicBlocks(data, samples, c.rawRoles, c.reduced, c.block, c.width, c.positions);
   }
 
-  /** A format 1 segment's bytes -> role -> its raw bits or its EventColumn over the whole segment, without blocks.
+  /** A format 1 segment's bytes -> role -> its raw bits or its ReducedColumn over the whole segment, without blocks.
    * @param {Uint8Array} data @param {number} samples */
   columns(data, samples) {
     const c = this.cfg;
-    return blocks.segmentColumns(data, samples, c.rawRoles, c.eventD, c.block);
+    return blocks.segmentColumns(data, samples, c.rawRoles, c.reduced, c.block, c.width, c.positions);
   }
 
   // ---- the §1.1 layout ------------------------------------------------------------------------------------

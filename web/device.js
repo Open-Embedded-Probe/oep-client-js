@@ -382,6 +382,18 @@ export async function saveSettings() { await ensureSession(); await st().save();
 export async function exportSettings() { return st().export(); }
 export async function planRestore(doc) { return st().planImport(doc); }
 export async function applyRestore(plan) { await ensureSession(); await st().applyImport(plan); dev.unsaved = true; await refresh(); changed(); }
+/** Save the settings and restart the probe (an item marked restart, such as usb.transports, takes effect then). The
+ * link closes: a USB probe may come back as another device, so the page connects again through C01. */
+export async function saveAndRestart() {
+  await ensureSession();
+  await st().save();
+  dev.unsaved = false;
+  const h = dev.host;
+  await stopAll().catch(() => {});
+  await h.requestRestart();
+  await disconnect().catch(() => {});
+}
+export const restartOffered = () => offered('oep.probe.restart').length > 0;
 export function itemOf(category, flat) { try { return dev.catalog.resolve(category, flat)?.[0] ?? null; } catch { return null; } }
 
 // -- memo backup and restore (W06): the same shape as the bench's backup (unit_id, objects: name -> text | base64) --

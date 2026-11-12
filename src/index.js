@@ -42,6 +42,7 @@ export * as arm from './arm.js';
 export * as targetConsole from './console.js';   // oep.target.console (not the global console)
 export * as fixture from './fixture.js';
 export * as capture from './capture.js';
+export * as call from './call.js';
 export * as decode from './decode.js';
 export * as dfu from './dfu.js';
 export * as speed from './speed.js';

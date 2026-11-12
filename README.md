@@ -149,12 +149,16 @@ What is there:
   get gives no data, `show()` and the file `{ secret: true }`; 0 bytes in a set keep it. The page's settings tab sets a
   secret in a password field that is cleared once read and never filled back (empty: keep).
 - capture: configure's TLVs follow core §2.3 (a value the probe does not handle is `Unsupported` with the tag as
-  received); data format 1, the logic blocks (`dataFormat`, `events` role -> D, `roles`, `blockMax`; a segment read as
+  received); data format 1, the logic blocks (`dataFormat`, `carriage` role -> [sample / any_high / any_low /
+  change_latch, D] for the reduced channels, `roles`, `blockMax`; a segment's size follows from its samples, read as
   `blocks()` or `columns()`, captureblocks.js) and 4, the test counter; `triggerOpts` (arm, rearm, when, hysteresis),
-  trigger records (`triggers()`), stream_buffer (`Config.tolerableDelayS()`), judge_latency_ns; streaming frames' segment
+  trigger records (`triggers()`), stream_buffer over data_rate (`Config.tolerableDelayS()`), judge_latency_ns; streaming frames' segment
   info (`Received.segments`); `read()` throws `ReadGap` for bytes the probe no longer has; status's named extensions
   (`CaptureDrops.of(status)`, the Arduino firmware's drop diagnostics). The capture-group binds tracks started at once,
   or with a `TriggerSource` of `Stage`s and `Cond`s (§4.4; `triggerCaps()` says what it takes).
+- any op by name: `call(hst, interface, 'add', { fields: { a: 2, b: 3 } })` packs the request and reads the answer by
+  the describe's op_name / op_field (core §7.4; by number with `payload` bytes too); `callWait` starts a job
+  (oep::SimpleInterface::job) and reads its status op until it ends. `dump` shows the ops by name and their fields.
 - besides: attach and scan
   wait their budgets (`attachMs`, `scanMs`); `Unsupported.supported` (confirm's range); an `x-` unit_id names no USB
   device; text from an answer is shown without control characters (`message.shown`), open's owner is cut on a

@@ -21,6 +21,43 @@ import { Reader, shown, splitTlvs } from './message.js';
 export const COMMON = reg.DESCRIBE_COMMON;
 export const CRITICAL = 0x80;
 export const INTERFACE_TAG_FIRST = 0x40;
+/** op_name's flags and op_field's parts and types (core §7.4) */
+export const OP_NAME_FORM = reg.CORE.enum.op_name_flag.form, OP_NAME_LOCK_FREE = reg.CORE.enum.op_name_flag.lock_free;
+export const OP_FIELD_PARTS = reg.CORE.enum.op_field_part;
+export const OP_FIELD_TYPES = reg.CORE.enum.op_field_type;
+export const OP_FIELD_LIST = OP_FIELD_TYPES.list;
+
+/** One field of an op's fixed part (core §7.4 op_field): its name and type (registry op_field_type). */
+export class OpField {
+  /** @param {string} name @param {number} type */
+  constructor(name, type) { this.name = name; this.type = type; }
+  /** u8 ... text, with [] for a list */
+  get typeName() {
+    const base = this.type & ~OP_FIELD_LIST;
+    const label = Object.entries(OP_FIELD_TYPES).find(([k, v]) => k !== 'list' && v === base)?.[0] ?? `type${base}`;
+    return this.type & OP_FIELD_LIST ? `${label}[]` : label;
+  }
+  toString() { return `${this.name}: ${this.typeName}`; }
+}
+
+/** An op's name and, with form, its request / success / failed fixed parts' fields (core §7.4). */
+export class OpForm {
+  /** @param {number} op @param {string} name @param {number} flags */
+  constructor(op, name, flags) {
+    this.op = op; this.name = name; this.flags = flags;
+    /** @type {OpField[]} */ this.request = [];
+    /** @type {OpField[]} */ this.success = [];
+    /** @type {OpField[]} */ this.failed = [];
+  }
+  get form() { return (this.flags & OP_NAME_FORM) !== 0; }
+  get lockFree() { return (this.flags & OP_NAME_LOCK_FREE) !== 0; }
+  /** measure(mode: u8) -> temp: i32, hum: u32 (the name alone without form) */
+  signature() {
+    if (!this.form) return this.name;
+    const s = `${this.name}(${this.request.join(', ')})`;
+    return this.success.length ? `${s} -> ${this.success.join(', ')}` : s;
+  }
+}
 
 /** @typedef {{ fn: number, instance: number, revision: number, name: string }} ListEntry */
 
@@ -142,13 +179,16 @@ export function channelsToBitmap(channels) {
  * @property {[number, Uint8Array][]} specific      tags 0x40 and up
  * @property {number[]} unknownCritical
  * @property {number[]} broken                      common tags whose value is not their defined length (not used, §2.3)
+ * @property {Map<number, OpForm>} opForms           op -> its op_name / op_field (core §7.4; empty when none given)
  */
 
 /** @param {[number, Uint8Array][]} tlvs @returns {Description} */
 export function decodeDescription(tlvs) {
   /** @type {Description} */
   const d = { roles: new Map(), groups: new Map(), maxClockHz: null, minClockHz: null, maxLength: null, features: null,
-    ops: null, opsInvalid: '', specific: [], unknownCritical: [], broken: [] };
+    ops: null, opsInvalid: '', specific: [], unknownCritical: [], broken: [], opForms: new Map() };
+  /** @type {[number, number, number, string][]} op_field (op, part, type, name), in the describe's order */
+  const fields = [];
   /** @type {Record<number, ['maxClockHz' | 'minClockHz' | 'maxLength' | 'features', number]>} */
   const single = { [COMMON.max_clock_hz]: ['maxClockHz', 4], [COMMON.min_clock_hz]: ['minClockHz', 4],
     [COMMON.max_length]: ['maxLength', 2], [COMMON.features]: ['features', 4] };
@@ -176,8 +216,20 @@ export function decodeDescription(tlvs) {
       const why = checkOps(v);
       if (why) d.opsInvalid = why;
       else d.ops = unpackOps(v);
+    } else if (tag === COMMON.op_name) {
+      if (v.length < 3) { d.broken.push(tag); continue; }
+      if (!d.opForms.has(v[0])) d.opForms.set(v[0], new OpForm(v[0], shown(v.slice(2)), v[1]));   // a second one: the first is used
+    } else if (tag === COMMON.op_field) {
+      if (v.length < 4) { d.broken.push(tag); continue; }
+      fields.push([v[0], v[1], v[2], shown(v.slice(3))]);
     } else if (tag >= INTERFACE_TAG_FIRST) d.specific.push([tag, v]);
     // an unknown non-critical common tag is skipped
+  }
+  /** @type {Record<number, 'request' | 'success' | 'failed'>} */
+  const parts = { [OP_FIELD_PARTS.request]: 'request', [OP_FIELD_PARTS.success]: 'success', [OP_FIELD_PARTS.failed]: 'failed' };
+  for (const [op, part, type, name] of fields) {         // only an op named with form takes its fields
+    const form = d.opForms.get(op);
+    if (form && form.form && parts[part]) form[parts[part]].push(new OpField(name, type));
   }
   for (const [role, chans] of d.roles) d.roles.set(role, [...new Set(chans)].sort((a, b) => a - b));
   if (d.opsInvalid) d.ops = null;

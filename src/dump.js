@@ -123,7 +123,8 @@ export async function collect(hst, prefix = '', exact = false) {
  * @property {number} [maxClockHz]
  * @property {number} [minClockHz]
  * @property {number} [maxLength]
- * @property {string[]} [ops]                      the ops tag's ops by name (core §7.4)
+ * @property {string[]} [ops]                      the ops tag's ops by name: op_name's, else the registry's (core §7.4)
+ * @property {string[]} [opForms]                  the ops op_name gives with their fields, as signatures (core §7.4)
  * @property {string[]} [features]
  * @property {Record<string, string>} [declares]     interface-specific tags, decoded (a repeated tag: '; '-joined)
  * @property {string} [unusable]                     unknown critical tags
@@ -161,7 +162,12 @@ export function describeOffer(o) {
   if (d.maxClockHz !== null) out.maxClockHz = d.maxClockHz;
   if (d.minClockHz !== null) out.minClockHz = d.minClockHz;
   if (d.maxLength !== null) out.maxLength = d.maxLength;
-  if (d.ops !== null) out.ops = opNames(name, d.ops);
+  if (d.ops !== null) {
+    const sorted = [...d.ops].sort((x, y) => x - y), known = opNames(name, d.ops);
+    out.ops = sorted.map((op, i) => d.opForms.get(op)?.name ?? known[i]);   // op_name (core §7.4) before the registry's
+  }
+  const forms = [...d.opForms.values()].sort((x, y) => x.op - y.op).filter((f) => f.form).map((f) => f.signature());
+  if (forms.length) out.opForms = forms;
   if (d.features !== null) out.features = features(d.features, k?.features ?? {});
   /** @type {Record<string, string>} */
   const specific = {};
@@ -221,6 +227,7 @@ function rowLines(r, pad) {
   if (r.maxLength !== undefined) limits.push(`max length ${r.maxLength}`);
   if (limits.length) lines.push(`${pad}  ${limits.join(', ')}`);
   if (r.ops) lines.push(`${pad}  ops: ${r.ops.join(', ') || 'none'}`);
+  for (const sig of r.opForms ?? []) lines.push(`${pad}    ${sig}`);
   if (r.features?.length) lines.push(`${pad}  features: ${r.features.join(', ')}`);
   for (const [k, v] of Object.entries(r.declares ?? {})) lines.push(`${pad}  ${k}: ${v}`);
   if (r.unusable) lines.push(`${pad}  UNUSABLE: ${r.unusable}`);

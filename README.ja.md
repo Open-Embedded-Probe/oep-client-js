@@ -133,12 +133,16 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   passphrase）は読まない: get はデータを返さず、`show()` とファイルは `{ secret: true }`。set で 0 バイトなら今の値を保つ。
   ページの設定のタブは secret を password の欄で受け、読んだら消し、埋め戻さない（空: 保つ）
 - キャプチャ: configure の TLV は core §2.3 に従う（扱わない値は受け取ったままの tag で `Unsupported`）。データ形式 1 のロジック
-  ブロック（`dataFormat`、`events` は role → D、`roles`、`blockMax`。区画は `blocks()` か `columns()` で読む、captureblocks.js）と
-  4 の試験用カウンタ。`triggerOpts`（arm、rearm、when、hysteresis）、トリガの記録（`triggers()`）、stream_buffer
+  ブロック（`dataFormat`、`carriage` は縮約するチャネルの role → [sample / any_high / any_low / change_latch, D]、`roles`、
+  `blockMax`。区画の長さはサンプル数で決まり、`blocks()` か `columns()` で読む、captureblocks.js）と 4 の試験用カウンタ。
+  `triggerOpts`（arm、rearm、when、hysteresis）、トリガの記録（`triggers()`）、stream_buffer と data_rate
   （`Config.tolerableDelayS()`）、judge_latency_ns。ストリームのフレームの区画の情報（`Received.segments`）。probe がもう持たない
   バイトの `read()` は `ReadGap`。status の名前つきの拡張（`CaptureDrops.of(status)`、Arduino の firmware の落としの診断）。
   capture-group は即時に一緒に始めるトラックを束ねるか、`Stage` と `Cond` の `TriggerSource` で束ねる（§4.4。`triggerCaps()`
   で何を受けるかがわかる）
+- 名前で任意の op を呼ぶ: `call(hst, interface, 'add', { fields: { a: 2, b: 3 } })` は describe の op_name / op_field
+  （core §7.4）で要求を詰め、答えを読む（番号と `payload` のバイト列でも呼べる）。`callWait` はジョブ
+  （oep::SimpleInterface::job）を始め、status の op で終わるまで読む。`dump` は op を名前と欄つきで出す
 - そのほか: attach と scan は予算の分
   待つ（`attachMs`、`scanMs`）。`Unsupported.supported`（confirm の扱える範囲）。`x-` の unit_id では USB の機器を探さない。
   応答の文字列は制御文字を除いて見せ（`message.shown`）、open の owner は文字の境で切り（`ownerText`）、probe が断るラベルは

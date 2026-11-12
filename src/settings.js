@@ -29,6 +29,8 @@ const byValue = (e) => Object.fromEntries(Object.entries(e).map(([k, v]) => [v, 
 export const FORM = byValue(C.enum.setting_form);
 export const KEY_KIND = byValue(C.enum.setting_key_kind);
 export const SECRET = C.enum.setting_flag.secret;
+/** An item that takes effect after the probe restarts (usb.transports; core §13.2). */
+export const RESTART_FLAG = C.enum.setting_flag.restart;
 export const STORAGE_STATE = byValue(C.enum.storage_state);
 export const STORAGE_REASON = byValue(C.enum.storage_reason);
 export const NET_STATE = byValue(C.enum.network_state);
@@ -56,6 +58,8 @@ export class Item {
     /** @type {Map<number, string>} */ this.choices = new Map();
   }
   get secret() { return (this.flags & SECRET) !== 0; }
+  /** takes effect after the probe restarts (saved first) */
+  get restart() { return (this.flags & RESTART_FLAG) !== 0; }
 }
 
 /** One value as get gives it (no origin: core §13.4). @typedef {{ fn: number, number: number, key: number, data: Uint8Array }} Value */

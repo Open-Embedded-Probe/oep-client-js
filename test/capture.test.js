@@ -7,6 +7,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import * as c from '../src/capture.js';
+import * as cb from '../src/captureblocks.js';
 import { Writer, concat } from '../src/bytes.js';
 import { describe, find, planApply, planRelease, take } from '../src/core.js';
 import { Rejected, Unavailable, Unsupported } from '../src/errors.js';
@@ -672,3 +673,95 @@ test('dropFrom across a gap; a track with a trigger of its own is not bound with
   b.config = new c.Config();
   await assert.rejects(grp.bind([a, b]), /a trigger of its own/);
 });
+
+// ---- format 1, the logic blocks, on the virtual bench (test_virtual_bench_capture_formats.py) ----------------------
+
+const LOGIC_BLOCKS = c.DATA_FORMAT.logic_blocks;
+const { SAMPLE, ANY_HIGH, ANY_LOW, CHANGE_LATCH } = cb;
+/** the virtual logic: channel k is bit k of the counter @param {number} k @param {number} i */
+const level = (k, i) => (i >> k) & 1;
+
+/** §1.3's values for the virtual line `role` over samples at .. at + r - 1 (before: the level before, or null).
+ * @param {number} role @param {number} kind @param {number} d @param {number} at @param {number} r @param {number | null} before */
+function wantValues(role, kind, d, at, r, before) {
+  const out = [];
+  let last = before;
+  for (let lo = 0; lo < r; lo += d) {
+    const part = [];
+    for (let i = lo; i < Math.min(lo + d, r); i++) part.push(level(role, at + i));
+    if (kind === SAMPLE) out.push(part[0]);
+    else if (kind === ANY_HIGH) out.push(part.includes(1) ? 1 : 0);
+    else if (kind === ANY_LOW) out.push(part.includes(0) ? 0 : 1);
+    else {
+      let ch = 0;
+      for (const v of part) { if (last !== null && v !== last) ch = 1; last = v; }
+      out.push(part[part.length - 1] | (ch << 1));
+    }
+  }
+  return out;
+}
+
+/** @param {import('../src/captureblocks.js').LogicBlock[]} blocks @param {Map<number, [number, number]>} reduced
+ * @param {number} samples @param {number} first @param {boolean} contiguousBefore */
+function checkBlocks(blocks, reduced, samples, first, contiguousBefore = false) {
+  for (const b of blocks) {
+    const at = first + b.first;
+    for (const [role, bits] of b.raw) {
+      assert.deepEqual(Array.from({ length: b.samples }, (_, i) => (bits[i >> 3] >> (i & 7)) & 1), Array.from({ length: b.samples }, (_, i) => level(role, at + i)));
+    }
+    for (const [role, [kind, d]] of reduced) {
+      const before = b.first || contiguousBefore ? level(role, at - 1) : null;
+      assert.deepEqual(b.values.get(role), wantValues(role, kind, d, at, b.samples, before), `role ${role} at ${at}`);
+      if (kind === CHANGE_LATCH) assert.equal(b.starts.get(role), before ?? level(role, at));
+    }
+  }
+  assert.equal(blocks.reduce((t, b) => t + b.samples, 0), samples);
+}
+
+/** @param {import('../src/host.js').Host} hst @param {c.LogicCapture} lc @param {number} n */
+async function planned(hst, lc, n) {
+  await planApply(hst, Array.from({ length: n }, (_, r) => /** @type {[number, number, number]} */ ([lc.fn, r, 30 + r])));
+  return Array.from({ length: n }, (_, r) => r);
+}
+
+test('format 1 one-shot: raw and every reduction, a partial last block, the size fixed by the setting', opts, () => withBench(async ({ hst, lc }) => {
+  const roles = await planned(hst, lc, 12);
+  /** @type {Map<number, [number, number]>} */
+  const reduced = new Map([[2, [CHANGE_LATCH, 4]], [8, [SAMPLE, 16]], [9, [ANY_HIGH, 16]], [11, [ANY_LOW, 32]]]);
+  const cfg = await lc.configure({ rate: 1_000_000, samples: 1000, dataFormat: LOGIC_BLOCKS, carriage: reduced, roles, blockMax: 256 });
+  assert.deepEqual([cfg.format, cfg.block, cfg.width, cfg.positions], [LOGIC_BLOCKS, 256, 8, [0, 1, 2, 3, 4, 5, 6, 7]]);
+  await lc.start();
+  const [seg] = await lc.wait();
+  const data = await lc.readSegment(seg);
+  const blocks = lc.blocks(data, seg.samples);
+  assert.deepEqual(blocks.map((b) => b.samples), [256, 256, 256, 232]);
+  checkBlocks(blocks, reduced, seg.samples, 0);
+  assert.equal(data.length, cb.segmentBytes(seg.samples, 8, reduced, 256));
+  const cols = lc.columns(data, seg.samples);
+  assert.deepEqual(/** @type {cb.ReducedColumn} */ (cols.get(8)).values, wantValues(8, SAMPLE, 16, 0, 1000, null));
+}));
+
+test('format 1 repeat: change_latch follows the segment before', opts, () => withBench(async ({ hst, lc }) => {
+  const roles = await planned(hst, lc, 10);
+  /** @type {Map<number, [number, number]>} */
+  const reduced = new Map([[9, [CHANGE_LATCH, 8]]]);
+  await lc.configure({ rate: 1_000_000, mode: c.REPEAT, samples: 200, segments: 3, dataFormat: LOGIC_BLOCKS, carriage: reduced, roles });
+  await lc.start();
+  /** @type {c.Segment[]} */
+  let segs = [];
+  for (let i = 0; i < 50 && segs.length < 3; i++) { await sleep(20); segs = await lc.segments(); }
+  assert.equal(segs.length, 3);
+  assert.ok(segs.every((s) => !s.gap));
+  for (const [k, s] of segs.entries()) checkBlocks(lc.blocks(await lc.readSegment(s), s.samples), reduced, s.samples, k * 200, k > 0);
+}));
+
+test('format 1 contract: raw with d > 1 and a reduction with d 1 are malformed; an L that cannot be is unsupported', opts, () => withBench(async ({ hst, lc }) => {
+  const roles = await planned(hst, lc, 4);
+  const head = concat(m.tlv(c.MODE, Uint8Array.of(c.ONE_SHOT)), m.tlv(c.RATE, u32(1000)), m.tlv(c.SAMPLES, u32(64)),
+    m.tlv(c.FORMAT, Uint8Array.of(LOGIC_BLOCKS), true));
+  for (const [kind, d] of [[c.LOGIC_CARRIAGE.raw, 4], [SAMPLE, 1]]) {
+    await assert.rejects(lc.call(c.LogicCapture.CONFIGURE, concat(head, m.tlv(c.CARRIAGE, new Writer().u8(0).u8(kind).u32(d).done(), true))),
+      (e) => e instanceof Rejected && e.reason === m.REJECT.malformed);
+  }
+  await assert.rejects(lc.configure({ rate: 1000, samples: 64, dataFormat: LOGIC_BLOCKS, carriage: new Map([[3, [SAMPLE, 3]]]), roles, blockMax: 16 }), Unsupported);
+}));

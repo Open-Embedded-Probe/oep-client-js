@@ -48,12 +48,33 @@ export function settings(query) {
       actions(action('ネットワーク設定を適用', async () => { const v = { 'wifi.0.ssid': s.ssid ?? '' }; if (s.pass) v['wifi.0.passphrase'] = s.pass; await D.applySettings('core', v); s.pass = ''; })),
       D.dev.network ? el('details', {}, el('summary', {}, 'ネットワークの状態'), terminal(JSON.stringify(D.dev.network, null, 2))) : null]
       : p('このプローブにはWi-Fiの設定がありません。導入の失敗ではありません。', 'muted')),
+    usbPanel(s),
     el('details', { class: 'panel mt' }, el('summary', {}, 'すべての設定値（詳細）'),
-      D.dev.settingsRows.length ? table(['分類', '項目', '値'], D.dev.settingsRows.map((r) => [r.category, r.name, show(r.value)])) : p('明示的な設定値はありません。', 'muted'),
+      D.dev.settingsRows.length ? table(['分類', '項目', '値'], D.dev.settingsRows.map((r) => [r.category, r.name, D.itemOf(r.category, r.name)?.restart ? [show(r.value), ' ', badge('再起動で有効', 'amber')] : show(r.value)])) : p('明示的な設定値はありません。', 'muted'),
       D.dev.changeable ? el('div', { class: 'field-grid mt' }, field('分類', s.cat ?? 'core', (v) => { s.cat = v; }, '', [...(D.dev.catalog?.category.values() ?? [])].map((c) => [c, c])),
         field('項目（例: channel.GPIO5.idle）', s.flat ?? '', (v) => { s.flat = v; }), field('値', s.value ?? '', (v) => { s.value = v; })) : null,
       D.dev.changeable ? actions(action('この値を適用', () => D.applySettings(s.cat ?? 'core', { [s.flat]: s.value })), action('この項目を解除', () => D.applySettings(s.cat ?? 'core', {}, [s.flat]))) : null),
     actions(link('据え置き治具の手順へ', '/fixture'), from === 'setup' ? link('初期設定の続きへ', '/setup') : null)];
+}
+
+/** usb.transports (transports §3.1): the OEP transports the probe's own USB device offers, after a restart. */
+function usbPanel(s) {
+  const item = D.itemOf('core', 'usb.transports');
+  if (!item) return null;
+  const now = D.currentValue('core', 'usb.transports');
+  const choices = [['', '既定（プローブの標準の組み合わせ）'], ...[...item.choices.values()].map((c) => [c, c])];
+  const restart = async () => {
+    await D.saveAndRestart();
+    state.notice = 'プローブを再起動しました。USBの機器が変わることがあるため、もう一度プローブを選んでください。';
+    state.connectReturn = '/settings'; go('/connect');
+  };
+  return panel(el('h2', {}, 'USBで出す接続経路'),
+    p('プローブ自身のUSBが出すOEPの経路（bulk・HID・CDC）の組み合わせです。再起動した後に効きます。ブラウザで使うのはbulk（WebUSB）・HID（WebHID）・CDC（Web Serial）のどれかです。', 'muted'),
+    keyValues([['今の設定', now === undefined ? '既定' : show(now)]]),
+    D.dev.changeable ? [field('経路の組み合わせ', s.usb ?? (now === undefined ? '' : String(now)), (v) => { s.usb = v; }, '選べるのはプローブが宣言した組み合わせだけです。', choices, 'text', { id: 'usb-transports' }),
+      actions(action('適用する', () => (s.usb ? D.applySettings('core', { 'usb.transports': s.usb }) : D.applySettings('core', {}, ['usb.transports']))),
+        D.restartOffered() ? action('保存して再起動', restart, 'primary', { id: 'save-restart' }) : null),
+      D.restartOffered() ? null : note('このプローブは再起動の機能を持っていません。保存してから電源を入れ直してください。', 'amber')] : null);
 }
 
 export function maintenance(query) {
