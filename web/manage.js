@@ -18,7 +18,7 @@ export function settings(query) {
   s.pins ??= {};
   const pinRows = D.channelList().map(([ch, name]) => {
     const idle = D.currentValue('core', `channel.${name}.idle`) ?? '', dis = D.currentValue('core', `channel.${name}.disable`) === true;
-    const d = s.pins[name] ??= { idle: String(idle), disable: dis };
+    const d = s.pins[name]?.changed ? s.pins[name] : (s.pins[name] = { idle: String(idle), disable: dis });   // an untouched row follows the probe
     const label = D.dev.labels.find(([c]) => c === ch)?.[1] ?? '';
     return [name, label, hasIdle ? field(`${name} の待機`, d.idle, (v) => { d.idle = v; d.changed = true; }, '', IDLE, 'text', { 'data-idle': name }) : '—',
       hasDisable ? checkbox('使わせない', d.disable, (v) => { d.disable = v; d.changed = true; }, { 'data-disable': name }) : '—'];

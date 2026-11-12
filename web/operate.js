@@ -195,7 +195,7 @@ export function capture(query) {
     panel(el('h2', {}, '01 / 観測する信号'), mode === 'named' ? [field('使う配線', c.port, (v) => { c.port = v; changed(); render(); }, '', [['', '配線を選ぶ'], ...D.dev.ports.map((x) => [x.name, x.name])]),
       port ? wiringSummary(port) : link('繰り返し使う配線を登録', '/connection/new?purpose=custom&from=capture')]
       : [...c.channels.map((ch, i) => el('div', { class: 'field-grid mb' }, field(`信号${i + 1}の表示名`, ch.name, (v) => { ch.name = v; changed(); }, '取得ファイル内の名前。本体のラベルは変えません。'),
-        field(`信号${i + 1}のピン`, ch.pin, (v) => { ch.pin = v; changed(); }, mode === 'analog' ? 'ADCに対応するピンだけを出しています。' : '', [['', 'ピンを選ぶ'], ...(allowed.length ? allowed.map((x) => [String(x), D.pinName(x)]) : D.channelList().map(([x, n]) => [String(x), n]))]))),
+        field(`信号${i + 1}のピン`, ch.pin, (v) => { ch.pin = v; changed(); render(); }, mode === 'analog' ? 'ADCに対応するピンだけを出しています。' : '', [['', 'ピンを選ぶ'], ...(allowed.length ? allowed.map((x) => [String(x), D.pinName(x)]) : D.channelList().map(([x, n]) => [String(x), n]))], 'text', { id: `capture-pin-${i}` }))),
         actions(button('観測する信号を追加', () => { c.channels.push({ name: `signal${c.channels.length + 1}`, pin: '' }); changed(); render(); }), c.channels.length > 1 ? button('末尾の信号を外す', () => { c.channels.pop(); changed(); render(); }) : null)],
       note(mode === 'analog' ? 'アナログ取得はピンを専有します。同じ信号をロジックでも見るなら別のピンへ配線します。' : 'ロジック取得は聞くだけで、ピンを駆動しません。GNDと信号電圧を確認します。')),
     panel(el('h2', {}, '02 / WireSkeinで指定する取得条件'),
