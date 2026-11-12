@@ -135,221 +135,95 @@ try {
     const shot = await send('Page.captureScreenshot', { format: 'png' });
     await writeFile(join(process.env.OEP_SCREENSHOTS, `${name}.png`), Buffer.from(shot.data, 'base64'));
   };
-  const heading = () => evaluate('document.querySelector("#screen h1")?.textContent');
+  const h1 = () => evaluate('document.querySelector("h1")?.textContent');
+  const text = () => evaluate('document.getElementById("app").textContent');
+  const ok = async (what) => { const f = await evaluate('[document.getElementById("feedback").className, document.getElementById("feedback").textContent]'); assert.ok(!f[0].includes('bad'), `${what}: ${f[1]}`); };
+  const go = async (hash) => { await evaluate(`location.hash=${JSON.stringify('#' + hash)}`); await delay(120); };
+  const press = async (label) => { await click(label); await ok(label); };
+  const follow = async (label) => {
+    await evaluate(`{const a=[...document.querySelectorAll('a')].find(a=>a.textContent===${JSON.stringify(label)});if(!a)throw Error('missing link: '+${JSON.stringify(label)});a.click();}`); await delay(120);
+  };
+  const choose = (selector, index = 1) => evaluate(`{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('missing '+${JSON.stringify(selector)});e.selectedIndex=${index};e.dispatchEvent(new Event('change',{bubbles:true}));e.value}`);
+  const pick = (selector, value) => evaluate(`{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('missing '+${JSON.stringify(selector)});e.value=${JSON.stringify(String(value))};e.dispatchEvent(new Event(e.tagName==='SELECT'?'change':'input',{bubbles:true}));}`);
+  const tap = async (selector) => { await evaluate(`{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('missing '+${JSON.stringify(selector)});e.click();}`); await delay(80); await until('document.body.dataset.busy !== "true"'); };
+  const noOverflow = async (what) => assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, `overflow: ${what}`);
   await send('Runtime.enable'); await send('Page.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: base });
-  await until('[...document.querySelectorAll("#screen a")].some(a=>a.hash==="#firmware")'); await snapshot('01-start');
-  assert.deepEqual(await evaluate('(async()=>{const m=await import("/esp-loader-real.js");return [typeof m.ESPLoader,typeof m.Transport]})()'), ['function','function']);
-  assert.equal(await evaluate('getComputedStyle(document.querySelector("#screen .button")).minHeight'), '50px');
-  for (const hash of ['connect', 'probe', 'targets', 'target/new', 'signals/pwm', 'debug', 'tools', 'settings', 'storage', 'firmware', 'diagnostics', 'help', 'details', 'try', 'unknown']) {
-    await route(hash); assert.ok(await heading(), hash); assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, hash);
-  }
-  await route('home');
-  assert.equal(await evaluate('document.querySelectorAll("#screen button").length'), 0, 'the first screen does not ask users to choose a transport');
-  assert.equal(await evaluate('document.querySelector("#screen .button").hash'), '#firmware', 'fresh installation is the primary action');
-  await evaluate('document.querySelector("#screen .button").click()'); await delay(100);
-  assert.match(await heading(), /Install OEP/);
+  await until('document.querySelector("h1")'); await snapshot('01-home');
+  // P01-P04 need no device permission (A01).
+  assert.match(await h1(), /共通プローブ/);
+  assert.equal(await evaluate('document.querySelector(".hero .btn.primary").hash'), '#/install/select', 'creating a probe is the primary action');
+  for (const r of ['/usecases', '/usecase/debug', '/usecase/uart', '/boards', '/learn']) { await go(r); assert.ok(await h1(), r); await noOverflow(r); }
+  // Old addresses still land somewhere sensible (acceptance §4).
+  await evaluate('location.hash="#help"'); await delay(120); assert.equal(await evaluate('location.hash'), '#/learn');
+  // I01: install a classic ESP32 over serial; detection, write, the same port reopened, then I02 (A04).
   await evaluate('Object.defineProperty(navigator.serial,"requestPort",{configurable:true,value:async()=>({testPort:true})})');
-  await evaluate('document.querySelector("input[name=fw-board][value=esp32]").click()');
-  await until('document.querySelector("#screen").textContent.includes("test-esp32.merged.bin")');
-  await click('Select serial programming port'); await succeeded();
-  await click('Write OEP firmware'); await succeeded();
+  await go('/install/select'); await tap('[data-board=esp32]'); await follow('選んだボードで次へ →');
+  assert.match(await h1(), /ESP32を用意する/);
+  await press('書き込み先を選ぶ'); assert.match(await text(), /ESP32 — 選択済み/);
+  await follow('内容を確認する →'); assert.match(await text(), /test-esp32\.merged\.bin/);
+  await click('このボードにOEPを導入'); await until('location.hash.startsWith("#/setup")', 20000); await ok('install');
   assert.deepEqual(await evaluate('globalThis.__flashWrite'), { address: 0, size: flashImage.length, eraseAll: false });
-  assert.equal(await evaluate('globalThis.__flashClosed'), true);
-  assert.equal(await evaluate('globalThis.__flashReset'), 'hard_reset');
-  assert.equal(await evaluate('location.hash'), '#setup', 'writing automatically opens configuration');
-  assert.equal(await heading(),'Configure connections');
-  assert.match(await evaluate('document.querySelector("#screen").textContent'), /Firmware installed/);
-  assert.equal(await evaluate('globalThis.__reusedSerialPort'),true,'reuse the programming port without asking for it again');
-  assert.equal(await evaluate('globalThis.__connectionMethod'),'serial');
-  await snapshot('01c-initial-install');
-  await click('Disconnect'); await succeeded();
-  // A reboot / port failure cannot turn a successful write into another flash attempt.
-  await route('firmware'); await evaluate('globalThis.__rejectSerial=true');
-  await click('Select serial programming port'); await click('Write OEP firmware'); await succeeded();
-  assert.equal(await evaluate('location.hash'),'#setup');
-  assert.equal(await heading(),'Configure connections');
-  assert.match(await evaluate('document.getElementById("screen").textContent'),/Connect the probe here/);
-  assert.equal(await evaluate('globalThis.__flashCount'),2);
-  await evaluate('globalThis.__rejectSerial=false'); await click('Select device and connect'); await succeeded();
-  assert.equal(await evaluate('location.hash'),'#setup');
-  await click('Disconnect'); await succeeded();
-  await send('Page.navigate',{url:base}); await until('document.querySelector("#screen .button")?.hash==="#firmware"');
-  // A new RP2 application needs permission; do not auto-open an unrelated allowed probe.
-  await route('firmware'); await click('Select boot device'); await click('Write OEP firmware'); await succeeded();
-  assert.equal(await evaluate('location.hash'),'#setup');
-  assert.equal(await evaluate('globalThis.__rpWritten'),true);
-  assert.equal(await evaluate('globalThis.__selectedProbe'),undefined);
-  assert.equal(await evaluate('document.getElementById("connect-selected").disabled'),false);
-
-  await send('Page.navigate', { url: base }); await until('document.querySelector("#screen .button")?.hash==="#firmware"');
-  await route('settings');
-  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.hash==="#connect").click()'); await delay(100);
-  assert.equal(await evaluate('document.querySelector("input[name=connect-board]")'), null, 'no board type question before connecting');
-  assert.equal(await evaluate('document.getElementById("connect-selected").disabled'), false, 'device chooser works immediately');
-  await snapshot('01b-probe-choices');
-  await click('Select device and connect'); await succeeded(); assert.equal(await heading(), 'Advanced probe settings', 'deep link resumes after connection');
-  assert.match(await evaluate('document.getElementById("connection-bar").textContent'), /Read only/);
-  await route('probe'); await snapshot('02-probe');
-  await click('Enable changes'); await succeeded();
-  await route('signals/gpio');
-  await set('signal-4-pin-1', '0'); await click('Apply pin assignment'); await succeeded();
-  await set('signal-4-set-channel', '0'); await set('signal-4-set-mode', '4'); await click('Set mode'); await succeeded();
-  await set('signal-4-read-channel', '0'); await click('Read level'); await succeeded();
-  assert.match(await evaluate('document.querySelector("#screen").textContent'), /1/);
-  await click('Release pins'); await succeeded();
-  await route('signals/pwm'); await set('signal-15-pin-0', '4'); await click('Apply pin assignment'); await succeeded();
-  await click('Start output'); await succeeded(); assert.match(await evaluate('document.getElementById("screen").textContent'), /out0: GPIO4/); await snapshot('03-signals'); await click('Read status'); await succeeded(); await click('Stop output'); await succeeded(); await click('Release pins');
-  await route('signals/uart'); await set('signal-5-pin-1', '4'); await set('signal-5-pin-2', '5'); await click('Apply pin assignment'); await succeeded();
-  await click('Configure UART'); await succeeded(); await click('Receive'); await succeeded(); await set('signal-5-send-text', 'hello'); await click('Send'); await succeeded(); await click('Release pins');
-  assert.equal(await evaluate('document.querySelectorAll("#signal-uart-instance input[type=radio]").length'),2,'multiple UARTs remain visible');
-  await evaluate('[...document.querySelectorAll("input[name=signal-uart-instance]")].find(e=>e.value==="6").click()');
-  assert.ok(await evaluate('document.getElementById("signal-6-pin-1")!==null'),'choosing a different hardware instance changes the controls');
-  assert.match(await evaluate('document.getElementById("signal-uart-instance").textContent'),/3,000,000 Hz/);
-
-  await route('signals/counter'); await set('signal-16-pin-0', '4'); await click('Apply pin assignment'); await succeeded(); await click('Measure'); await succeeded(); await click('Release pins');
-  for (const [name, fn, configure] of [['i2c-controller',13,'Configure bus'],['spi-controller',14,'Configure bus'],['i2c-target',8,'Set address'],['spi-target',9,'Configure bus']]) {
-    await route(`signals/${name}`);
-    await evaluate(`{const used=new Set();for(const e of document.querySelectorAll('select[id^="signal-${fn}-pin-"]')){const candidate=[...e.options].find(o=>o.value!==''&&!used.has(o.value));if(candidate){e.value=candidate.value;used.add(candidate.value);e.dispatchEvent(new Event('change'));}}}`);
-    await click('Apply pin assignment'); await succeeded(); await click(configure); await succeeded();
-    if(name==='i2c-controller') {
-      await set('signal-13-write-data','f'); await click('Write');
-      assert.equal(await evaluate('document.getElementById("feedback").className'),'bad','bad byte rejected');
-      await set('signal-13-write-data','01'); await click('Write');
-      assert.match(await evaluate('document.getElementById("feedback").textContent'),/complete|I2C/);
-      await click('Read'); assert.match(await evaluate('document.getElementById("feedback").textContent'),/complete|I2C/);
-    }
-    if(name==='spi-controller') { await click('Exchange bytes'); await succeeded(); }
-    if(name==='i2c-target') { await click('Queue response'); await succeeded(); await click('Receive frame'); await succeeded(); }
-    if(name==='spi-target') { await click('Arm transaction'); await succeeded(); await click('Receive transaction'); await succeeded(); }
-    await click('Read status'); await succeeded(); await click('Release pins'); await succeeded();
-  }
-  await route('signals/dac'); assert.match(await evaluate('document.querySelector("#screen").textContent'),/does not declare/);
-  await route('targets'); assert.match(await evaluate('document.querySelector("#screen").textContent'), /x035/);
-  await route('debug');
-  assert.equal(await evaluate('document.getElementById("debug-dio").options.length'), 1, 'fixed channel groups are usable');
-  await click('Attach to target'); await succeeded(); await snapshot('04-debug'); await click('Halt'); await succeeded(); await click('Read register'); await succeeded();
-  await set('debug-words', '4'); await click('Read memory'); await succeeded(); await click('Resume'); await succeeded(); await click('Open console'); await succeeded(); await click('Receive'); await succeeded(); await click('Close console'); await succeeded(); await click('Detach target'); await succeeded();
-  await route('targets'); acceptDialog = false; await click('Remove registration'); await succeeded();
-  assert.match(await evaluate('document.querySelector("#screen").textContent'), /x035/);
-  assert.match(await evaluate('document.getElementById("feedback").textContent'), /cancelled/);
-  acceptDialog = true; await click('Remove registration'); await succeeded();
-  await click('Release changes'); await succeeded();
-  // Known wiring can be registered without target I/O and without a scan capability.
-  await evaluate('globalThis.__forbidTargetIO=true;globalThis.__withoutScan=true');
-  await route('diagnostics'); await click('Read declarations'); await succeeded();
-  await route('target/new');
-  assert.match(await evaluate('document.querySelector("#screen").textContent'),/CH32V003F4P6/,'part number examples explain the target device');
-  const fixedPins = await evaluate('[...document.querySelectorAll("select[id^=registration-pin-]")].filter(e=>e.value!=="").map(e=>e.value)');
-  assert.equal(await evaluate('[...document.querySelectorAll("#screen button")].find(b=>b.textContent==="Save connection").disabled'),false,'save acquires change permission as part of the action');
-  await set('wizard-name','fixture'); await set('wizard-part','CH32X035F8U6'); await set('wizard-note','Fixture connector J1; target 3.3 V');
-  await click('Save connection'); await succeeded();
-  assert.equal(await evaluate('location.hash'),'#setup');
-  assert.match(await evaluate('document.querySelector("#screen").textContent'),/CH32X035F8U6/);
-  // Existing connections open the same form with their name, notes and wiring.
-  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.textContent==="Edit connection").click()'); await delay(80);
-  assert.equal(await evaluate('document.getElementById("wizard-name").value'),'fixture');
-  assert.equal(await evaluate('document.getElementById("wizard-note").value'),'Fixture connector J1; target 3.3 V');
-  await set('wizard-name','fixture-renamed'); await set('wizard-note','Updated connector description');
-  await click('Save changes'); await succeeded();
-  assert.equal(await evaluate('location.hash'),'#setup');
-  assert.match(await evaluate('document.querySelector("#screen").textContent'),/fixture-renamed/);
-  assert.equal(await evaluate('localStorage.getItem("oep-port:fafe00000035:fixture")'),null,'rename moves browser notes');
-  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.textContent==="Edit connection").click()'); await delay(80);
-  await set('wizard-name','discarded-name'); await set('wizard-note','discarded note');
-  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.textContent==="Cancel and return to configuration").click()'); await delay(80);
-  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.textContent==="Edit connection").click()'); await delay(80);
-  assert.equal(await evaluate('document.getElementById("wizard-name").value'),'fixture-renamed');
-  assert.equal(await evaluate('document.getElementById("wizard-note").value'),'Updated connector description');
-  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.textContent==="Cancel and return to configuration").click()'); await delay(80);
-  await click('Use RVSWD · 0'); await succeeded();
-  assert.equal(await evaluate('document.getElementById("debug-dio").value'),fixedPins[0]);
-  assert.equal(await evaluate('document.getElementById("debug-clk").value'),fixedPins[1]);
-  await route('targets'); await click('Remove registration'); await succeeded();
-  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.hash==="#target/new").click()'); await delay(80);
-  // A UART connector is reusable independently of target discovery.
-  await evaluate('[...document.querySelectorAll("#registration-function .choice-card")].find(e=>e.textContent.includes("UART")).querySelector("input").click()');
-  await evaluate(`{const used=new Set();for(const e of document.querySelectorAll('select[id^="registration-pin-"]')){const o=[...e.options].find(o=>o.value!==''&&!used.has(o.value));if(o){e.value=o.value;used.add(o.value);e.dispatchEvent(new Event('change'));}}}`);
-  const uartPins = await evaluate('[...document.querySelectorAll("select[id^=registration-pin-]")].map(e=>e.value)');
-  await set('wizard-name','serial-fixture'); await click('Save connection'); await succeeded();
-  await snapshot('05a-fixed-wiring');
-  await click('Use UART · 0'); await succeeded();
-  assert.equal(await evaluate('location.hash'),'#signals/uart');
-  assert.deepEqual(await evaluate('[...document.querySelectorAll("select[id^=signal-]")].filter(e=>e.id.includes("-pin-")).map(e=>e.value)'),uartPins);
-  await route('setup');
-  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.textContent==="Edit connection").click()'); await delay(80);
-  const moved = await evaluate(`{const used=new Set();[...document.querySelectorAll('select[id^="registration-pin-"]')].map(e=>{const o=[...e.options].find(o=>o.value!==''&&!used.has(o.value)&&!${JSON.stringify(uartPins)}.includes(o.value));if(!o)throw Error('no alternate pin');e.value=o.value;used.add(o.value);e.dispatchEvent(new Event('change'));return o.value;});}`);
-  await click('Save changes'); await succeeded();
-  await click('Use UART · 0'); await succeeded();
-  assert.deepEqual(await evaluate('[...document.querySelectorAll("select[id^=signal-]")].filter(e=>e.id.includes("-pin-")).map(e=>e.value)'),moved);
-
-  await route('targets'); await click('Remove registration'); await succeeded();
-  await evaluate('globalThis.__forbidTargetIO=false;globalThis.__withoutScan=false');
-  await route('diagnostics'); await click('Read declarations'); await succeeded();
-  await evaluate('location.hash="#targets"'); await delay(80);
-  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.hash==="#target/new").click()'); await delay(80);
-  await click('Open optional scan');
-  await evaluate(`for(const e of document.querySelectorAll('.pin-list input')){if(!e.disabled){e.checked=true;e.dispatchEvent(new Event('change'));}}`);
-  await click('Continue to scan'); await click('Scan selected pins'); await succeeded(); await snapshot('05-connection');
-  await click('Name this connection'); await set('wizard-name','test-target'); await click('Save connection'); await succeeded();
-  assert.match(await evaluate('document.querySelector("#screen").textContent'), /test-target/);
-  await route('targets'); assert.match(await evaluate('document.querySelector("#screen").textContent'), /test-target/);
-  // Probe memo storage keeps unknown members, migrates a renamed record, and invalidates old target identity.
-  await evaluate('globalThis.__withMemo=true;globalThis.__memoRecords={"test-target":{part:"CH32X035",note:"probe note",target:"riscv-1234",vendor:{calibration:7}}}');
-  await route('diagnostics'); await click('Read declarations'); await succeeded();
-  await route('setup'); await click('Refresh'); await succeeded();
-  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.textContent==="Edit connection").click()'); await delay(80);
-  assert.equal(await evaluate('document.getElementById("wizard-part").value'),'CH32X035');
-  await set('wizard-note','updated probe note'); await evaluate('globalThis.__failMemoSave=true'); await click('Save changes');
-  assert.equal(await evaluate('document.getElementById("feedback").className'),'bad');
-  assert.match(await evaluate('document.getElementById("feedback").textContent'),/saving part number and notes/);
-  await evaluate('globalThis.__failMemoSave=false'); await click('Save changes'); await succeeded();
-  assert.deepEqual(await evaluate('globalThis.__memoRecords["test-target"].vendor'),{calibration:7});
-  assert.equal(await evaluate('globalThis.__memoRecords["test-target"].target'),'riscv-1234','metadata edits keep the last target record');
-  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.textContent==="Edit connection").click()'); await delay(80);
-  await set('wizard-name','renamed-target'); await click('Save changes'); await succeeded();
-  assert.equal(await evaluate('globalThis.__memoRecords["test-target"]'),undefined);
-  assert.equal(await evaluate('globalThis.__memoRecords["renamed-target"].note'),'updated probe note');
-  assert.equal(await evaluate('globalThis.__memoRecords["renamed-target"].target'),undefined);
-  assert.deepEqual(await evaluate('globalThis.__memoRecords["renamed-target"].vendor'),{calibration:7});
-  await evaluate('globalThis.__withMemo=false');
-  await route('diagnostics'); await click('Read declarations'); await succeeded();
-  await route('setup'); await click('Refresh'); await succeeded();
-  await route('settings'); await click('Read settings'); await succeeded(); await click('Save to probe'); await succeeded();
-  await route('storage'); assert.match(await evaluate('document.querySelector("#screen").textContent'), /no supported memo/);
-  await route('tools'); assert.match(await evaluate('document.querySelector("#screen").textContent'), /fafe00000035/);
-  await route('setup');
-  await evaluate('[...document.querySelectorAll("#screen a")].find(a=>a.hash==="#target/new").click()'); await delay(80);
-  await snapshot('05b-fixed-pin-form');
-  await set('language', 'ja'); await route('probe'); assert.equal(await heading(), 'プローブ'); await snapshot('06-probe-ja');
+  assert.equal(await evaluate('globalThis.__reusedSerialPort'), true, 'the programming port is reused');
+  assert.equal(await h1(), 'OEPの導入が完了しました。'); await snapshot('02-installed');
+  await press('接続を終了');
+  // A failed reconnection keeps the write and offers a retry without writing again (A09).
+  await evaluate('globalThis.__rejectSerial=true');
+  await go('/install/prepare'); await press('書き込み先を選び直す'); await follow('内容を確認する →'); await click('このボードにOEPを導入');
+  await until('location.hash==="#/install/continue"', 30000);
+  assert.match(await text(), /書き込み完了/); assert.equal(await evaluate('globalThis.__flashCount'), 2);
+  await evaluate('globalThis.__rejectSerial=false'); await press('同じ機器で再試行');
+  assert.equal(await evaluate('location.hash'), '#/setup'); assert.equal(await evaluate('globalThis.__flashCount'), 2, 'no second write');
+  await press('接続を終了');
+  // A purpose chosen before connecting is kept through C01 (A02, A40).
+  await go('/usecase/logs'); await tap('[data-purpose-connect=logs]');
+  assert.equal(await evaluate('location.hash'), '#/connect'); assert.match(await text(), /ログを読む・コマンドを送る/);
+  await press('機器を選んで接続'); assert.equal(await evaluate('location.hash'), '#/setup/logs');
+  // W03: debug + UART wiring saved with the target absent: no scan, attach or pin assignment (A13).
+  await evaluate('globalThis.__forbidTargetIO=true');
+  await go('/connection/new?purpose=uart'); await tap('[data-kind=connector]');
+  await choose('[data-line="0-rx"]', 3);
+  await tap('[data-add-group=custom]'); await choose('[data-line="1-signal1"]', 6);
+  await pick('#conn-name', 'dut'); await pick('#conn-note', 'swap connector');
+  assert.equal(await evaluate('document.getElementById("conn-part")'), null, 'a connector records no part number');
+  await snapshot('03-editor');
+  await press('配線を保存'); assert.match(await evaluate('location.hash'), /^#\/setup\/ready\?port=dut/);
+  await evaluate('globalThis.__forbidTargetIO=false');
+  await go('/connections'); assert.match(await text(), /コネクタ（相手はつなぐたびに識別）/); assert.match(await text(), /rx → GPIO/);
+  // Editing a saved port keeps its debug lines and changes the record (A14).
+  await go('/connection/x035'); await pick('#conn-part', 'CH32X035G8U6'); await press('変更を保存');
+  assert.equal(await evaluate('location.hash'), '#/connections'); assert.match(await text(), /CH32X035G8U6/); assert.match(await text(), /swclk → GPIO54/);
+  // One connection check from the editor, results not saved (A43).
+  await go('/connection/x035'); await press('指定したピンで接続確認'); assert.match(await evaluate('document.getElementById("debug-check-0").textContent'), /応答あり: dmstatus/);
+  await click('キャンセル'); await delay(100);
+  // A scan fills the same editor and saves nothing by itself (A42).
+  await go('/setup/debug-scan'); await tap('[data-wire=rvswd]'); await tap('[data-scan-pin="2"]');
+  assert.match(await text(), /選択したピンをスキャン/);
+  // W04 debug: attach to the saved wiring, halt, read memory, detach (A21).
+  await go('/operate/debug?port=x035'); await press('ターゲットに接続'); assert.match(await text(), /接続中 · dmstatus/);
+  assert.equal(await evaluate('[...document.querySelectorAll(".active-work")].length'), 1, 'the running debug shows in the status bar');
+  await press('停止'); await press('メモリを読む'); await press('ターゲットを切り離す'); assert.match(await text(), /未接続/);
+  // W04 UART on the saved RX; GPIO with pins chosen on the spot.
+  await go('/operate/uart?port=dut'); await press('受信を開始'); await delay(1200); await press('受信を停止');
+  await go('/operate/gpio'); await pick('[data-role="1"]', 5); await press('ピンを割り当てて開始'); await press('レベルを読む'); await press('停止してピンを解放');
+  // W05 passthrough: apply, then save (A36).
+  await go('/passthrough'); await pick('#pt-rx', 7); await press('素通し設定を適用'); assert.match(await text(), /適用済み・未保存/);
+  await press('本体の現在値全体を保存'); assert.match(await text(), /今の素通し/);
+  await go('/settings'); assert.match(await text(), /保存されている値と同じです/);
+  // W06 export; W07 hand over.
+  await go('/maintenance'); await press('設定を控える');
+  await go('/handoff'); assert.match(await text(), /oep:\/\/fafe00000035\/x035/); await press('このページでの利用を終了して渡す');
+  assert.match(await text(), /プローブ未接続/);
+  // Narrow screens (A29).
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-  for (const hash of ['home', 'connect', 'setup', 'probe', 'target/new', 'signals/spi-controller', 'debug', 'settings', 'firmware', 'help']) {
-    await route(hash); assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false, `mobile ${hash}`);
-  }
-  await click('変更権を解放'); await succeeded();
-  assert.match(await evaluate('document.getElementById("connection-bar").textContent'), /読み取り専用/);
-  await click('切断'); await succeeded(); assert.match(await evaluate('document.getElementById("connection-bar").textContent'), /未接続/);
-  // A second physical shape supplies the optional DAC; the first profile has none.
-  benchPort = Number(await start(python, ['-m','oep_client.virtual_bench_serve','--tcp','0','--profile','esp32-v003'], /PORT (\d+)/));
-  await set('language','en'); await route('connect'); await evaluate('document.querySelectorAll("#screen details")[1].open=true'); await click('Choose a serial port'); await succeeded(); await click('Enable changes'); await succeeded();
-  assert.equal(await evaluate('globalThis.__connectionMethod'),'serial','the serial help connects without a board type question');
-  await route('signals/dac'); await set('signal-14-pin-0','25'); await click('Apply pin assignment'); await succeeded();
-  await click('Set output'); await succeeded(); await click('Read status'); await succeeded(); await click('Release pins'); await succeeded();
-  await click('Disconnect'); await succeeded();
-  // Optional UART writes must disappear when the device does not advertise them.
-  benchPort = Number(await start(python, ['-m','oep_client.virtual_bench_serve','--tcp','0','--profile','p4-x035','--minimal-ops'], /PORT (\d+)/));
-  await route('connect'); await click('Select device and connect'); await succeeded(); await route('signals/uart');
-  assert.equal(await evaluate('[...document.querySelectorAll("#screen button")].some(b=>b.textContent==="Send" || b.textContent==="Send bytes")'),false);
-  await click('Disconnect'); await succeeded();
-  await route('connect'); await evaluate('document.querySelector("#screen details").open=true'); await click('Find allowed probes'); await succeeded();
-  const devices=await evaluate('document.querySelector(".device-list").textContent');
-  assert.match(devices,/fafe00000035/); assert.match(devices,/second-probe/);
-  await click('Connect to this device'); await succeeded();
-  assert.equal(await evaluate('globalThis.__selectedProbe'),'fafe00000035','the exact chosen device is passed to the transport');
-  await click('Disconnect'); await succeeded();
+  for (const r of ['/home', '/usecases', '/boards', '/install/select', '/connect', '/work', '/handoff']) { await go(r); await noOverflow(r); }
+  await go('/connect'); await press('機器を選んで接続');
+  for (const r of ['/setup', '/work', '/connections', '/connection/x035', '/operate/debug', '/operate/uart', '/passthrough', '/settings', '/maintenance', '/handoff']) { await go(r); assert.ok(await h1(), r); await noOverflow(r); }
+  await snapshot('04-mobile');
+  await press('接続を終了');
   assert.deepEqual(exceptions, []);
-  console.log('Browser workspace: automatic post-flash configuration, editable connections and notes, board-free connect, fixed wiring without scan/attach, saved UART/debug wiring, ESP initial install, bundled ROM loader, navigation, deep-link connect, GPIO, PWM, UART, I2C/SPI peers and controllers, counter, DAC, debug and console, settings, capabilities, language, mobile and session cleanup passed.');
+  console.log('Browser page: public pages, ESP install with the port reused and a retry without rewriting, purpose kept through connecting, wiring saved without target I/O, edit, connection check, debug attach / halt / memory / detach, UART, GPIO, passthrough apply and save, settings export, hand-over and narrow screens passed.');
 } finally {
   browserSocket?.close(); socket?.destroy(); if (waiting) waiting.end(); server?.closeAllConnections(); server?.close();
   for (const child of children) { child.stdin?.end(); child.kill(); }

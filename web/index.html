@@ -1,31 +1,19 @@
 <!doctype html>
-<html lang="en">
+<html lang="ja">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Set up, connect and operate Open Embedded Probe devices from your browser.">
-  <title>OEP Probe Tool</title>
+  <meta name="description" content="手元のボードをOEPプローブにして、ブラウザから導入・設定・操作します。">
+  <title>OEP</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles/app.css">
 </head>
 <body>
-  <a class="skip" href="#workspace">Skip to workspace</a>
-  <header class="topbar">
-    <a class="brand" href="#home"><span class="brand-mark">OEP</span><span>Probe Tool<small id="brand-caption"></small></span></a>
-    <div id="connection-bar" class="connection-bar"></div>
-    <label class="language"><span id="language-label">Language</span><select id="language"><option value="en">English</option><option value="ja">日本語</option></select></label>
-  </header>
-  <div class="app-layout">
-    <aside class="sidebar"><nav id="navigation" aria-label="Workspace"></nav><div class="sidebar-foot"><a href="./preview/">新しい画面プレビュー →</a><span id="version"></span><a href="https://github.com/Open-Embedded-Probe/oep-client-js" target="_blank" rel="noopener">GitHub ↗</a></div></aside>
-    <main id="workspace" tabindex="-1">
-      <div id="environment"></div>
-      <div id="session-notice"></div>
-      <div id="screen"></div>
-      <section id="feedback" aria-live="polite" aria-atomic="true" hidden></section>
-    </main>
-  </div>
-  <details id="activity" class="activity"><summary id="activity-title">Activity</summary><ol id="activity-list"></ol></details>
-  <noscript>This workspace needs JavaScript to connect to an OEP probe.</noscript>
+  <a class="skip" href="#content">本文へ移動</a>
+  <div id="app"></div>
+  <p id="feedback" class="feedback" role="status" aria-live="polite" hidden></p>
+  <div id="announcer" class="sr-only" role="status" aria-live="polite"></div>
+  <noscript>説明は読めますが、機器の接続にはJavaScriptが必要です。</noscript>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

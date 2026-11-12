@@ -191,15 +191,11 @@ npm test            # explicit virtual backend setup: docs/testing.md
 npm run typecheck
 npm run serve       # the page at http://localhost:4173/
 npm run test:browser # Chromium UI verification against the Python virtual probe
-npm run test:preview # Chromium checks for the hardware-free UI prototype
 ```
 
-The next UI design is documented in the [requirements and screen specification](docs/page.ja.md), [connection handoff](docs/page-connection.ja.md), and [acceptance criteria](docs/page-acceptance.ja.md) (Japanese). These describe the proposed redesign, separately from the current implementation below.
-
-Review the Japanese UI prototype at `http://localhost:4173/preview/`: OEP introduction, board comparison, installation through initial setup, wiring edits, and purpose-based tools. It uses sample data, never connects to hardware, and resets on reload. The top “確認シナリオ” control exposes automatic continuation, permission, cable reconnection, and retry examples. See the [review guide and limitations](docs/page-preview.ja.md).
-
-The current browser flow is install → configure connections → use. Flashing opens configuration automatically and tries to reconnect on the same port. Create and edit connection names, target part numbers, notes and wiring in one form. ESP32 / P4 / P4X installation uses their serial ROM port and bundled release images,
-then offers an OEP connection. S3 / C3 / C6 accept a compatible merged image (no prebuilt OepProbe release); CH32 initial installation is unsupported.
+The browser page follows the [requirements and screen specification](docs/page.ja.md), [connection handoff](docs/page-connection.ja.md) and [acceptance criteria](docs/page-acceptance.ja.md) (Japanese).
+It covers the OEP introduction, use cases and boards (readable without a device), probe creation (ESP32 / P4 / P4X over USB serial, Pico / Pico 2 over BOOTSEL) through initial setup, wiring and target records (fixed targets and connectors, several ports), purpose-based operations (debug, debug-wire console, UART, I2C, SPI, GPIO, PWM, counter, DAC, I2C / SPI peers), probe settings (passthrough, idle states, Wi-Fi), update / backup / restore / diagnostics, and handover to IDEs, WireSkein and Python.
+The page is in Japanese only. S3 / C3 / C6 take a compatible merged image; CH32 initial installation is not offered. Hardware verification is listed in the acceptance criteria §3.2.
 The site bundles a pinned `esptool-js`; the npm library gains no runtime dependency.
 `npm run serve` fetches release images on first use and caches them in `.cache/firmware`. Refresh with `node scripts/fetch-firmware.js`.
 

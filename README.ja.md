@@ -174,15 +174,11 @@ npm test            # explicit virtual backend setup: docs/testing.ja.md
 npm run typecheck
 npm run serve       # http://localhost:4173/ でページ
 npm run test:browser # ChromiumとPython仮想プローブで画面操作を確認
-npm run test:preview # 実機処理のない新画面プレビューをChromiumで確認
 ```
 
-次期画面の[要件定義・画面仕様](docs/page.ja.md)、[接続引継ぎ](docs/page-connection.ja.md)、[受入条件](docs/page-acceptance.ja.md)を整理しています。これらは再設計の仕様案で、以下の現行実装とは区別します。
-
-新画面の操作プレビューは `http://localhost:4173/preview/` で確認できます。OEPの紹介、ボード比較、導入から初期設定、配線編集と用途別の操作をサンプル値でたどれます。実機には接続せず、入力は再読込で消えます。上部の「確認シナリオ」から書込後の自動続行・再許可・抜き差し・待ち直しを切り替えられます。[確認手順と制限](docs/page-preview.ja.md)を参照してください。
-
-現行ブラウザ画面の主導線は「導入 → 接続先の設定 → 使用」です。書き込み後は設定画面へ自動で進み、同じポートで再接続を試します。接続先の名前・相手の型番・メモ・配線は同じフォームで作成・編集できます。ESP32・P4・P4XはUSBシリアルから配布ファームウェアイメージを直接書き込み、完了後にOEPとして接続します。
-S3/C3/C6は対応するmergedファームウェアイメージの持ち込みに対応します（OepProbe配布ファームウェアイメージは未提供）。CH32の初回書き込みは未対応です。
+ブラウザのページは[要件定義・画面仕様](docs/page.ja.md)、[接続引継ぎ](docs/page-connection.ja.md)、[受入条件](docs/page-acceptance.ja.md)に沿って作っています。
+OEPの紹介と用途・ボードの説明（機器なしで読める）、プローブの作成（ESP32・P4・P4XはUSBシリアル、Pico・Pico 2はBOOTSEL）から初期設定、配線と相手の記録（相手固定とコネクタ、複数の口）、用途ごとの操作（デバッグ、デバッグ線のログ、UART、I2C、SPI、GPIO、PWM、カウンタ、DAC、I2C・SPIの相手役）、本体設定（素通し、待機状態、Wi-Fi）、更新・控え・復元・診断、IDE・WireSkein・Pythonへの引継ぎを扱います。
+画面は日本語だけです。S3/C3/C6は対応するmergedファームウェアイメージの持ち込みで導入します。CH32の初回書き込みは対象外です。実機での確認は、受入条件の §3.2 に残っています。
 ESP書き込み用の固定版 `esptool-js` はサイトに同梱し、npmライブラリの実行時依存には加えません。
 `npm run serve` は初回に配布ファームウェアイメージを取得し、`.cache/firmware` に保存します。再取得は `node scripts/fetch-firmware.js` で行えます。
 

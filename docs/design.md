@@ -69,13 +69,13 @@ docs/           this document, the release steps
 
 ## 4. Browser workspace
 
-The proposed redesign is defined by the [requirements and screen specification](page.ja.md), [connection handoff](page-connection.ja.md), and [acceptance criteria and implementation gaps](page-acceptance.ja.md) (Japanese).
+The page's purpose, scope and flows are in the [requirements and screen specification](page.ja.md), [connection handoff](page-connection.ja.md) and [acceptance criteria](page-acceptance.ja.md) (Japanese).
 
-`web/preview/` is a separate UI prototype using presentation data and in-memory tab state, without transport or programming modules. `npm run test:preview` checks its workflows and absence of hardware API calls. See the [review guide](page-preview.ja.md).
-
-The current workspace supports probe setup, named target connections,
-GPIO/UART/I2C/SPI/PWM/counter/DAC operations, target debugging, settings and memo storage, and probe firmware updates.
-Capture acquisition and viewing lead to WireSkein; device-specific target flash programming leads to the appropriate external tools.
+`web/` is split into `app.js` (public pages, probe creation, connecting, routing), `work.js` (initial setup, home, wiring list and editor),
+`operate.js` (purpose-based operations, capture preparation, passthrough), `manage.js` (probe settings, maintenance, other tools) and
+`device.js` (everything done to the connected probe). Screens reach the probe only through `device.js`; saving, loading and moving between
+screens never scan, attach, assign pins or drive outputs. `npm run test:browser` runs installation through handover against the Python virtual
+probe in Chromium.
 
 `web/app.js` owns connection/session state and screens. `web/signals.js` defines I/O forms using the public library APIs.
 `web/model.js` validates input and handles routes and display values; `web/boards.js` holds board guidance.

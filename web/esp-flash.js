@@ -1,4 +1,22 @@
 // ESP ROM programming is separate from the OEP protocol and works on blank boards.
+/** @type {Record<string, string>} */
+const MODELS = { 'ESP32': 'esp32', 'ESP32-S3': 'esp32s3', 'ESP32-C3': 'esp32c3', 'ESP32-C6': 'esp32c6' };
+/** Read the chip and its major revision from the ROM, so the board is never asked (page.ja.md §5.1 step 2).
+ * @param {any} port @returns {Promise<{name:string, major:number|null, model:string|null}>} */
+export async function detectEsp(port, { load = () => import('./esp-loader.js') } = {}) {
+  const { ESPLoader, Transport } = await load();
+  const transport = new Transport(port);
+  try {
+    const loader = new ESPLoader({ transport, baudrate: 115200, romBaudrate: 115200, terminal: { clean() {}, write() {}, writeLine() {} } });
+    await loader.main();
+    const name = loader.chip.CHIP_NAME;
+    const chip = /** @type {any} */ (loader.chip);
+    const major = name === 'ESP32-P4' && chip.getMajorChipVersion ? await chip.getMajorChipVersion(loader) : null;
+    const model = name === 'ESP32-P4' ? (major === 1 ? 'esp32p4' : major === 3 ? 'esp32p4x' : null) : MODELS[name] ?? null;
+    await loader.after?.('hard_reset');
+    return { name, major, model };
+  } finally { await transport.disconnect().catch(() => {}); }
+}
 /**
  * @param {{port: any, model: string, image: Uint8Array,
  * onProgress?: (done:number,total:number,text:string)=>void, log?: (text:string)=>void,

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Replace the browser page with the redesigned one (docs/page.ja.md), connected to the probe: public introduction, use cases and boards; probe creation with the chip read from the ESP ROM or the RP2 boot ROM, writing, reopening the same port or asking once for the started device, and a retry that keeps the write; connecting with the chosen purpose kept; initial setup by purpose; wiring for fixed targets and connectors with several signal groups, an optional connection check and scan; operations for debug, debug-wire console, UART, I2C, SPI, GPIO, PWM, counter, DAC and I2C / SPI peers with a status bar to stop them; passthrough, idle / disable pins and Wi-Fi; update, settings and memo backup / restore, diagnostics; IDE (CH32 address, SWD broker and debug_custom.json), WireSkein and Python handover. Japanese only. The hardware-free preview is removed; `npm run test:browser` checks the page against the Python virtual probe.
+- (JA) ブラウザのページを再設計の画面（docs/page.ja.md）に置き換え、実機の処理につないだ。公開の紹介・用途・ボード、ESPのROM・RP2のboot ROMからチップを読む作成、書き込み、同じポートの再利用か起動した機器の許可を1回、書き込みを保つ再試行、用途を保つ接続、用途別の初期設定、相手固定とコネクタの配線（複数の信号、任意の接続確認とスキャン）、デバッグ・デバッグ線のログ・UART・I2C・SPI・GPIO・PWM・カウンタ・DAC・I2C/SPIの相手役の操作と止められる状態表示、素通し・待機・使わせないピン・Wi-Fi、更新・設定とメモの控えと復元・診断、IDE（CH32のアドレス、SWDのブローカーとdebug_custom.json）・WireSkein・Pythonへの引継ぎ。日本語のみ。実機に触れないプレビューは削除し、`npm run test:browser` で仮想プローブを相手に確かめる。
+
 - (EN) Reframe debug setup around pin discovery versus explicit wiring. Add hardware-free scan results and optional connection checks; allow saving unchecked or unresponsive wiring and keep temporary use after pin selection.
 - (JA) デバッグ設定を「スキャンで自動検索／ピンを明示」に変更。検索結果と任意の接続確認を画面例として追加し、未確認・応答なしでも保存可能に。保存せず使う入口はピン指定後へ移動。
 

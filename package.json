@@ -68,8 +68,7 @@
     "prepack": "npm run build && npm run types",
     "preversion": "npm run check && node scripts/check-releasable.js",
     "version": "node scripts/sync-version.js",
-    "test:browser": "node scripts/check-browser.mjs",
-    "test:preview": "node scripts/check-preview.mjs"
+    "test:browser": "node scripts/check-browser.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
