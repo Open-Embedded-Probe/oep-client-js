@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Reframe debug setup around pin discovery versus explicit wiring. Add hardware-free scan results and optional connection checks; allow saving unchecked or unresponsive wiring and keep temporary use after pin selection.
+- (JA) デバッグ設定を「スキャンで自動検索／ピンを明示」に変更。検索結果と任意の接続確認を画面例として追加し、未確認・応答なしでも保存可能に。保存せず使う入口はピン指定後へ移動。
+
 - (EN) Unify public use cases, setup and workspace navigation around six purposes. Explain requirements, outcomes and external-tool boundaries before connecting; preserve the selected purpose across installation, permission, replug and retry, then continue directly into its setup. Link the new custom-command guide.
 - (JA) 公開入口・初期設定・作業画面を6つの用途に統一。接続前に必要なもの・結果・外部ツールとの役割分担を説明し、選んだ用途を書き込み・再許可・抜き差し・再試行後の設定へ引き継ぐ。独自コマンドの新ガイドへの導線も追加。
 

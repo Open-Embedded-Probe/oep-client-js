@@ -40,7 +40,7 @@ export const DEBUG_WIRES = [
 ];
 export const LOGIC_TASK = { id: 'logic', short: 'ロジックアナライザ', description: '繰り返し使う観測配線に名前を付けます。今回だけの取得には登録不要です。', roles: ['CH0', 'CH1', 'CH2', 'CH3'], options: [] };
 export const SETUP_PATTERNS = [
-  { id: 'debug', title: 'ターゲットをデバッグする', label: 'SWD / RVSWD / 1線DIO', description: '開発中のICの実行を止め、内部の状態を調べる。', next: '相手の方式・配線 → 操作時の接続条件 → デバッグ / 開発ツール' },
+  { id: 'debug', title: 'ターゲットをデバッグする', label: 'SWD / RVSWD / 1線DIO', description: '開発中のICの実行を止め、内部の状態を調べる。', next: '自動検索 / ピンを明示 → 任意の接続確認 → 保存・デバッグ' },
   { id: 'logs', title: 'ログを読む・コマンドを送る', label: 'UART / デバッグ線 / 素通し', description: '相手がログを出す方法と、使う道具に合わせて選ぶ。', next: 'ログの経路 → 配線 → 操作条件、または素通しの本体設定' },
   { id: 'logic', title: '波形・タイミングを観測する', label: 'ロジックアナライザ', description: '動作中の信号を入力として取り込み、通信やタイミングを調べる。', next: '今回だけ取る / 名前付き配線を使う → 取得条件 → WireSkein' },
   { id: 'bus', title: 'センサ・周辺ICと通信する', label: 'I2C / SPI コントローラ', description: 'プローブから通信を開始して、レジスタやデータを読み書きする。', next: '相手のバス方式 → 配線・通信条件 → 読み書き', tasks: ['i2c', 'spi'] },
@@ -50,7 +50,7 @@ export const SETUP_PATTERNS = [
 export const GUIDE_BASE = 'https://github.com/Open-Embedded-Probe/oep-probe-arduino/blob/main/docs/guide/';
 // Public explanations use the same purpose categories as setup, before any device permission.
 export const USE_CASE_DETAILS = {
-  debug: { example: '開発中のICが途中で止まる理由を調べたい。', needs: '相手の型番とデバッグ方式、対応する信号線、共通GND。相手の電圧も確認します。', result: '接続状態、停止・再開、メモリなどの内部状態。', scope: 'このページでは配線と接続条件を準備し、基本操作へ進みます。CH32の書き込み・GDBはch32rv等へ。現行ツールにARM用flash loader・GDB serverはありません。', steps: ['相手の方式を選ぶ（SWD / 2線RVSWD / 1線DIO）', '配線を指定する。繰り返し使うなら名前を付ける', '速度や停止条件を確認してから接続する'], guide: 'debug-targets.ja.md' },
+  debug: { example: '開発中のICが途中で止まる理由を調べたい。', needs: '相手の型番とデバッグ方式、対応する信号線、共通GND。相手の電圧も確認します。', result: '接続状態、停止・再開、メモリなどの内部状態。', scope: 'このページでは配線と接続条件を準備し、基本操作へ進みます。CH32の書き込み・GDBはch32rv等へ。現行ツールにARM用flash loader・GDB serverはありません。', steps: ['スキャンして自動検索するか、分かっているピンを明示する', '相手の方式（SWD / 2線RVSWD / 1線DIO）と配線を決める', '必要なら接続確認する。確認せず保存しても、保存せず操作へ進んでもよい'], guide: 'debug-targets.ja.md' },
   logs: { example: '起動ログを読みたい。対話コマンドを送りたい。', needs: '相手のログ出力方法。UARTなら速度とTX/RX、デバッグ線ならRVSWD / SWIOと対応する出力実装。', result: '受信したログと、対応する経路でのコマンド送信。', scope: 'このページでUART・デバッグ線のログを扱います。普通のシリアルモニタを使う場合は本体の素通し設定へ。素通しは相手からPCへの一方向です。', steps: ['UART・デバッグ線・シリアルモニタ向け素通しを選ぶ', '経路に合う配線を用意する。UARTのTXは送信する場合だけ', '操作の通信条件、または素通しの本体設定を確認する'], guide: 'use-cases.ja.md' },
   logic: { example: '通信のタイミングや、リセット前後の波形を確かめたい。', needs: '観測する信号と共通GND、対応プローブ、取得用のWireSkein環境。', result: '信号名・実際のサンプルレート・トリガ位置を含む波形ファイル。', scope: 'このページでは信号と取得条件を整理します。取得は外部のWireSkein環境、ファイルの表示・解析はWireSkeinのビューアへ進みます。操作との同時取得や自動テストはPythonで組み立てます。', steps: ['今回だけのピン指定・登録済み配線・操作と同時・自動テストから選ぶ', '信号と取得条件を準備する。本体設定や配線登録は必須ではない', '外部環境で取得し、波形を表示・解析する'], guide: 'capture.ja.md' },
   bus: { example: 'センサの値や、周辺ICの識別情報を読みたい。', needs: '相手のデータシート、I2C / SPIの配線、アドレスや通信形式。', result: '送受信したデータと、応答の有無。', scope: 'このページからプローブが通信を開始します。開発中の基板が通信を開始する場合は「通信相手の代役になる」を選びます。', steps: ['I2CかSPIを選ぶ', '配線を指定する。繰り返し使うなら名前を付ける', 'アドレス・クロック・送受信データを指定して通信する'], guide: 'use-cases.ja.md' },

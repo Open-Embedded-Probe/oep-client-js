@@ -148,7 +148,7 @@ try {
   // Each debug protocol keeps its own required pins, optional reset and method through save/edit/use.
   for (const [wire, roles, title] of [['swd', ['SWDIO','SWCLK'], 'SWD'], ['rvswd', ['SWDIO','SWCLK'], 'RVSWD'], ['swio', ['DIO'], '1線DIO（SWIO）']]) {
     await reset(); await route('/setup'); await click('プローブを選ぶ（デモ）'); await click('機器を選んで接続（デモ）');
-    await choosePattern('debug'); await chooseWire(wire); await click('配線に名前を付ける →');
+    await choosePattern('debug'); await evaluate('document.querySelector("[data-debug-path=manual]").click()'); await delay(100); await chooseWire(wire);
     assert.equal(await evaluate('document.querySelectorAll("[data-group=debug] .wire-pins select").length'), roles.length);
     await set('接続名', 'debug-'+wire);
     for (const [i, label] of roles.entries()) await set(label, String(6+i));
@@ -164,6 +164,37 @@ try {
     assert.equal(await evaluate('document.querySelectorAll("[data-group=debug] .wire-pins select").length'), roles.length);
     await click('キャンセル'); await until('location.hash==="#/operate/debug"');
   }
+  // Pin discovery and explicit wiring converge on the same editor. Checking is optional.
+  await reset(); await route('/setup'); await click('プローブを選ぶ（デモ）'); await click('機器を選んで接続（デモ）');
+  await choosePattern('debug'); await shot('28-debug-paths');
+  assert.equal(await evaluate('document.body.innerText.includes("まず一度使う")'), false);
+  await evaluate('document.querySelector("[data-debug-path=scan]").click()'); await delay(100);
+  assert.equal(await evaluate('document.body.innerText.includes("見つかった配線候補")'), false);
+  await chooseWire('rvswd');
+  assert.equal(await evaluate(`document.querySelector('[data-scan-pin="4"]').disabled`), true);
+  await set('検索結果（デモ）','empty'); await click('選択したピンをスキャン（デモ）');
+  assert.match(await evaluate('document.body.innerText'), /応答なしの表示例/);
+  await set('検索結果（デモ）','found'); await click('選択したピンをスキャン（デモ）'); await shot('29-debug-scan');
+  await click('この配線を確認・保存へ →');
+  assert.equal(await evaluate('document.querySelector("[data-group=debug] .wire-pins select").value'), '6');
+  await set('接続名', 'scanned');
+  await click('指定したピンで接続確認（デモ）');
+  assert.match(await evaluate('document.getElementById("debug-check-0").textContent'), /応答を確認/);
+  await set('SWDIO','8');
+  assert.match(await evaluate('document.getElementById("debug-check-0").textContent'), /未確認/);
+  await set('接続確認の結果（デモ）','empty'); await click('指定したピンで接続確認（デモ）');
+  assert.match(await evaluate('document.getElementById("debug-check-0").textContent'), /応答なし/);
+  await click('配線を保存'); await until('location.hash.startsWith("#/setup/ready?")');
+  await click('配線を編集する');
+  assert.match(await evaluate('document.getElementById("debug-check-0").textContent'), /未確認/);
+  await click('キャンセル');
+  // Optional direct use transfers the chosen pins, without saving or starting a session.
+  await route('/connection/new?purpose=debug&wire=swio'); await set('DIO','10');
+  await click('この配線で操作へ（保存しない）');
+  await until('location.hash==="#/operate/debug"');
+  assert.equal(await evaluate('[...document.querySelectorAll("label")].find(e=>e.firstChild.textContent==="DIO").querySelector("select").value'), '10');
+  assert.equal(await evaluate('document.querySelectorAll(".active-work").length'), 0);
+  await route('/connections'); assert.equal(await evaluate('document.querySelectorAll(".connection-card").length'), 2);
   // Standalone capture needs no label. Named capture can observe an existing I2C wiring record.
   await reset(); await route('/setup'); await click('プローブを選ぶ（デモ）'); await click('機器を選んで接続（デモ）');
   await choosePattern('logic'); await evaluate('document.querySelector("[data-capture-mode=standalone]").click()'); await delay(100);
@@ -200,7 +231,7 @@ try {
   await route('/connections'); await click('配線・相手の情報を編集'); await set('接続名','edited'); await click('変更を保存'); assert.match(await evaluate('document.body.innerText'), /edited/);
   // Mobile widths and no horizontal document overflow on representative screens.
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-  for (const [path, name] of [['/home','10-mobile-home'],['/install/select','11-mobile-boards'],['/setup','12-mobile-setup'],['/connection/new?purpose=debug&wire=swio','13-mobile-editor'],['/operate/uart','14-mobile-operation'],['/learn','15-mobile-learn'],['/setup/logs','21-mobile-logs'],['/capture?mode=standalone','22-mobile-capture'],['/passthrough','23-mobile-passthrough'],['/fixture','24-mobile-fixture'],['/usecase/debug','26-mobile-usecase'],['/operations','27-mobile-purposes']]) {
+  for (const [path, name] of [['/home','10-mobile-home'],['/install/select','11-mobile-boards'],['/setup','12-mobile-setup'],['/connection/new?purpose=debug&wire=swio','13-mobile-editor'],['/operate/uart','14-mobile-operation'],['/learn','15-mobile-learn'],['/setup/logs','21-mobile-logs'],['/capture?mode=standalone','22-mobile-capture'],['/passthrough','23-mobile-passthrough'],['/fixture','24-mobile-fixture'],['/usecase/debug','26-mobile-usecase'],['/operations','27-mobile-purposes'],['/setup/debug','30-mobile-debug-paths'],['/setup/debug-scan','31-mobile-scan']]) {
     await route(path); await shot(name);
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'), true, 'overflow at '+path);
   }
