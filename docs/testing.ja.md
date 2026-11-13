@@ -16,7 +16,13 @@ CI、Pages、Release は共通 action でこの環境を用意し、仮想依存
 
 ## ブラウザの作業画面
 
-`npm run test:browser` で専用のheadless Chromium、HTTPサーバー、Python仮想プローブを起動します。
+```sh
+npm run test:browser
+# 別のブラウザや用意した仮想 backend を使うとき:
+OEP_CHROME=chromium OEP_PYTHON=/path/to/python npm run test:browser
+```
+
+試験は専用のheadless Chromium、HTTPサーバー、Python仮想プローブを起動します。
 Chromiumのコマンドは `OEP_CHROME`（既定 `google-chrome`）、Pythonは `OEP_PYTHON`（既定は上記の専用環境）で指定できます。
 試験専用のHTTP byte経路でブラウザの実際のhostライブラリと仮想プローブを接続します。この経路を公開ページには含めません。
 

@@ -79,7 +79,7 @@ probe in Chromium.
 
 `web/app.js` owns connection/session state and screens. `web/signals.js` defines I/O forms using the public library APIs.
 `web/model.js` validates input and handles routes and display values; `web/boards.js` holds board guidance.
-`web/oep-client.js` is the source entry, replaced with site-relative library exports by the site build.
+`web/oep-client.js` is the source entry, replaced by the site build with an entry that refers to `site/src/`.
 `tsconfig.web.json` checks the browser code, and `npm run test:browser` exercises Chromium with the Python virtual probe.
 
 ## 5. Things to mind

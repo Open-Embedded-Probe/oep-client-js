@@ -8,9 +8,11 @@ uv sync --project test/virtual-bench --locked
 OEP_PYTHON="$PWD/test/virtual-bench/.venv/bin/python" OEP_REQUIRE_VIRTUAL_BENCH=1 npm run check
 ```
 
-An explicitly selected Python missing the virtual module is a preparation error. `OEP_REQUIRE_VIRTUAL_BENCH=1` also makes the dependency mandatory. With neither setting, tests use `python3` and may skip optional virtual integration cases if the backend is absent; this does not complete release verification.
+`OEP_PYTHON` is an explicitly selected Python executable; to compare another candidate client's virtual environment, name its executable too. An explicitly selected Python missing the virtual module is a preparation error, and so is a missing dependency under `OEP_REQUIRE_VIRTUAL_BENCH=1`. With neither setting, a plain `npm test` uses `python3` only and may skip optional virtual integration cases if the backend is absent; this does not complete release verification.
 
-CI, Pages and Release use the same setup action and require the pinned backend. Update its commit and lock together, then verify integration, types and distribution artifacts. This test dependency does not impose a minimum physical probe firmware version. Virtual success does not certify physical USB operation or firmware transfers.
+CI, Pages and Release use the same setup action and require the pinned backend. Update its commit and lock together, then verify integration, types and distribution artifacts. The pinned backend is the version verified this time; it does not impose a minimum physical probe firmware version.
+
+Responsibility for assurance and the steps of a consuming project follow the [OEP common policy](https://github.com/Open-Embedded-Probe/oep-client-python/blob/main/docs/testing-policy.ja.md) and the [general guide](https://github.com/Open-Embedded-Probe/oep-client-python/blob/main/docs/testing-consumers.ja.md) (Japanese). Virtual success does not certify physical USB operation or firmware transfers.
 
 ## Browser workspace
 
@@ -20,7 +22,8 @@ npm run test:browser
 OEP_CHROME=chromium OEP_PYTHON=/path/to/python npm run test:browser
 ```
 
-The test starts its own headless Chromium, static HTTP server and Python virtual probe. A test-only HTTP byte transport
+The test starts its own headless Chromium, static HTTP server and Python virtual probe. The Chromium command is `OEP_CHROME`
+(default `google-chrome`), the Python `OEP_PYTHON` (default the environment above). A test-only HTTP byte transport
 connects the real browser host library to the virtual probe; it is never included in the published page.
 It checks the public pages and old addresses; the ESP32 install (a simulated ROM: offset zero, the same serial port reused, a
 retry that does not write again); the Pico install by BOOTSEL (the one new device opened without another chooser); the

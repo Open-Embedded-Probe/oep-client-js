@@ -96,7 +96,7 @@ docs/           この文書、リリースの手順
 
 - `node:test` で書き、`npm test` で走らせます。
 - probe の代わりに、oep-client-python の仮想ベンチを使います（`python -m oep_client.virtual_bench_serve` の TCP。probe とその先の
-  target、治具の配線を実際の治具に合わせて作ったもの）。Python の試験と同じ仮想ベンチが相手なので、同じ振る舞いを確かめられます。CI は oep-client-python を main の branch（git）から入れます。
+  target、治具の配線を実際の治具に合わせて作ったもの）。Python の試験と同じ仮想ベンチが相手なので、同じ振る舞いを確かめられます。試験はセッションの id（keptsession.js）を一時的な `$OEP_SESSION_DIR` に置きます。CI は oep-client-python を main の branch（git）から入れます。
 - ブラウザの経路は、実機で確かめます（手順は [リリースの手順](release.ja.md)）。
 
 ## 7. 番号（registry）
