@@ -77,10 +77,11 @@ The page's purpose, scope and flows are in the [requirements and screen specific
 screens never scan, attach, assign pins or drive outputs. `npm run test:browser` runs installation through handover against the Python virtual
 probe in Chromium.
 
-`web/app.js` owns connection/session state and screens. `web/signals.js` defines I/O forms using the public library APIs.
-`web/model.js` validates input and handles routes and display values; `web/boards.js` holds board guidance.
-`web/oep-client.js` is the source entry, replaced by the site build with an entry that refers to `site/src/`.
-`tsconfig.web.json` checks the browser code, and `npm run test:browser` exercises Chromium with the Python virtual probe.
+- `web/app.js`: connection/session state and the screens. `web/signals.js`: the forms of the declared I/O functions.
+- `web/model.js`: input validation, routes and display values. `web/boards.js`: board guidance.
+- `web/oep-client.js`: the source's public API entry, replaced by the site build with an entry that refers to `site/src/`.
+- `tsconfig.web.json` checks the browser code too, and `npm run test:browser` exercises it in Chromium with the Python
+  virtual probe.
 
 ## 5. Things to mind
 
