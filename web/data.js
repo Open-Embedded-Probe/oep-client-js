@@ -75,7 +75,7 @@ function build() {
     ['passthrough', t('Watch in an ordinary serial monitor', '普通のシリアルモニタで見る'), t('A probe setting that sends the UART or debug-wire log to the serial port while no OEP session is open. One way, target → PC.', 'UARTまたはデバッグ線のログを、OEPセッションがない間だけシリアルポートへ流す本体設定。相手 → PCの一方向。')],
   ];
   DOCS = [
-    [t('What OEP is for', 'OEPの目的と考え方'), t('What it makes common, and the interoperability it aims for.', '何を共通化し、どんな相互運用を目指すか。'), 'https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/project-concept.ja.md'],
+    [t('What OEP is for', 'OEPの目的と考え方'), t('What it makes common, and the interoperability it aims for.', '何を共通化し、どんな相互運用を目指すか。'), t('https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/project-concept.md', 'https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/project-concept.ja.md')],
     [t('Boards and pins', '対応ボードとピン'), t('Released firmware, each board\'s limits, usable pins.', '配布firmware、ボードごとの制約、利用できるピン。'), guide('boards')],
     [t('Protocol and standard interfaces', 'プロトコル・標準interface'), t('Declarations, transport, sessions and the standard functions.', '機能宣言、通信、セッションと標準の機能。'), 'https://github.com/Open-Embedded-Probe/oep-spec'],
     [t('Make or extend a probe', 'プローブを作る・拡張する'), t('The Arduino implementation, and how to add your own functions.', 'Arduino実装と、独自の機能を追加する方法。'), 'https://github.com/Open-Embedded-Probe/oep-probe-arduino'],
