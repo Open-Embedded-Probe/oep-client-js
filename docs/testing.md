@@ -34,3 +34,14 @@ declarations; hand-over; a 390 px wide screen; the language from the browser and
 connection kept, remembered over a reload), and every screen in English without Japanese left. Wi-Fi runs on a second virtual probe (the classic ESP32 profile). CI
 runs it after `npm run check`. Flashing, DFU, the boot ROM, USB permission dialogs and electrical signals are stand-ins
 or out of scope here and are checked on hardware.
+
+## HID on a real probe
+
+```sh
+node scripts/check-hid.mjs /dev/hidrawN
+```
+
+On Linux, the page's own WebHID transport (`src/browser/webhid.js`, count and first in every report) is driven through a
+probe's hidraw node: confirm, describe, list and every interface's describe, the settings, then a session with 160
+pipelined describes; it prints the link's counters and the reports found missing or broken (0 expected). The report ID
+and size come from the node's report descriptor. It needs read and write access to the node (the plugdev group).

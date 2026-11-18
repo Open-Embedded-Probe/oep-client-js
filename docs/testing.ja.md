@@ -31,3 +31,14 @@ Chromiumのコマンドは `OEP_CHROME`（既定 `google-chrome`）、Pythonは 
 呼ばない、型番・メモはメモ領域へ）、編集、接続確認、接続前に開いたタブへ接続後に戻る、帯の「保存」、道具へ渡すに出る素通し、素通し・待機ピン・Wi-Fiの設定、設定とメモの控えと差分を
 見ての復元、宣言の表示、引継ぎ、390px幅、ブラウザの言語とヘッダの選択による日英の切り替え（入力・画面・接続を保ち、再読み込み後も残る）、英語の全画面に日本語が残らないことを確かめます。Wi-Fiは2台目の仮想プローブ（classic ESP32の profile）で確かめます。CIは `npm run check` の後にこの試験を回します。
 書き込み・DFU・boot ROM・USB権限のダイアログ・電気的な信号は試験では偽物か対象外で、実機で確かめます。
+
+## 実機の HID
+
+```sh
+node scripts/check-hid.mjs /dev/hidrawN
+```
+
+Linux で、ページ自身の WebHID の経路（`src/browser/webhid.js`、report ごとの count と first）を、プローブの hidraw のノード越しに動かします。
+confirm、describe、list と各インターフェースの describe、設定、続いてセッションの中で 160 個のパイプラインの describe を送り、link の
+数と、欠けた・壊れた report の数（0 のはず）を出します。report ID と大きさはノードの report descriptor から読みます。ノードの読み書き
+（plugdev のグループ）が要ります。
