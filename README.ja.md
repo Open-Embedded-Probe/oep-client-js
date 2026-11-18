@@ -26,8 +26,8 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 2. **つながるかと、何を宣言しているかを確かめる**: 経路、confirm、list と describe、`dump`（インターフェースごとの宣言を文か JSON で。
    core §1.2 が求めるもので probe が出さなかったものも）。
 3. **設定し、控えて戻す**: 設定（core §13: ラベル、待機と使わせないピン、ログの素通し、Wi-Fi、保存と再起動つきの `usb.transports`）、
-   設定ファイル、メモ領域（`oep.probe.memo`、口の記録 `oep.probe.memo/port/<口>`）。
-4. **ターゲットへの配線を登録して確かめる**: ラベルと口の記録。デバッグ線の接続確認（`wire.Wire.check`: ピンで attach し、応答した
+   設定ファイル、メモ領域（`oep.probe.memo`、接続先の記録 `oep.probe.memo/port/<接続名>`）。
+4. **ターゲットへの配線を登録して確かめる**: ラベルと接続先の記録。デバッグ線の接続確認（`wire.Wire.check`: ピンで attach し、応答した
    ID ― rvswd / swio は DMSTATUS、swd は DPIDR。SWD で応答が無ければ RP2040 の multidrop の core 0 も試す ― を読んで detach）。
 5. **作業をする道具へ引き継ぐ**: デバッグ（IDE、oep-client-python）、ログ（素通しを通したシリアルモニタ、oep-client-python）、
    取り込み（WireSkein）、バス・信号・相手役（oep-client-python）。この package はそれらの作業をしない。
@@ -35,12 +35,12 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 部品:
 
 - 核: registry（oep-spec から生成）、フレーム（COBS + CRC、length）、メッセージ、リンク（corr の照合、待ちの後に 1 回の送り直し、
-  持っているシリアルの口で壊れたフレームが来たらすぐ 3 回までの送り直し（host ガイド §8）、パイプライン、push と出来事。応答はどれも
-  core §4.4 の下限 ― 引数の時間 + 1000 ms + シリアルの口の転送時間、`Link.waitFloorMs` ― 以上待つ。length のフレームでの
+  持っているシリアルポートで壊れたフレームが来たらすぐ 3 回までの送り直し（host ガイド §8）、パイプライン、push と出来事。応答はどれも
+  core §4.4 の下限 ― 引数の時間 + 1000 ms + シリアルポートの転送時間、`Link.waitFloorMs` ― 以上待つ。length のフレームでの
   transports §5 の立て直しは、host の最後の書き込みから 250 ms 待ってから confirm し、vendor bulk では静かになるのを lease の最長まで
   待ち、HID では待たない（report の first でフレームを見つけ直す、transports §1）。フレームの途中の休みでは立て直さない。送り直しにも
   応答が無ければ経路の失敗 `TransportFailed` で、次の要求の前に confirm で立て直す（COBS でも）。header より短いフレームは壊れた
-  フレーム。シリアルの口の最初の confirm は port_speed_idle_ms + host_wait_add_ms のあいだ繰り返す（別の host が上げた速さはそれまでに
+  フレーム。シリアルポートの最初の confirm は port_speed_idle_ms + host_wait_add_ms のあいだ繰り返す（別の host が上げた速さはそれまでに
   戻る）、host（confirm ― `limits.transport`。2 回目からは使っている revision を求める。core §7.1 の範囲の外、1..600000 の外の
   max_op_ms、core §7.4 の形の外の fn 0 の ops は probe を `NotUsable` に、fn の ops がその形の外ならその fn を `FnNotUsable` に ―、
   `clock()`、セッション ― open のたびに新しい乱数の id。経路が閉じても終わらないので、`connect`（`keepSession`、既定で有効）は開いた
@@ -51,9 +51,9 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 - 設定（settings.js）: `new Settings(host)`: `catalog()` はこの起動の名前、`show()` はすべての値を `{ category, name, value }` で、
   `setNamed(category, { flat: value })` / `unsetNamed` / `unsetAll`、生の `set` / `unset`、`save()`、`state()`、`needsSave()`、
   `network()`。`export()` / `planImport(doc)` / `applyImport(plan)` は設定ファイル（oep-client-python docs/oep-settings-file.ja.md）。
-  `findLine(source, name, { port })` は host ガイド §5.3 の線の探し方（口 S の線 N はラベル `S.N`）。秘密の値（Wi-Fi のパスフレーズ）は
+  `findLine(source, name, { port })` は host ガイド §5.3 の線の探し方（接続名 S の線 N はラベル `S.N`）。秘密の値（Wi-Fi のパスフレーズ）は
   読まない: get はデータを返さず、`show()` とファイルは `{ secret: true }`。set で 0 byte を送ると保つ
-- 経路: ブラウザは WebSerial、WebUSB（vendor bulk）、WebHID（`oep-client-js/browser`）。シリアルの口は 8N1、フロー制御なし、DTR と
+- 経路: ブラウザは WebSerial、WebUSB（vendor bulk）、WebHID（`oep-client-js/browser`）。シリアルポートは 8N1、フロー制御なし、DTR と
   RTS を立てて開く（transports §4）。USB の probe はプロジェクトの VID:PID `1209:4F45` だけで見つける（transports §3: WebUSB / WebHID の
   選択の既定の filter）。WebSerial の選択には既定の filter が無く、UART の変換チップや内蔵の USB シリアルも選べる。Node
   （`oep-client-js/node`）は TCP だけで、`openTcp({ host, port })`: 試験の仮想ベンチ、ローカルのブローカー、host と port で指定する

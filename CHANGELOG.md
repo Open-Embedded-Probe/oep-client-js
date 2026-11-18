@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The page's Japanese no longer says 口 (port): a wiring is named by its connection name (`<接続名>` in the addresses and the broker line), and the connect screen speaks of ways to connect (つなぎ方).
+- (JA) 画面の日本語から「口」をなくした: 配線は接続名で呼び（アドレスとブローカーの行の `<接続名>`）、接続の画面は「つなぎ方」と言う。
+
 - (EN) The probe screen leads the way: the overview lays out the three steps (1 Wiring, 2 Probe settings, 3 Use in other tools) with what each is for and where it stands, the tabs are numbered in that order, and each step's tab ends with the next one. Probe settings opens with a list of its sections, each with where it stands, that jumps to it. "Hand over to tools" is now "Use in other tools" and opens by saying the page only prepares the probe. A debug wiring whose method is not recorded is offered for the RP2040 broker too (it showed `<port>`).
 - (JA) プローブの画面が道筋を示す: 概要は3つの段階（1 配線、2 本体設定、3 ほかの道具で使う）を、何をする所か・今どうなっているかとともに並べ、タブもその順に番号を付け、各段階の画面の下に次の段階を置く。本体設定は最初に項目の一覧を今の状態とともに出し、押すとその項目へ移る。「道具へ渡す」は「ほかの道具で使う」にし、このページは準備までと最初に書く。方式の記録が無いデバッグの配線も RP2040 のブローカーに出す（`<口>` のままだった）。
 

@@ -85,7 +85,7 @@ flowchart LR
 ## 5. つなぐ（S3）
 
 - このブラウザで許可済みのOEPのUSB機器を並べ、選ぶとそのまま接続する（個体IDでdescribeのunit_idを確かめる）。
-- 口の種類ごとに選ぶ: 「USBシリアル」（Web Serial。USB-UART変換かCDC。classic ESP32、P4の書き込みに使った口）、「USB（OEPの機器）」（WebUSB、vendor bulk。Pico、P4のnative USB、CH32など）、「USB HID」（WebHID。上のUSB機器を開けないとき）。それぞれに、どのボードがその口かを書く。ボードの種類は選ばせない。
+- つなぎ方ごとに選ぶ: 「USBシリアル」（Web Serial。USB-UART変換かCDC。classic ESP32、P4の書き込みに使ったポート）、「USB（OEPの機器）」（WebUSB、vendor bulk。Pico、P4のnative USB、CH32など）、「USB HID」（WebHID。上のUSB機器を開けないとき）。それぞれに、どのボードがその口かを書く。ボードの種類は選ばせない。
 - 一覧に出ないときの確認（データ用ケーブル、起動、ほかのアプリ）と、まだ導入していない場合のS2への入口。
 - 接続後は、呼出元（未接続で開いたP1〜P6）か、P1へ進む。
 

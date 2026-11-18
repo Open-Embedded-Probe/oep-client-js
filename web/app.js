@@ -179,17 +179,17 @@ function connectScreen() {
     usbKnown.length ? panel(el('h2', {}, t('Probes allowed in this browser', 'このブラウザで許可済みのプローブ')), el('div', { class: 'stack' }, ...usbKnown.map(({ d, k }) => el('div', { class: 'connection-card' },
       el('header', {}, el('div', {}, el('h3', {}, d.productName ?? 'OEP probe'), p(t(`Unit ID ${d.serialNumber ?? '—'}${k ? ` · ${k.model}` : ''}`, `個体ID ${d.serialNumber ?? '—'}${k ? ` · ${k.model}` : ''}`), 'muted mb0'))),
       actions(action(t('Connect to this unit', 'この個体に接続'), () => done(D.openUsb(d, d.serialNumber && !String(d.serialNumber).toLowerCase().startsWith('x-') ? d.serialNumber : undefined)), 'primary', { 'data-unit': d.serialNumber })))))) : null,
-    el('section', { class: 'mt' }, el('h2', {}, t('Choose how the probe is plugged in', 'プローブの口を選んで、ブラウザの一覧から選ぶ')),
-      p(t('A probe can offer OEP on several USB paths; any one of them reaches the same unit. Use the one your board has.', 'プローブは複数のUSBの口でOEPを出せます。どの口からでも同じ個体につながります。ボードにある口を使ってください。'), 'muted'),
+    el('section', { class: 'mt' }, el('h2', {}, t('Choose how the probe is plugged in', 'つなぎ方を選んで、ブラウザの一覧から選ぶ')),
+      p(t('A probe can offer OEP on several USB paths; any one of them reaches the same unit. Use the one your board has.', 'プローブはOEPを複数のつなぎ方で出せます。どれを使っても同じ個体につながります。ボードが対応しているつなぎ方を選んでください。'), 'muted'),
       el('div', { class: 'three-grid' },
-        panel(el('h3', {}, t('USB serial', 'USBシリアル')), p(t('A serial port: a USB-UART bridge or the chip\'s own USB serial (CDC). The classic ESP32, and the P4\'s port used for writing.', 'シリアルポート。USB-UART変換か、チップ自身のUSBシリアル（CDC）。classic ESP32と、P4の書き込みに使った口。'), 'muted'),
+        panel(el('h3', {}, t('USB serial', 'USBシリアル')), p(t('A serial port: a USB-UART bridge or the chip\'s own USB serial (CDC). The classic ESP32, and the P4\'s port used for writing.', 'シリアルポート。USB-UART変換か、チップ自身のUSBシリアル（CDC）。classic ESP32と、P4の書き込みに使ったポート。'), 'muted'),
           action(t('Choose a serial port', 'シリアルポートを選ぶ'), () => done(D.openSerial()), 'primary', { id: 'connect-serial', disabled: !D.browser.serial })),
         panel(el('h3', {}, t('USB (OEP device)', 'USB（OEPの機器）')), p(t('The probe\'s own USB device (WebUSB, vendor bulk). The Pico, a P4\'s native USB, CH32 and others not in the serial list.', 'プローブ自身のUSB機器（WebUSB、vendor bulk）。Pico、P4のnative USB、CH32など、シリアルの一覧に出ないもの。'), 'muted'),
           action(t('Choose an OEP USB device', 'OEPのUSB機器を選ぶ'), () => done(D.openUsb()), '', { id: 'connect-usb', disabled: !D.browser.usb })),
         panel(el('h3', {}, t('USB HID', 'USB HID')), p(t('The same OEP USB device through the OS\'s HID driver (WebHID). For when the USB device above cannot be opened, as on Windows without a driver for it.', '同じOEPのUSB機器を、OSのHIDドライバ越しに使います（WebHID）。上のUSB機器を開けないとき（ドライバの無いWindowsなど）に。'), 'muted'),
           action(t('Choose an OEP HID device', 'OEPのHID機器を選ぶ'), () => done(D.openHid()), '', { id: 'connect-hid', disabled: !D.browser.hid })))),
     el('details', { class: 'panel mt' }, el('summary', {}, t('If the device is not in the list', '一覧に機器が見つからないとき')),
-      p(t('Check that the cable carries data, that the device has booted, and that no other app holds the port. A probe without OEP yet needs it installed first.', 'データ通信できるケーブルか、機器が起動しているか、ほかのアプリがその口を使っていないかを確かめます。まだOEPを入れていないボードは、先に導入します。'), 'mt'),
+      p(t('Check that the cable carries data, that the device has booted, and that no other app holds the port. A probe without OEP yet needs it installed first.', 'データ通信できるケーブルか、機器が起動しているか、ほかのアプリがその機器を使っていないかを確かめます。まだOEPを入れていないボードは、先に導入します。'), 'mt'),
       actions(link(t('Make a board a probe', 'ボードをプローブにする'), '/make'))));
 }
 function notFound() { return el('div', { class: 'page' }, heading(t('This screen does not exist.', 'この画面は見つかりません。'), t('Start again from the start page.', 'スタートからやり直してください。')), link(t('To the start', 'スタートへ'), '/', true)); }

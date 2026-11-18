@@ -202,18 +202,18 @@ export function tools() {
   const s = state.handoff ??= { port: '' };
   const swd = swdPorts.find((x) => x.name === s.port) ?? swdPorts[0];
   const board = s.board ?? 'rpipico';
-  const broker = t(`python -m oep_client.ota_broker oep://${id}/${swd?.name ?? '<port>'}=${board} --gdb-port 3333`, `python -m oep_client.ota_broker oep://${id}/${swd?.name ?? '<口>'}=${board} --gdb-port 3333`);
+  const broker = t(`python -m oep_client.ota_broker oep://${id}/${swd?.name ?? '<connection>'}=${board} --gdb-port 3333`, `python -m oep_client.ota_broker oep://${id}/${swd?.name ?? '<接続名>'}=${board} --gdb-port 3333`);
   const debugJson = JSON.stringify([{ configId: `rp2040:rp2040:${board}`, servertype: 'external', gdbTarget: 'localhost:3333' }], null, 2);
   const passthroughs = D.currentPassthroughs();
   const section = (anchor, title, ...kids) => el('section', { class: 'panel mt', id: `tool-${anchor}` }, el('h2', {}, title), ...kids);
   return [heading(t('Use in other tools', 'ほかの道具で使う'), t('This page only prepares the probe. Debugging, reading logs, capturing waveforms and scripts are done in the tools below; each section gives what that tool needs: this probe\'s address, a command, a file. When a tool opens the probe itself, end this page\'s use at the bottom first.', 'このページはプローブの準備までです。デバッグ、ログを読む、波形を取る、スクリプトは次の道具で行います。それぞれの道具に要るもの ― このプローブのアドレス、コマンド、ファイル ― を出します。道具がプローブを開くときは、先に一番下でこのページの利用を終えます。'), 'OTHER TOOLS'),
     section('debug', t('1. Debug and write a target', '1. ターゲットをデバッグ・書き込み'),
       el('h3', {}, t('CH32 (ArduinoCore-CH32RV)', 'CH32（ArduinoCore-CH32RV）')), p(t('The board definitions know OEP ports. Use this address as the IDE\'s port.', 'ボードの定義がOEPのポートを持ちます。IDEのポートにこのアドレスを使います。'), 'muted'),
-      ...(ch32Ports.length ? ch32Ports.map((x) => copyLine(`oep://${id}/${x.name}`)) : [copyLine(t(`oep://${id}/<port>`, `oep://${id}/<口>`))]), external('ArduinoCore-CH32RV', 'https://github.com/ch32-riscv-ug/ArduinoCore-CH32RV'),
+      ...(ch32Ports.length ? ch32Ports.map((x) => copyLine(`oep://${id}/${x.name}`)) : [copyLine(t(`oep://${id}/<connection name>`, `oep://${id}/<接続名>`))]), external('ArduinoCore-CH32RV', 'https://github.com/ch32-riscv-ug/ArduinoCore-CH32RV'),
       el('h3', { class: 'mt' }, t('SWD (RP2040, Arduino IDE)', 'SWD（RP2040、Arduino IDE）')), p(t('With the broker running, the IDE\'s Upload and Debug use OEP\'s SWD. Put debug_custom.json in the sketch folder (match configId to the value the IDE writes in .theia/launch.json).', 'ブローカーを起動しておくと、IDEの「書き込み」と「デバッグ」がOEPのSWDを使います。スケッチのフォルダに debug_custom.json を置きます（configId はIDEが .theia/launch.json に書く値に合わせます）。'), 'muted'),
-      swdPorts.length > 1 ? field(t('Port', '口'), s.port, (v) => { s.port = v; render(); }, '', swdPorts.map((x) => [x.name, x.name])) : null,
+      swdPorts.length > 1 ? field(t('Wiring', '配線'), s.port, (v) => { s.port = v; render(); }, '', swdPorts.map((x) => [x.name, x.name])) : null,
       field(t('Board name shown to the IDE', 'IDEに見せるボード名'), board, (v) => { s.board = v; render(); }, t('For example rpipico', '例: rpipico')),
-      swd ? null : p(t('Register the SWD wiring (1 Wiring) and its name takes the place of <port> here.', 'SWDの配線を登録すると（1 配線）、その接続名が <口> の所に入ります。'), 'muted'),
+      swd ? null : p(t('Register the SWD wiring (1 Wiring) and its connection name takes the place of <connection> here.', 'SWDの配線を登録すると（1 配線）、その接続名が <接続名> の所に入ります。'), 'muted'),
       copyLine(broker), el('pre', { class: 'terminal' }, debugJson), external(t('Using SWD (oep-client-python docs/swd)', 'SWDの使い方（oep-client-python docs/swd）'), t('https://github.com/Open-Embedded-Probe/oep-client-python/blob/main/docs/swd.md', 'https://github.com/Open-Embedded-Probe/oep-client-python/blob/main/docs/swd.ja.md')),
       p(t('Other targets are debugged from Python. There is no hand-over for ESP32 or JTAG.', 'ほかのターゲットはPythonからデバッグします。ESP32とJTAGへの引継ぎはありません。'), 'muted mt')),
     section('logs', t('2. Read logs', '2. ログを読む'),
