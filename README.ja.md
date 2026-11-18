@@ -23,7 +23,8 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 - 核: registry（oep-spec から生成）、フレーム（COBS + CRC、length）、メッセージ、リンク（corr の照合、待ちの後に 1 回の送り直し、持っているシリアルの口で
   壊れたフレームが来たらすぐ 3 回までの送り直し（host ガイド §8）、パイプライン、push と出来事。応答はどれも core §4.4 の下限 ― 引数の時間 + 1000 ms + シリアルの口の転送時間、
   `Link.waitFloorMs` ― 以上待つ。length のフレームでの transports §5 の立て直しは、host の最後の書き込みから 250 ms 待ってから confirm し、
-  TCP のフレームの途中の休みでは立て直さない。送り直しにも応答が無ければ経路の失敗 `TransportFailed` で、次の要求の前に
+  vendor bulk では静かになるのを lease の最長まで待ち、HID では待たない（report の first でフレームを見つけ直す、transports §1）。
+  フレームの途中の休みでは立て直さない。送り直しにも応答が無ければ経路の失敗 `TransportFailed` で、次の要求の前に
   confirm で立て直す（COBS でも）。header より短いフレームは壊れたフレーム）、
   host（confirm ― この host が来た経路の番号 `limits.transport`、2 回目からは使っている revision を求める。core §7.1 の範囲の外の
   confirm、1..600000 の外の max_op_ms、core §7.4 の形に合わない fn 0 の ops は、その probe を `NotUsable` にし、合わない fn の ops は

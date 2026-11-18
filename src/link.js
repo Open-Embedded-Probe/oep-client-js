@@ -6,18 +6,21 @@
 // frames 0x00 <COBS> 0x00 and OEP frames only (transports §4): every span between 0x00s is a candidate, and one that
 // does not decode or fails its CRC is a broken frame - most likely the awaited answer, sent again at once. A result for
 // a corr not waited for is read past on every framing (core §10.1): it is no lost boundary. Vendor bulk, HID and TCP
-// carry length(u16) message, with no CRC: a length that cannot be right (over max_frame), a frame that stops half way,
-// or (vendor bulk, HID) a request with no answer in time loses the boundaries, and the link finds them again as
-// transports §5 says (`resync`):
-// it reads and discards until the input has been quiet for 50 ms and 250 ms have passed since this host last wrote
-// (longer than probe_frame_gap_ms: a frame left half written is then dropped by the probe's own gap), sends a confirm and waits for
-// the result with its corr (up to 3 tries; other results meanwhile are read past), then the requests still waiting go
-// once more with the same corr (§5.2; one already sent twice fails with FramingLost). A frame that stops half way is a
-// lost boundary on vendor bulk and HID only: TCP keeps its boundaries and a pause inside a frame is normal there
-// (`Transport.keepsBoundaries`, transports §5); a TCP connection whose framing broke is closed and opened again first
-// (`Transport.reopen`), and a TCP request with no answer is no lost boundary - sent again as on a serial port, the
-// transport failing when that gets none either. When pushes keep the input from going quiet for 1 s, the transport is
-// closed and opened again once (transports §5); one that cannot be fails what waits (FramingLost). The session and its
+// carry length(u16) message, with no CRC: a length that cannot be right (over max_frame) or (vendor bulk, HID) a
+// request with no answer in time loses the boundaries, and the link finds them again as transports §5 says (`resync`):
+// on vendor bulk it reads and discards until the input has been quiet for 50 ms, then waits until 250 ms have passed
+// since this host last wrote (longer than probe_frame_gap_ms: a frame left half written is then dropped by the probe's
+// own gap), sends a confirm and waits for the result with its corr (up to 3 tries; other results meanwhile are read
+// past), then the requests still waiting go once more with the same corr (§5.2; one already sent twice fails with
+// FramingLost). HID's transport hands whole frames only (`Transport.wholeFrames`: its reports' first finds the frames
+// again, transports §1), so its resync reads nothing past and does not wait for quiet. A pause inside a frame is read
+// on, on every transport: transports §2's gap is the probe reader's rule, and a host cannot tell the probe's pause from
+// its own delay. TCP keeps its boundaries (`Transport.keepsBoundaries`, transports §5); a TCP connection whose framing
+// broke is closed and opened again first (`Transport.reopen`), and a TCP request with no answer is no lost boundary -
+// sent again as on a serial port, the transport failing when that gets none either. Pushes keep the input from going
+// quiet until their session's lock ends (core §10.3), so vendor bulk waits for quiet up to lease_max_ms and
+// probe_frame_gap_ms (PUSHES_END_MS); still not quiet, the transport is closed and opened again once (transports §5),
+// and one that cannot be fails what waits (FramingLost). The session and its
 // subscriptions stay on the probe, but a subscription still sends where its subscribe came - the closed transport - so
 // the host subscribes again on the new one before its next request (`onReopen`; core §10.3). New requests wait for the
 // resync. While the transport is being probed (core §3.3) there is no resync: its confirms would be more than the
@@ -87,17 +90,20 @@ import { MAX_REVISION, MIN_REVISION } from './host.js';
 export const WAIT_ADD_MS = reg.TIMING.host_wait_add_ms;
 /** max_frame x this of notifications may come before an answer (core §11.4): the transfer time counts them. */
 const NOTIFY_PENDING = reg.TIMING.notify_pending_max_frames;
-const STALL_MS = reg.TIMING.probe_frame_gap_ms;   // a frame whose bytes stop this long is not coming
 /** Before a resync's confirm, and the first confirm on a length-prefixed port: this long since the host's last write
  * there (transports §5: longer than probe_frame_gap_ms - here by 50 ms). */
-export const RESYNC_WAIT_MS = STALL_MS + 50;
+export const RESYNC_WAIT_MS = reg.TIMING.probe_frame_gap_ms + 50;
 
 /** a serial port's answer bytes in flight at most (Linux cdc_acm lost 8 x 1008 B answer bursts; 7 passed) */
 const ANSWER_BURST_MAX = 6144;
 /** Length-prefixed links: the resync reads and discards until the input has been quiet this long (transports §5). */
 export const RESYNC_QUIET_MS = 50;
-/** ... and when it is still not quiet after this, closes the transport and opens it again (transports §5). */
+/** ... and when it is still not quiet after this, closes the transport and opens it again (transports §5) - TCP, whose
+ * new connection carries no pushes of the old one, and a serial port's recovery. */
 export const RESYNC_NOISY_MS = 1000;
+/** ... vendor bulk: pushes stop only with their session's lock (core §10.3), and the probe does not see a USB transport
+ * opened again; with no request from this host they stop when that lease ends, lease_max_ms at the most (transports §5). */
+export const PUSHES_END_MS = reg.LIMITS.lease_max_ms + reg.TIMING.probe_frame_gap_ms;
 /** ... confirms (each after a quiet input) before the resync gives up. */
 export const RESYNC_TRIES = 3;
 /** The link's own confirms (the resync, confirmRaw) ask for the revisions this client handles before the first confirm
@@ -146,8 +152,10 @@ export const RAISED_WAIT_MIN_MS = 300;
  * @property {number} [baudRate]          a serial port's rate now (what it was opened with, then set)
  * @property {(rate: number) => Promise<void>} [setBaudRate]   a serial port this host opened: change its rate
  * @property {string} [path]              a serial port's OS device path (the port_speed record's key, with the unit_id)
- * @property {boolean} [keepsBoundaries]  length frames on a stream that keeps them (TCP): a pause inside a frame is
- *   read on, never taken for lost boundaries (transports §5)
+ * @property {boolean} [keepsBoundaries]  length frames on a stream that keeps them (TCP): a broken framing is mended
+ *   by closing and opening it again, not by quiet input (transports §5)
+ * @property {boolean} [wholeFrames]      length frames handed over whole only (HID: its reports' first, transports §1):
+ *   a resync has nothing to read past and does not wait for quiet (transports §5)
  * @property {() => Promise<void>} [reopen]  close and open the same transport again (TCP), delivering to the same
  *   callbacks `start` was given: what a broken framing or a stream that never goes quiet needs (transports §5)
  */
@@ -236,6 +244,7 @@ export class Link {
     this.lastTx = performance.now();         // when the link last wrote (raised: quiet for KEEPALIVE_MS = a keepalive)
     /** @type {Promise<void> | null} length-prefixed: the §5.1 resync under way (new requests wait for it) */ this.resyncing = null;
     this.discarding = false;                 // ... reading and discarding until the input is quiet
+    this.pushesEndMs = PUSHES_END_MS;        // ... on vendor bulk at most this long (the longest lease: pushes stop with it)
     /** @type {{ corr: number, done: (ok: boolean, frame?: Uint8Array) => void } | null} ... its confirm, waiting */ this.resyncWaiter = null;
     /** @type {() => void} the transport closed and opened again (`reopen`; bound by Host: subscribe again, core §10.3) */
     this.onReopen = () => {};
@@ -303,14 +312,8 @@ export class Link {
 
   /** @param {Uint8Array} chunk */
   onData(chunk) {
-    const now = performance.now();
-    const stalled = this.framing === 'length' && !this.transport.keepsBoundaries && this.buf.length && now - this.lastRx > STALL_MS;
-    this.lastRx = now;
+    this.lastRx = performance.now();
     if (this.discarding) return;             // the resync reads and discards until the input is quiet (§5.1)
-    if (stalled) {                           // a frame that stopped half way: its rest is not coming
-      this.framingLost();
-      if (this.discarding) return;           // the resync began: this chunk is discarded too
-    }
     const joined = new Uint8Array(this.buf.length + chunk.length);
     joined.set(this.buf);
     joined.set(chunk, this.buf.length);
@@ -557,8 +560,9 @@ export class Link {
 
   /** transports §5: read and discard until the input is quiet for RESYNC_QUIET_MS, then a confirm (a read, safe to
    * send) whose answer, by its corr, proves the boundaries; RESYNC_TRIES of them. TCP (its boundaries kept: a broken
-   * framing does not mend by quiet input) is closed and opened again first. Not quiet in RESYNC_NOISY_MS (pushes keep
-   * coming): the transport is closed and opened again, once; one that cannot be, or stays noisy, fails what waits.
+   * framing does not mend by quiet input) is closed and opened again first. HID (whole frames only) reads nothing past
+   * and confirms at once. Not quiet in `quietLimitMs` (pushes keep coming): the transport is closed and opened again,
+   * once; one that cannot be, or stays noisy, fails what waits.
    * Nothing that changes state goes out before the confirm (core §5.1). Then the requests still waiting go once more
    * with the same corr; none back: every one fails with FramingLost. Never rejects. */
   async resync() {
@@ -566,9 +570,9 @@ export class Link {
     try {
       if (this.keepsBoundaries()) { await this.reopen(); reopened = true; }
       for (let i = 0; i < RESYNC_TRIES; i++) {
-        this.discarding = true;
+        this.discarding = !this.wholeFrames();
         this.buf = new Uint8Array(0);
-        while (!(await this.quiet(RESYNC_QUIET_MS, RESYNC_NOISY_MS))) {
+        while (!this.wholeFrames() && !(await this.quiet(RESYNC_QUIET_MS, this.quietLimitMs()))) {
           if (reopened || this.closed || !this.transport.reopen) {
             this.failPending(new FramingLost('resync: the input never went quiet - close the transport and open it again (transports §5)'));
             return;
@@ -598,6 +602,14 @@ export class Link {
   /** A length-framed stream that never loses a boundary (TCP, transports §2). */
   keepsBoundaries() { return this.framing === 'length' && !!this.transport.keepsBoundaries; }
 
+  /** A length-framed stream that hands whole frames only (HID, transports §1): nothing to read past before a confirm,
+   * no waiting for quiet (transports §5). */
+  wholeFrames() { return this.framing === 'length' && !!this.transport.wholeFrames; }
+
+  /** How long a length-framed resync reads and discards for quiet: TCP's new connection carries no pushes of the old
+   * one (RESYNC_NOISY_MS); on vendor bulk they stop with their session's lease (PUSHES_END_MS). */
+  quietLimitMs() { return this.keepsBoundaries() ? RESYNC_NOISY_MS : Math.max(RESYNC_NOISY_MS, this.pushesEndMs); }
+
   /** transports §5: the transport closed and opened again (TCP: `Transport.reopen`) - its parser on the probe starts
    * afresh, the session and the resend record stay there (§3); the confirm that follows on it shows its boot_id. What
    * was gathered is dropped, and the host subscribes again before its next request (`onReopen`, core §10.3). Throws when
@@ -620,12 +632,14 @@ export class Link {
   }
 
   /** The first confirm on a length-prefixed port (transports §5): read and discard until the input has been quiet for
-   * RESYNC_QUIET_MS (at most RESYNC_NOISY_MS), and RESYNC_WAIT_MS since this host's last write there. */
+   * RESYNC_QUIET_MS (at most `quietLimitMs`; HID, whole frames only: not), and RESYNC_WAIT_MS since this host's last
+   * write there. */
   async beforeFirstConfirm() {
     if (this.framing !== 'length') return;
+    if (this.wholeFrames()) { await this.settleBeforeConfirm(); return; }
     this.discarding = true;
     try {
-      await this.quiet(RESYNC_QUIET_MS, RESYNC_NOISY_MS);
+      await this.quiet(RESYNC_QUIET_MS, this.quietLimitMs());
       await this.settleBeforeConfirm();
     } finally {
       this.discarding = false;

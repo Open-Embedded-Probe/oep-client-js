@@ -44,7 +44,7 @@ docs/           this document, the release steps
 |---|---|---|---|
 | USB CDC, USB-Serial/JTAG, USB-UART bridge | WebSerial | serialport | COBS + CRC |
 | vendor bulk (class 0xFF) | WebUSB | usb (WebUSB-shaped) | length(u16) message |
-| vendor HID | WebHID | node-hid (optional) | length messages in reports |
+| vendor HID | WebHID | - | length messages in reports with count and first |
 | TCP (a probe on Wi-Fi, a local broker, the tests' virtual bench) | - | node:net | length(u16) message |
 
 - TCP is Node's alone: a browser can neither open a TCP connection nor send mDNS, so the page offers no TCP. A probe on

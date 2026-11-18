@@ -272,15 +272,13 @@ async function paused(keepsBoundaries, gapMs) {
   return { link, answer, sent };
 }
 
-test('C-07: on TCP a pause inside a frame is read on; on vendor bulk it is a lost boundary', async () => {
-  const tcp = await paused(true, 300);
-  assert.equal(m.Result.unpack(await tcp.answer).corr, 7);
-  assert.equal(tcp.link.stats.resyncs, 0);
-  const bulk = await paused(false, 300);
-  await bulk.answer.catch(() => {});
-  await sleep(50);
-  assert.ok(bulk.link.stats.resyncs >= 1);                         // the stall (probe_frame_gap_ms) lost the boundaries
-  assert.ok(bulk.sent.some((r) => r.op === m.OP.confirm));
+test('C-07: a pause inside a frame is read on, on TCP and on vendor bulk (transports §2\'s gap is the probe reader\'s)', async () => {
+  for (const keeps of [true, false]) {
+    const one = await paused(keeps, 300);
+    assert.equal(m.Result.unpack(await one.answer).corr, 7);
+    assert.equal(one.link.stats.resyncs, 0);
+    assert.ok(!one.sent.some((r) => r.op === m.OP.confirm));
+  }
 });
 
 test('C-07: the TCP transport says it keeps its boundaries', { skip: !haveVirtualBench }, async () => {

@@ -23,7 +23,8 @@ What is there:
   resend after a wait, up to 3 at once after a broken frame on a held serial port (host guide §8), pipelining, pushes
   and events; every answer waited at least core §4.4's floor - argument time + 1000 ms + a
   serial port's transfer time, `Link.waitFloorMs` -; the transports §5 resync on length frames, its confirm 250 ms after the
-  host's last write, none for a pause inside a TCP frame; an unanswered resend fails the transport, `TransportFailed`,
+  host's last write, vendor bulk waiting for quiet up to the longest lease and HID not at all (its reports' first finds
+  the frames again, transports §1), none for a pause inside a frame; an unanswered resend fails the transport, `TransportFailed`,
   and the next request first recovers with a confirm, COBS included; a frame shorter than its header is broken), the host
   (confirm - `limits.transport`, the index this host came in on; later confirms ask for the revision in use; one outside
   core §7.1's bounds, a max_op_ms outside 1..600000 or an fn 0 ops outside core §7.4's form makes the probe

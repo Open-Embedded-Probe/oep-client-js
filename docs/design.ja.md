@@ -44,7 +44,7 @@ docs/           この文書、リリースの手順
 |---|---|---|---|
 | USB CDC、USB-Serial/JTAG、USB-UART bridge | WebSerial | serialport | COBS + CRC |
 | vendor bulk（class 0xFF） | WebUSB | usb（WebUSB と同じ形） | length(u16) message |
-| vendor HID | WebHID | node-hid（任意） | report に詰めた length message |
+| vendor HID | WebHID | - | count と first を持つ report に詰めた length message |
 | TCP（Wi-Fi の probe、ローカルのブローカー、試験の仮想ベンチ） | - | node:net | length(u16) message |
 
 - TCP は Node だけです: ブラウザは TCP の接続を開けず mDNS も送れないので、ページに TCP はありません。TCP の probe は

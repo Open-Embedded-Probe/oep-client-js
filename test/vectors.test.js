@@ -22,6 +22,7 @@ import { FnNotUsable, Locked, NotUsable, Rejected, Unavailable, Unsupported, rej
 import * as reg from '../src/registry.js';
 import { Writer, concat, getU16, getU32 } from '../src/bytes.js';
 import { Host } from '../src/host.js';
+import { HidReportReader, HidReportWriter } from '../src/browser/webhid.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const HERE = join(here, 'vectors');
@@ -36,6 +37,31 @@ test('the copy is the spec\'s (when a sibling oep-spec checkout is there)', { sk
   const names = (/** @type {string} */ dir) => readdirSync(dir).filter((n) => n.endsWith('.json')).sort();
   assert.deepEqual(names(HERE), names(SPEC), 'copy oep-spec tests/vectors/*.json to test/vectors');
   for (const n of names(SPEC)) assert.equal(readFileSync(join(HERE, n), 'utf8'), readFileSync(join(SPEC, n), 'utf8'), n);
+});
+
+// ---- HID reports (transports §1) -----------------------------------------------------------------------------------------
+
+const HID = load('hid_reports.json');
+
+/** @param {Uint8Array} message */
+const lengthFrame = (message) => Uint8Array.from([message.length & 0xff, message.length >> 8, ...message]);
+
+test('HID reports: the frames packed as count, first and the stream\'s bytes', () => {
+  assert.equal(HID.hid_no_frame_start, reg.USB.hid_no_frame_start);
+  for (const c of HID.pack) {
+    const stream = concat(...c.messages_hex.map((/** @type {string} */ h) => lengthFrame(hx(h))));
+    assert.deepEqual(new HidReportWriter(HID.room).pack(stream).map(hex), c.reports_hex, c.name);
+  }
+});
+
+test('HID reports: the messages a reader just opened reads (reports missing, broken, read from the middle)', () => {
+  for (const c of HID.read) {
+    const reader = new HidReportReader();
+    /** @type {Uint8Array[]} */
+    const frames = c.reports_hex.flatMap((/** @type {string} */ h) => reader.read(hx(h)));
+    // a length 0 frame is no message (transports §1: read past)
+    assert.deepEqual(frames.filter((f) => f.length > 2).map((f) => hex(f.subarray(2))), c.messages_hex, c.name);
+  }
 });
 
 // ---- COBS and serial frames (transports §1) --------------------------------------------------------------------------

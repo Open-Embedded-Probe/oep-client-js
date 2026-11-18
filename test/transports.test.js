@@ -1,7 +1,7 @@
 // @ts-check
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { findVendorReports, packHidReports, unpackHidReport, webHidTransport } from '../src/browser/webhid.js';
+import { HidReportReader, HidReportWriter, findVendorReports, webHidTransport } from '../src/browser/webhid.js';
 import { PROJECT_SERIAL_FILTERS, PROJECT_USB_FILTERS, PROJECT_VID_PIDS, findVendorInterface, isProjectDevice, usbCandidate, usbUnitId, vendorTransport } from '../src/usbvendor.js';
 import * as usbvendor from '../src/usbvendor.js';
 import { findSerialProbes } from '../src/node/serial.js';
@@ -12,23 +12,33 @@ import { requestUsbProbe } from '../src/browser/webusb.js';
 import { requestHidProbe } from '../src/browser/webhid.js';
 import { requestSerialPort } from '../src/browser/webserial.js';
 
-test('HID reports: count(u16) + data + zero padding, split at the report room', () => {
-  const data = Uint8Array.from({ length: 10 }, (_, i) => i + 1);
-  const reports = packHidReports(data, 8);   // room 6
-  assert.equal(reports.length, 2);
-  assert.deepEqual([...reports[0]], [6, 0, 1, 2, 3, 4, 5, 6]);
-  assert.deepEqual([...reports[1]], [4, 0, 7, 8, 9, 10, 0, 0]);
-  assert.deepEqual([...unpackHidReport(reports[0])], [1, 2, 3, 4, 5, 6]);
-  assert.deepEqual([...unpackHidReport(new DataView(reports[1].buffer))], [7, 8, 9, 10]);
-  // a count beyond the report is clamped; a report too short carries nothing
-  assert.deepEqual([...unpackHidReport(Uint8Array.from([0xff, 0, 1, 2]))], [1, 2]);
-  assert.equal(unpackHidReport(Uint8Array.from([1])).length, 0);
-  const big = packHidReports(new Uint8Array(300).fill(9), 511);
-  assert.equal(big.length, 1);
-  assert.equal(big[0][0] | (big[0][1] << 8), 300);
-  assert.equal(big[0].length, 511);
-  assert.throws(() => packHidReports(data, 2), RangeError);
+test('HID reports: count(u16), first(u16), data, zero padding; first follows the frames across writes', () => {
+  const w = new HidReportWriter(10);   // room 6
+  // a 5-byte frame (length 3), then a 4-byte one (length 2) in two writes
+  const r1 = w.pack(Uint8Array.from([3, 0, 0xa1, 0xa2, 0xa3, 2, 0]));
+  assert.deepEqual(r1.map((r) => [...r]), [[6, 0, 0, 0, 3, 0, 0xa1, 0xa2, 0xa3, 2], [1, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0]]);
+  const r2 = w.pack(Uint8Array.from([0xb1, 0xb2, 3, 0, 0xc1, 0xc2, 0xc3]));
+  assert.deepEqual(r2.map((r) => [...r]), [[6, 0, 2, 0, 0xb1, 0xb2, 3, 0, 0xc1, 0xc2], [1, 0, 0xff, 0xff, 0xc3, 0, 0, 0, 0, 0]]);
+  const rd = new HidReportReader();
+  assert.deepEqual([...r1, ...r2].flatMap((r) => rd.read(r)).map((f) => [...f]),
+    [[3, 0, 0xa1, 0xa2, 0xa3], [2, 0, 0xb1, 0xb2], [3, 0, 0xc1, 0xc2, 0xc3]]);
+  assert.equal(rd.losses, 0);
+  assert.deepEqual(rd.read(Uint8Array.of(1, 0, 0)), []);   // too short for the header: nothing
+  assert.throws(() => new HidReportWriter(4), RangeError);
 });
+
+test('HID reports: a report lost on the way - the frame it cut dropped, the reading goes on from first', () => {
+  const w = new HidReportWriter(8);   // room 4
+  const reports = w.pack(Uint8Array.from([4, 0, 1, 2, 3, 4, 1, 0, 9, 1, 0, 8]));   // [4,0,1,2] [3,4,1,0] [9,1,0,8]
+  const rd = new HidReportReader();
+  // the second missing: by this reading the next frame starts at 2 of the third, its first says 1
+  assert.deepEqual([reports[0], reports[2]].flatMap((r) => rd.read(r)).map((f) => [...f]), [[1, 0, 8]]);
+  assert.equal(rd.losses, 1);
+  assert.deepEqual(w.pack(Uint8Array.from([1, 0, 7])).flatMap((r) => rd.read(r)).map((f) => [...f]), [[1, 0, 7]]);
+});
+
+/** @param {number} ms */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** @param {number} id @param {number} bytes */
 const report = (id, bytes) => ({ reportId: id, items: [{ reportSize: 8, reportCount: bytes }] });
@@ -44,7 +54,7 @@ test('HID: the vendor usage page collection (nested), its report sizes and ID', 
   assert.equal(findVendorReports(collections.slice(0, 2)), null);
 });
 
-test('HID transport: writes as reports with their ID, input reports unpacked', async () => {
+test('HID transport: writes as reports with their ID and first, whole frames from the input reports', async () => {
   /** @type {[number, Uint8Array][]} */
   const sent = [];
   /** @type {{ fn: ((e: any) => void) | null }} */
@@ -55,7 +65,7 @@ test('HID transport: writes as reports with their ID, input reports unpacked', a
     async open() { this.opened = true; },
     async close() { this.opened = false; },
     /** @param {number} id @param {Uint8Array} data */
-    async sendReport(id, data) { sent.push([id, data]); },
+    async sendReport(id, data) { await sleep(1); sent.push([id, data]); },
     /** @param {string} _t @param {(e: any) => void} l */
     addEventListener(_t, l) { listener.fn = l; },
     /** @param {string} _t @param {(e: any) => void} l */
@@ -64,20 +74,26 @@ test('HID transport: writes as reports with their ID, input reports unpacked', a
   const t = await webHidTransport(device);
   assert.equal(device.opened, true);
   assert.equal(t.framing, 'length');
-  assert.equal(t.maxWrite, 14);
+  assert.equal(t.wholeFrames, true);
+  assert.equal(t.maxWrite, 12);
   /** @type {Uint8Array[]} */
   const got = [];
   await t.start((c) => got.push(c), () => {});
-  await t.write(Uint8Array.from({ length: 20 }, (_, i) => i));
-  assert.equal(sent.length, 2);
-  assert.equal(sent[0][0], 7);
-  assert.equal(sent[0][1].length, 16);
-  assert.deepEqual([...sent[1][1]], [6, 0, 14, 15, 16, 17, 18, 19, 0, 0, 0, 0, 0, 0, 0, 0]);
+  // two writes at once go out in order, the second's first after the first's frame
+  await Promise.all([t.write(Uint8Array.from([12, 0, ...Array(12).fill(1)])), t.write(Uint8Array.from([1, 0, 0x55]))]);
+  assert.equal(sent.length, 3);
+  assert.ok(sent.every(([id, r]) => id === 7 && r.length === 16));
+  assert.deepEqual([...sent[1][1].subarray(0, 8)], [2, 0, 0xff, 0xff, 1, 1, 0, 0]);
+  assert.deepEqual([...sent[2][1].subarray(0, 7)], [3, 0, 0, 0, 1, 0, 0x55]);
   const fire = /** @type {(e: any) => void} */ (listener.fn);
-  fire({ reportId: 7, data: new DataView(Uint8Array.from([3, 0, 0xaa, 0xbb, 0xcc, 0, 0]).buffer) });
-  fire({ reportId: 9, data: new DataView(Uint8Array.from([1, 0, 0x11]).buffer) });   // another report: not ours
-  fire({ reportId: 7, data: new DataView(Uint8Array.from([0, 0, 0, 0]).buffer) });   // empty
-  assert.deepEqual(got.map((g) => [...g]), [[0xaa, 0xbb, 0xcc]]);
+  /** @param {number} id @param {number[]} bytes */
+  const input = (id, bytes) => fire({ reportId: id, data: new DataView(Uint8Array.from(bytes).buffer) });
+  input(7, [4, 0, 0xff, 0xff, 9, 9, 9, 9]);         // just opened: no first, read past
+  input(7, [5, 0, 2, 0, 0xee, 0xee, 3, 0, 0xaa, 0, 0]);   // the tail of a frame begun before, then one starting at 2
+  input(9, [3, 0, 0, 0, 1, 0, 0x11]);               // another report: not ours
+  input(7, [0, 0, 0xff, 0xff]);                     // empty
+  input(7, [2, 0, 0xff, 0xff, 0xbb, 0xcc]);
+  assert.deepEqual(got.map((g) => [...g]), [[3, 0, 0xaa, 0xbb, 0xcc]]);
   await t.close();
   assert.equal(listener.fn, null);
   assert.equal(device.opened, false);

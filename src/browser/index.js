@@ -10,7 +10,7 @@ import { requestHidProbe, webHidTransport } from './webhid.js';
 export { webSerialTransport, requestSerialPort, getSerialPorts } from './webserial.js';
 export { webUsbTransport, requestUsbProbe, getUsbProbes, usbUnitId, isProjectDevice, usbCandidate } from './webusb.js';
 export { PROJECT_VID, PROJECT_PID, PROJECT_USB_FILTERS, PROJECT_SERIAL_FILTERS } from '../usbvendor.js';
-export { webHidTransport, requestHidProbe, packHidReports, unpackHidReport, findVendorReports } from './webhid.js';
+export { webHidTransport, requestHidProbe, findVendorReports, FrameTrack, HidReportReader, HidReportWriter } from './webhid.js';
 export { requestDfuDevice, getDfuDevices, updateFirmware } from './dfu.js';
 export { requestRp2Boot } from './rp2.js';
 export { rp2Write, rp2ResetToBoot, rp2ResetInterface, uf2Sectors, Picoboot, PicobootError, RP2_BOOT_VID, RP2_BOOT_PID } from '../picoboot.js';

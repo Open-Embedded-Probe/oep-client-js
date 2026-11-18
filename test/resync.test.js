@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import * as m from '../src/message.js';
 import { Writer } from '../src/bytes.js';
 import { FramingLost, TransportFailed } from '../src/errors.js';
-import { Link } from '../src/link.js';
+import { Link, PUSHES_END_MS, RESYNC_NOISY_MS } from '../src/link.js';
 import { Host, MAX_REVISION, MIN_REVISION } from '../src/host.js';
 
 /** confirm's answer: magic revision max_frame window max_inflight boot_id (core §7.1) */
@@ -190,6 +190,7 @@ test('no confirm back in 3 tries: the requests waiting fail with FramingLost', a
 test('pushes that never stop make the link open the transport again; no unsubscribe or end goes out blind (transports §5)', async () => {
   const { t, sent } = scripted();
   const link = await linkOn(t);
+  link.pushesEndMs = 300;                                        // the longest lease, shortened
   const hst = new Host(link);
   hst.session = 0xabcd;
   hst.revision = 1;
@@ -215,6 +216,32 @@ test('pushes that never stop make the link open the transport again; no unsubscr
   assert.deepEqual(ops(sent.slice(reopenedAt)), [m.OP.confirm, 0x01]);   // confirmed, then the request sent again
   assert.ok(!sent.some((r) => r.op === m.OP_UNSUBSCRIBE || (r.fn === 0 && r.op === m.OP.end)));
   assert.deepEqual([[...hst.subscriptions], hst.session], [[5], 0xabcd]);   // the session stays the host's
+});
+
+test('vendor bulk waits for quiet as long as a lease lasts, TCP 1 s (transports §5: pushes stop with their lock)', async () => {
+  const { t } = scripted();
+  const link = await linkOn(t);
+  assert.equal(link.quietLimitMs(), PUSHES_END_MS);
+  assert.equal(PUSHES_END_MS, 60200);
+  /** @type {any} */ (t).keepsBoundaries = true;
+  assert.equal(link.quietLimitMs(), RESYNC_NOISY_MS);
+});
+
+test('a resync on whole frames (HID) reads nothing past: pushes that keep coming do not hold its confirm (transports §5)', async () => {
+  const { t, sent } = scripted();
+  /** @type {any} */ (t).wholeFrames = true;
+  const link = await linkOn(t);
+  const push = frame(new Writer().u8(m.ROLE_DATA).u16(5).u16(0).u64(0).u16(8).raw(new Uint8Array(8).fill(0x78)).done());
+  const noise = setInterval(() => t.inject(push), 5);
+  try {
+    await sleep(30);                                             // the pushes are coming
+    const t0 = performance.now();
+    await link.startResync();
+    assert.ok(performance.now() - t0 < 1000, `${performance.now() - t0} ms`);
+  } finally {
+    clearInterval(noise);
+  }
+  assert.deepEqual(ops(sent), [m.OP.confirm]);
 });
 
 test('while probing (transports §3) a stray result does not resync: nothing but the confirm goes out', async () => {
