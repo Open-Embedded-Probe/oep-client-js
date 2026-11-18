@@ -162,6 +162,13 @@ test('stream drops pushes of another generation (oep-if-capture §3.4)', async (
   assert.equal(c.unpackPush(push(7, 3, 9n, 'xyz')).generation, null);
 });
 
+test('a data frame\'s padding (core §10.2: TLV 0x7E, any length, repeated) is read past', () => {
+  const pad = m.tlv(reg.TAG_DATA_PADDING, new Uint8Array(13).fill(0xa5));
+  const f = Uint8Array.from([...push(7, 3, 9n, 'xyz'), ...pad, ...m.tlv(0x01, [12, 0, 0, 0]), ...pad, ...m.tlv(reg.TAG_DATA_PADDING, [])]);
+  const p = c.unpackPush(f);
+  assert.deepEqual([p.fn, p.seq, p.position, text(p.data), p.generation], [7, 3, 9n, 'xyz', 12]);
+});
+
 test('read spans frames without the header leaking into the data; the generation goes in every request', async () => {
   const stream = new Uint8Array(3072).map((_, i) => i & 0xff);
   /** @param {Uint8Array} p */

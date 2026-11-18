@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) A data frame's padding (oep-spec core §10.2: TLV 0x7E, any length, repeatable) is read past; tested on capture's data frames, the only ones this client reads.
+- (JA) データのフレームの詰め物（oep-spec core §10.2: TLV 0x7E、任意の長さ、繰り返してよい）は読み飛ばす。この client が読むデータのフレーム（capture）で確かめた。
+
 - (EN) HID reports carry first(u16) after count (oep-spec transports §1, §2, §5): `HidReportWriter` writes where the first frame starting in each report begins (0xFFFF when none), `HidReportReader` reads by it - a report whose first disagrees with its own reading had one missing before it, so the frame begun is dropped and the reading goes on from first; one just opened or broken (a count over the room, a first not below count) reads from the next report with a first - and the WebHID transport hands the link whole frames only (`wholeFrames`), so its resync confirms at once without waiting for quiet. `packHidReports` / `unpackHidReport` are gone. A pause inside a frame is read on, on every transport (transports §2's gap is the probe reader's), and a vendor bulk resync waits for quiet up to the longest lease (`PUSHES_END_MS`, lease_max_ms + probe_frame_gap_ms: pushes stop only with their session's lock), not 1 s. The registry is oep-spec's current one, and the spec's vectors hid_reports.json are checked.
 - (JA) HID の report は count の後ろに first(u16) を持つ（oep-spec transports §1、§2、§5）。`HidReportWriter` は各 report で最初に始まるフレームの位置（無ければ 0xFFFF）を書き、`HidReportReader` はそれで読む ― first が自分の読みと違う report の前には欠けた report があるので、読みかけのフレームを捨てて first から読み直す。開いた直後と壊れた列（入る量より大きい count、count 以上の first）は first を持つ次の report から読む。WebHID の経路は link に丸ごとのフレームだけを渡し（`wholeFrames`）、立て直しは静かになるのを待たずにすぐ confirm する。`packHidReports` / `unpackHidReport` は無くなった。フレームの途中の休みはどの経路でも読み続け（transports §2 の途切れはプローブが読む側の規則）、vendor bulk の立て直しは静かになるのを 1 秒ではなく lease の最長まで待つ（`PUSHES_END_MS`、lease_max_ms + probe_frame_gap_ms: 通知はセッションのロックと一緒にしか止まらない）。registry は oep-spec の今のもので、spec のベクタ hid_reports.json で確かめる。
 
