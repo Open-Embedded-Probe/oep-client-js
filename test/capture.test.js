@@ -731,6 +731,24 @@ async function planned(hst, lc, n) {
   return Array.from({ length: n }, (_, r) => r);
 }
 
+test('§3.8: the input hysteresis off unless asked, on when asked; the glitch filter at a width the probe has, critical', opts, () => withBench(async ({ hst, lc }) => {
+  await planned(hst, lc, 2);
+  const plain = await lc.configure({ rate: 1_000_000, samples: 100 });
+  assert.deepEqual([plain.hysteresis, plain.glitchNs], [false, null]);   // unsent: off where off is a state
+  const on = await lc.configure({ rate: 1_000_000, samples: 100, inputHysteresis: true, glitchFilterNs: 25 });
+  assert.deepEqual([on.hysteresis, on.glitchNs], [true, 25]);
+  const off = await lc.configure({ rate: 1_000_000, samples: 100, inputHysteresis: false, glitchFilterNs: 0 });
+  assert.deepEqual([off.hysteresis, off.glitchNs], [false, 0]);
+  await assert.rejects(lc.configure({ rate: 1_000_000, samples: 100, glitchFilterNs: 1000 }),
+    (e) => e instanceof Unsupported && e.tag === (c.GLITCH_FILTER | 0x80));
+  await assert.rejects(lc.configure({ rate: 1_000_000, samples: 100, glitchFilterNs: -1 }), RangeError);
+}));
+
+test('§3.8 is logic\'s: an analog track refuses the glitch filter and the hysteresis before sending', async () => {
+  const ac = new c.AnalogCapture(/** @type {any} */ ({}), 1, c.AnalogCapture.NAME);
+  await assert.rejects(ac.configure({ rate: 1000, samples: 10, inputHysteresis: true }), RangeError);
+});
+
 test('format 1 one-shot: raw and every reduction, a partial last block, the size fixed by the setting', opts, () => withBench(async ({ hst, lc }) => {
   const roles = await planned(hst, lc, 12);
   /** @type {Map<number, [number, number]>} */

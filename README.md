@@ -134,7 +134,8 @@ What is there:
   max_frame carries) / 4 words (oep-if-debug §4.5); a probe with block ops that declares no max_length throws
   `riscv.NoMaxLength`. A MEM-AP on a probe without read_block / write_block is driven with raw transfer lists.
 - the fixtures: gpio's set is [channel, mode] pairs (no strength selection; the output strength is the probe's own),
-  i2c-target has one form (`configure(address)`, every write with data one frame, reads from `preloadTx` slots or 0xFF,
+  i2c-target has one form (`configure(address, { nackFrom })` - nackFrom: the n-th data byte of each write and after
+  NACKed, where describe declares it -, every write with data one frame, reads from `preloadTx` slots or 0xFF,
   `status()` -> `{ state, queued, rxFrames, txSlots, errors }`, `internalPullups()`; stretch an optional op), spi-target
   has no reset, uart's `status()` is `{ baud, format, configured }` (baud 0: not configured).
 - the settings (oep-spec core §13; settings.js): fn 0's get / set / unset / save / state / network. Each owner - the core
@@ -153,6 +154,7 @@ What is there:
   received); data format 1, the logic blocks (`dataFormat`, `carriage` role -> [sample / any_high / any_low /
   change_latch, D] for the reduced channels, `roles`, `blockMax`; a segment's size follows from its samples, read as
   `blocks()` or `columns()`, captureblocks.js) and 4, the test counter; `triggerOpts` (arm, rearm, when, hysteresis),
+  §3.8's `glitchFilterNs` and `inputHysteresis` (critical; off unless asked; in use: `Config.glitchNs` / `.hysteresis`),
   trigger records (`triggers()`), stream_buffer over data_rate (`Config.tolerableDelayS()`), judge_latency_ns; streaming frames' segment
   info (`Received.segments`); `read()` throws `ReadGap` for bytes the probe no longer has; status's named extensions
   (`CaptureDrops.of(status)`, the Arduino firmware's drop diagnostics). The capture-group binds tracks started at once,

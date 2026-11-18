@@ -48,6 +48,8 @@ const C = CAP.tlv.configure;
 export const MODE = C.mode, RATE = C.rate, SAMPLES = C.samples, SEGMENTS = C.segments, TRIGGER = C.trigger;
 export const PRETRIGGER = C.pretrigger, TRIGGER_OPTS = C.trigger_opts, FORMAT = C.format, CARRIAGE = C.carriage;
 export const BLOCK_MAX = C.block_max;
+/** §3.8, logic: the glitch filter (group, ns) and the input hysteresis (on) - sent critical */
+export const GLITCH_FILTER = C.glitch_filter, INPUT_HYSTERESIS = C.input_hysteresis;
 /** analog only: the input range per channel */
 export const FRONTEND = ANA.tlv.configure.frontend;
 const A = ANA.tlv.configure_answer;
@@ -55,6 +57,8 @@ export const ACTUAL_RATE = A.actual_rate, LAYOUT = A.layout, ACTUAL_SAMPLES = A.
 export const ACTUAL_SEGMENTS = A.actual_segments, SCALE = A.scale, SKEW = A.skew, FRONTEND_USED = A.frontend_used;
 export const REFERENCE = A.reference, ANSWER_FORMAT = A.format, ANSWER_BLOCK = A.block, STREAM_BUFFER = A.stream_buffer;
 export const JUDGE_LATENCY = A.judge_latency_ns, DATA_RATE = A.data_rate;
+/** §3.8, logic answer: the glitch filter (group, ns) and the input hysteresis (on) in use */
+export const GLITCH_USED = CAP.tlv.configure_answer.glitch_used, HYSTERESIS_USED = CAP.tlv.configure_answer.hysteresis_used;
 export const DATA_FORMAT = CAP.enum.data_format;
 export const LOGIC_CARRIAGE = CAP.enum.logic_carriage;
 export const FACTORY = ANA.tlv.calibration_answer.factory, VREFINT = ANA.tlv.calibration_answer.vrefint;
@@ -180,6 +184,10 @@ export class Config {
     /** @type {number[]} format 1: the raw channels' roles (as asked) */ this.rawRoles = [];
     /** @type {Map<number, [number, number]>} format 1: reduced role -> [carriage, D] (as asked) */ this.reduced = new Map();
     /** @type {number | null} streaming: the data's bytes a second (§3.3 data_rate; null: not said) */ this.dataRate = null;
+    /** @type {number | null} logic: the glitch filter in use, ns (§3.8 glitch_used, group 0; null: not said) */
+    this.glitchNs = null;
+    /** @type {boolean | null} logic: the input hysteresis in use (§3.8 hysteresis_used; null: not said) */
+    this.hysteresis = null;
   }
 
   /** The actual rate in Hz (a float; rateNum / rateDen exactly). */
@@ -233,6 +241,8 @@ export function parseConfig(payload, analog) {
     else if (tag === STREAM_BUFFER && v.length === 4) c.streamBuffer = getU32(v);
     else if (tag === JUDGE_LATENCY && v.length === 4) c.judgeLatencyNs = getU32(v);
     else if (tag === DATA_RATE && v.length === 4) c.dataRate = getU32(v);
+    else if (tag === GLITCH_USED && !analog && v.length === 5) { if (v[0] === 0 && c.glitchNs === null) c.glitchNs = getU32(v, 1); }
+    else if (tag === HYSTERESIS_USED && !analog && v.length === 1 && c.hysteresis === null) c.hysteresis = v[0] !== 0;
     else if (tag === ACTUAL_SAMPLES && v.length === 4) c.samples = getU32(v);
     else if (tag === ACTUAL_SEGMENTS && v.length === 4) c.segments = getU32(v);
     else if (tag === SCALE && analog && v.length === 9) {
@@ -529,6 +539,10 @@ export class CaptureDrops {
  *   named raw)
  * @property {number[]} [roles]             format 1: the plan's roles (to name the raw channels)
  * @property {number} [blockMax]            format 1: the longest block
+ * @property {number} [glitchFilterNs]      logic: pulses shorter than this ignored on every channel (§3.8, group 0; 0
+ *   none; the probe takes its nearest step - Config.glitchNs). Sent critical: a probe without it refuses
+ * @property {boolean} [inputHysteresis]    logic: the input stage's hysteresis on or off (§3.8; not sent: off where the
+ *   probe can turn it off - Config.hysteresis). Sent critical
  */
 
 /** Basic logic capture. Channels are the plan's roles 0..C-1. */
@@ -568,7 +582,7 @@ export class LogicCapture extends Interface {
    * .segments: the probe rounds samples down.
    * @param {ConfigureOptions} opts */
   async configure({ rate, mode = ONE_SHOT, samples, segments, trigger, pretrigger, query = false, frontends, triggerOpts,
-    dataFormat = 0, carriage, roles, blockMax }) {
+    dataFormat = 0, carriage, roles, blockMax, glitchFilterNs, inputHysteresis }) {
     // §3.3's contract, before anything is sent
     for (const [n, v] of /** @type {[string, number | undefined][]} */ ([['rate', rate], ['samples', samples], ['segments', segments]])) {
       if (v !== undefined && !(v >= 1)) throw new RangeError(`capture configure: ${n} ${v} - 1 or more (oep-if-capture §3.3)`);
@@ -582,6 +596,12 @@ export class LogicCapture extends Interface {
     if (pretrigger !== undefined && (trigger === undefined || trigger[0] === IMMEDIATE)) {
       if (pretrigger) throw new RangeError('capture configure: a pretrigger needs a trigger (oep-if-capture §3.3)');
       pretrigger = undefined;                                       // 0 without a trigger: simply not sent
+    }
+    if ((glitchFilterNs !== undefined || inputHysteresis !== undefined) && this.analog) {
+      throw new RangeError('capture configure: the glitch filter and the input hysteresis are logic\'s (oep-if-capture §3.8)');
+    }
+    if (glitchFilterNs !== undefined && !(Number.isInteger(glitchFilterNs) && glitchFilterNs >= 0 && glitchFilterNs <= 0xffffffff)) {
+      throw new RangeError(`capture configure: glitch filter ${glitchFilterNs} ns - a u32 (oep-if-capture §3.8)`);
     }
     if (dataFormat === DATA_FORMAT.logic_blocks && roles === undefined) {
       throw new RangeError('capture configure: format 1 needs the plan\'s roles (to name the raw channels)');
@@ -607,6 +627,9 @@ export class LogicCapture extends Interface {
       const { arm = 1, rearm = 0, when = 0, hysteresis = 0 } = triggerOpts;
       put(TRIGGER_OPTS, new Writer().u8(arm).u8(rearm).u8(when).u32(hysteresis).done(), true);
     }
+    // §3.8: they change what is taken - critical, a probe without them refuses
+    if (glitchFilterNs !== undefined) put(GLITCH_FILTER, new Writer().u8(0).u32(glitchFilterNs).done(), true);
+    if (inputHysteresis !== undefined) put(INPUT_HYSTERESIS, Uint8Array.of(inputHysteresis ? 1 : 0), true);
     // query is its own operation: the lock is decided per operation, before the payload is looked at
     const op = query ? LogicCapture.QUERY_OP : LogicCapture.CONFIGURE;
     const c = parseConfig((await this.call(op, w.done(), { locked: !query })).payload, this.analog);

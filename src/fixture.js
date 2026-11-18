@@ -208,10 +208,11 @@ export class FixtureUartIO extends StreamIO {
 /** @typedef {TargetDeclarations & { csSetupNs: number }} SpiTargetDeclarations
  * csSetupNs (tag 0x43, u32; fixture §4): CS active to the first SCK edge, in ns, for MISO's first bit to be sure; 0 when
  * not declared. */
-/** @typedef {TargetDeclarations & { maxStretchUs: number | null, internalPullups: boolean }} I2cTargetDeclarations
+/** @typedef {TargetDeclarations & { maxStretchUs: number | null, internalPullups: boolean, nackFrom: boolean }} I2cTargetDeclarations
  * maxStretchUs (tag 0x41, u32): the largest stretchUs stretch() accepts; null when not declared (a probe declares it
- * exactly when its ops offer stretch). internalPullups (features bit2; fixture §3): the probe enables pull-ups of its
- * own on SDA / SCL while configured; without them the bus needs its own. */
+ * exactly when its ops offer stretch). internalPullups (features bit0; fixture §3): the probe enables pull-ups of its
+ * own on SDA / SCL while configured; without them the bus needs its own. nackFrom (features bit1): configure takes
+ * nackFrom. */
 
 /** The describe of fixture target `iface` decoded (cached on the host like every describe).
  * @param {Interface} iface @returns {Promise<{ d: import('./catalog.js').Description, own: Map<number, Uint8Array> }>} */
@@ -256,18 +257,21 @@ export class I2cTarget extends Interface {
   static TAG_QUEUE_DEPTH = I2C.tlv.describe.queue_depth;
   static TAG_MAX_STRETCH_US = I2C.tlv.describe.max_stretch_us;
   static FEATURE_INTERNAL_PULLUPS = I2C.enum.features.internal_pullups;
+  static FEATURE_NACK_FROM = I2C.enum.features.nack_from;
+  static TAG_NACK_FROM = I2C.tlv.configure.nack_from;
 
   /** What the probe declares for this target (describe): maxLength, maxClockHz, features, queueDepth, maxStretchUs,
-   * internalPullups. @returns {Promise<I2cTargetDeclarations>} */
+   * internalPullups, nackFrom (configure takes nackFrom). @returns {Promise<I2cTargetDeclarations>} */
   async declarations() {
     const { d, own } = await targetDescribe(this);
     const features = d.features ?? 0;
     return { maxLength: d.maxLength, maxClockHz: d.maxClockHz, features,
       queueDepth: ownU8(own, I2cTarget.TAG_QUEUE_DEPTH), maxStretchUs: ownU32(own, I2cTarget.TAG_MAX_STRETCH_US),
-      internalPullups: (features & I2cTarget.FEATURE_INTERNAL_PULLUPS) !== 0 };
+      internalPullups: (features & I2cTarget.FEATURE_INTERNAL_PULLUPS) !== 0,
+      nackFrom: (features & I2cTarget.FEATURE_NACK_FROM) !== 0 };
   }
 
-  /** Whether the probe enables pull-ups of its own on SDA / SCL while configured (describe features bit2, fixture §3);
+  /** Whether the probe enables pull-ups of its own on SDA / SCL while configured (describe features bit0, fixture §3);
    * without them the bus needs its own. */
   async internalPullups() { return (await this.declarations()).internalPullups; }
 
@@ -284,12 +288,19 @@ export class I2cTarget extends Interface {
 
   /** Answer at `address` (7 bits), the target made anew (the queue, the slots and the counts emptied; stretch kept).
    * 0x00-0x07 and 0x78-0x7F are the I2C specification's reserved addresses, which a probe refuses unsupported (fixture
-   * §3) - refused here (RangeError) before anything is sent. @param {number} address */
-  async configure(address) {
+   * §3) - refused here (RangeError) before anything is sent. `nackFrom` n (1 the first, a u16; fixture §3, describe
+   * features bit1): from the n-th data byte of each write on, every byte NACKed - the bytes before and the address
+   * ACKed, the NACKed ones still in the frame, reads untouched; sent critical (a probe without it refuses unsupported).
+   * 0 or not given: every byte ACKed (not sent).
+   * @param {number} address @param {{ nackFrom?: number }} [opts] */
+  async configure(address, { nackFrom = 0 } = {}) {
     if (I2cTarget.RESERVED_ADDRESSES.some(([lo, hi]) => address >= lo && address <= hi)) {
       throw new RangeError(`I2C address 0x${address.toString(16).padStart(2, '0')} is reserved (0x00-0x07, 0x78-0x7F; fixture §3)`);
     }
-    await this.call(I2cTarget.CONFIGURE, Uint8Array.of(address));
+    if (!(Number.isInteger(nackFrom) && nackFrom >= 0 && nackFrom <= 0xffff)) throw new RangeError(`nackFrom ${nackFrom}: a u16 (fixture §3)`);
+    const body = nackFrom ? concat(Uint8Array.of(address), m.tlv(I2cTarget.TAG_NACK_FROM, new Writer().u16(nackFrom).done(), true))
+      : Uint8Array.of(address);
+    await this.call(I2cTarget.CONFIGURE, body);
   }
 
   /** -> frames still queued after this one, the oldest frame (none: empty) and ns: when the probe received it (its

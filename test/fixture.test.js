@@ -74,6 +74,9 @@ test('i2c-target request and answer shapes', async () => {
   const t = await I2cTarget.open(hst);
   await t.configure(0x42);                                     // one form: the address alone (fixture §3)
   assert.deepEqual(log.at(-1)?.[2], Uint8Array.of(0x42));
+  await t.configure(0x42, { nackFrom: 3 });                    // nack_from: TLV 0x01 u16, critical (fixture §3)
+  assert.deepEqual(log.at(-1)?.[2], Uint8Array.of(0x42, 0x81, 2, 0, 3, 0));
+  await assert.rejects(t.configure(0x42, { nackFrom: 0x10000 }), RangeError);
   assert.equal(await t.preloadTx(Uint8Array.of(0x11, 0x22)), undefined);   // the answer is empty
   assert.deepEqual(log.at(-1)?.[2], Uint8Array.of(2, 0, 0x11, 0x22));
   const rx = await t.readRx();
@@ -99,12 +102,14 @@ test('i2c-target and spi-target declarations from describe', async () => {
     tlv(I2cTarget.TAG_MAX_STRETCH_US, new Writer().u32(100_000).done())]);
   hst.describes.set(SPI, [tlv(COMMON.max_length, new Writer().u16(64).done()), tlv(SpiTarget.TAG_QUEUE_DEPTH, Uint8Array.of(4))]);
   const t = await I2cTarget.open(hst);
-  assert.deepEqual(await t.declarations(), { maxLength: 128, maxClockHz: 1_000_000, features: PULLUPS, queueDepth: 8, maxStretchUs: 100_000, internalPullups: true });
+  assert.deepEqual(await t.declarations(), { maxLength: 128, maxClockHz: 1_000_000, features: PULLUPS, queueDepth: 8, maxStretchUs: 100_000, internalPullups: true, nackFrom: false });
   assert.equal(await t.internalPullups(), true);                 // features internal_pullups (fixture §3)
   const s = await SpiTarget.open(hst);
   assert.deepEqual(await s.declarations(), { maxLength: 64, maxClockHz: null, features: 0, queueDepth: 4, csSetupNs: 0 });   // cs_setup_ns not declared: 0
   hst.describes.set(I2C, [tlv(COMMON.features, new Writer().u32(0).done())]);
   assert.deepEqual([(await t.declarations()).maxStretchUs, await t.internalPullups()], [null, false]);
+  hst.describes.set(I2C, [tlv(COMMON.features, new Writer().u32(I2cTarget.FEATURE_NACK_FROM).done())]);
+  assert.deepEqual([(await t.declarations()).nackFrom, await t.internalPullups()], [true, false]);   // features bit1
 });
 
 test('spi-target request and answer shapes', async () => {
@@ -187,6 +192,30 @@ test('gpio set is a list in order, only planned channels', { skip: !haveVirtualB
   } finally {
     await hst.link.close();
     bench.stop();
+  }
+});
+
+test('i2c-target nack_from: the P4 declares and takes it; a probe without it refuses the critical TLV (fixture §3)', { skip: !haveVirtualBench }, async () => {
+  for (const [args, declared, sda, scl] of /** @type {[string[], boolean, number, number][]} */ ([[[], true, 20, 21], [['--profile', 'esp32-v003'], false, 4, 5]])) {
+    const bench = await startVirtualBench(args);
+    const hst = await openTcp({ port: bench.port });
+    try {
+      await hst.open(5000);
+      const t = await I2cTarget.open(hst);
+      await planApply(hst, t.assignments(sda, scl));
+      assert.equal((await t.declarations()).nackFrom, declared);
+      if (declared) {
+        await t.configure(0x42, { nackFrom: 3 });
+        await t.configure(0x42);                               // again without: every byte ACKed
+      } else {
+        await assert.rejects(t.configure(0x42, { nackFrom: 2 }), (e) => e instanceof Unsupported && e.tag === (I2cTarget.TAG_NACK_FROM | 0x80));
+        await t.configure(0x42);
+      }
+      await hst.end();
+    } finally {
+      await hst.link.close();
+      bench.stop();
+    }
   }
 });
 

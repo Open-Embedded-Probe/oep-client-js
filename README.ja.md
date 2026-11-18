@@ -120,7 +120,8 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   まで（oep-if-debug §4.5）。block op を持つのに max_length を宣言しない probe は `riscv.NoMaxLength`。read_block / write_block の
   無い probe の MEM-AP は、生の transfer の並びで動かす
 - fixture: gpio の set は [channel, mode] の組（強さの選択は無く、出力の強さは probe が決める）。i2c-target は 1 つの形
-  （`configure(address)`、データのある書き込み 1 回が 1 フレーム、読み出しは `preloadTx` の置き場か 0xFF、`status()` は
+  （`configure(address, { nackFrom })`。nackFrom は書き込みごとに n 番目のデータの byte から後に NACK を返す、describe が宣言するとき。
+  データのある書き込み 1 回が 1 フレーム、読み出しは `preloadTx` の置き場か 0xFF、`status()` は
   `{ state, queued, rxFrames, txSlots, errors }`、`internalPullups()`。stretch は任意の op）。spi-target に reset は無い。uart の
   `status()` は `{ baud, format, configured }`（baud 0 は設定前）
 - 設定（oep-spec core §13、settings.js）: fn 0 の get / set / unset / save / state / network。持ち主（core の fn 0 か
@@ -136,7 +137,8 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 - キャプチャ: configure の TLV は core §2.3 に従う（扱わない値は受け取ったままの tag で `Unsupported`）。データ形式 1 のロジック
   ブロック（`dataFormat`、`carriage` は縮約するチャネルの role → [sample / any_high / any_low / change_latch, D]、`roles`、
   `blockMax`。区画の長さはサンプル数で決まり、`blocks()` か `columns()` で読む、captureblocks.js）と 4 の試験用カウンタ。
-  `triggerOpts`（arm、rearm、when、hysteresis）、トリガの記録（`triggers()`）、stream_buffer と data_rate
+  `triggerOpts`（arm、rearm、when、hysteresis）、§3.8 の `glitchFilterNs` と `inputHysteresis`（critical。求めなければ切り。
+  使った値は `Config.glitchNs` / `.hysteresis`）、トリガの記録（`triggers()`）、stream_buffer と data_rate
   （`Config.tolerableDelayS()`）、judge_latency_ns。ストリームのフレームの区画の情報（`Received.segments`）。probe がもう持たない
   バイトの `read()` は `ReadGap`。status の名前つきの拡張（`CaptureDrops.of(status)`、Arduino の firmware の落としの診断）。
   capture-group は即時に一緒に始めるトラックを束ねるか、`Stage` と `Cond` の `TriggerSource` で束ねる（§4.4。`triggerCaps()`

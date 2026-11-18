@@ -5,4 +5,4 @@ requires-python = ">=3.12"
 dependencies = ["oep-client-python"]
 
 [tool.uv.sources]
-oep-client-python = { git = "https://github.com/Open-Embedded-Probe/oep-client-python", rev = "71c623ae78ab5e0adca91cf8d9bcf1b631da5270" }
+oep-client-python = { git = "https://github.com/Open-Embedded-Probe/oep-client-python", rev = "16c6e186e6ebbdd7bdadf814a601c22b7e61a1da" }

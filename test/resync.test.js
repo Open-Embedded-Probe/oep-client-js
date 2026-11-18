@@ -199,6 +199,10 @@ test('pushes that never stop make the link open the transport again; no unsubscr
   let noisy = true, reopenedAt = -1;
   /** @type {any} */ (t).reopen = async () => { noisy = false; reopenedAt = sent.length; };   // a fresh connection: quiet
   const noise = setInterval(() => { if (noisy) t.inject(push); }, 5);
+  // pushes that never stop: while noisy, the last byte came just now - a busy test runner stalling the interval past
+  // the 50 ms of quiet does not make the input quiet (as the Python test's stream, noisy at every read)
+  let rx = link.lastRx;
+  Object.defineProperty(link, 'lastRx', { get: () => (noisy ? performance.now() : rx), set: (v) => { rx = v; } });
   let first = true;
   const respond = t.respond;
   t.respond = (req) => {

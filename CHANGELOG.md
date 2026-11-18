@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Capture §3.8 (oep-spec 4ab3327, 31a77ec): configure's `glitchFilterNs` (group 0, every logic channel) and `inputHysteresis`, sent critical, the answer's glitch_used / hysteresis_used in `Config.glitchNs` / `Config.hysteresis` (not sent: the hysteresis is off where the probe can turn it off - it hides short real pulses on slow edges). Fixture §3 (oep-spec 1b5d056): `I2cTarget.configure(address, { nackFrom })` NACKs the n-th data byte of each write and every one after (TLV nack_from, critical), `declarations().nackFrom` from features bit1. The tests' virtual bench is oep-client-python 16c6e18 (0.0.56 and after: HID's first, the P4's hysteresis, glitch filter and nack_from).
+- (JA) capture §3.8（oep-spec 4ab3327、31a77ec）: configure の `glitchFilterNs`（group 0、ロジックの全チャネル）と `inputHysteresis` を critical で送り、応答の glitch_used / hysteresis_used を `Config.glitchNs` / `Config.hysteresis` に読む（送らなければ、切れる probe ではヒステリシスは切り: 遅い縁の短い本物のパルスを隠すため）。fixture §3（oep-spec 1b5d056）: `I2cTarget.configure(address, { nackFrom })` は書き込みごとに n 番目のデータの byte から後に NACK を返す（TLV nack_from、critical）。`declarations().nackFrom` は features の bit1。試験の仮想ベンチは oep-client-python 16c6e18（0.0.56 の後: HID の first、P4 のヒステリシス・グリッチフィルタ・nack_from）。
+
 - (EN) A data frame's padding (oep-spec core §10.2: TLV 0x7E, any length, repeatable) is read past; tested on capture's data frames, the only ones this client reads.
 - (JA) データのフレームの詰め物（oep-spec core §10.2: TLV 0x7E、任意の長さ、繰り返してよい）は読み飛ばす。この client が読むデータのフレーム（capture）で確かめた。
 
