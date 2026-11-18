@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The settings file carries the memo area (oep-spec 526d273, settings file §2.4, §3, §4): `Settings.export()` / `exportAll()` put every memo object in `memo` (UTF-8 data as text, other data as {"bytes": hex}; a torn one or one whose name is not UTF-8 left out and returned), `planImport` plans the memo objects to delete and then to write (size or crc differing; longer than max_object, or a probe without a memo area: unresolved ["memo", name]), `applyImport` does them after the values; a file without `memo` leaves the memo area alone. `memoFile`, `memoData`, `MEMO`. The spec's vectors copied. The page takes one backup file for the settings and the memo, and its restore shows the memo records written and deleted.
+- (JA) 設定のファイルがメモ欄を運ぶ（oep-spec 526d273、設定のファイル §2.4、§3、§4）: `Settings.export()` / `exportAll()` はメモ欄の全オブジェクトを `memo` に入れ（UTF-8 のデータは文字列、ほかは {"bytes": 16 進}。壊れたものと名前が UTF-8 でないものは入れずに返す）、`planImport` は消すメモ、次に書くメモ（size か crc が違うもの。max_object より長いものとメモ欄の無い probe では引けない ["memo", 名前]）を決め、`applyImport` は値の後にそれを行う。`memo` の無いファイルはメモ欄に触らない。`memoFile`、`memoData`、`MEMO`。仕様のベクタを写した。画面は設定とメモを1つの控えのファイルにし、戻すときに書く・消すメモの記録を見せる。
+
 - (EN) The page's Japanese no longer says 口 (port): a wiring is named by its connection name (`<接続名>` in the addresses and the broker line), and the connect screen speaks of ways to connect (つなぎ方).
 - (JA) 画面の日本語から「口」をなくした: 配線は接続名で呼び（アドレスとブローカーの行の `<接続名>`）、接続の画面は「つなぎ方」と言う。
 

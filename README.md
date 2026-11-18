@@ -54,8 +54,8 @@ The parts:
   `restartProbe({ reopen, waitMs })`, retried until the probe's restart_max_ms -, list / describe, plan);
 - the settings (settings.js): `new Settings(host)`: `catalog()` = the names of this boot, `show()` = every value as
   `{ category, name, value }`, `setNamed(category, { flat: value })` / `unsetNamed` / `unsetAll`, raw `set` / `unset`,
-  `save()`, `state()`, `needsSave()`, `network()`; `export()` / `planImport(doc)` / `applyImport(plan)` = the settings
-  file (oep-client-python docs/oep-settings-file.ja.md); `findLine(source, name, { port })` is host guide §5.3's line
+  `save()`, `state()`, `needsSave()`, `network()`; `export()` / `exportAll()` / `planImport(doc)` / `applyImport(plan)` = the settings
+  file (oep-spec docs/oep-settings-file.ja.md), the memo area's objects in its `memo` (§2.4: written and deleted to match on import); `findLine(source, name, { port })` is host guide §5.3's line
   lookup (port S's line N is the label `S.N`). A secret (the Wi-Fi passphrase) is never read: get gives no data, `show()`
   and the file `{ secret: true }`; 0 bytes in a set keep it;
 - the transports: WebSerial, WebUSB (vendor bulk), WebHID in the browser (`oep-client-js/browser`); serial ports open 8N1

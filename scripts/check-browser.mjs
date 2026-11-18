@@ -73,7 +73,8 @@ try {
           const memoKey=(n)=>typeof n==='string'?n:new TextDecoder().decode(n);
           const memoStore=()=>globalThis.__memoObjects??=new Map();
           const fakeMemo={
-            async list(){return [...memoStore()].map(([k,v])=>({name:new TextEncoder().encode(k),size:v.length}));},
+            async list(){return [...memoStore()].map(([k,v])=>({name:new TextEncoder().encode(k),size:v.length,crc:lib.memo.crc32(v)}));},
+            async limits(){return {maxObject:512,maxObjects:64};},
             async read(n){const v=memoStore().get(memoKey(n));if(!v)throw new lib.NoResource(new lib.message.Result(1,0,lib.registry.REJECT_REASONS.no_resource));return v.slice();},
             async write(n,data){if(globalThis.__failMemoSave)throw Error('memo storage full');memoStore().set(memoKey(n),Uint8Array.from(data));},
             async delete(n){if(!memoStore().delete(memoKey(n)))throw new lib.NoResource(new lib.message.Result(1,0,lib.registry.REJECT_REASONS.no_resource));},
@@ -287,19 +288,19 @@ try {
   // W06: the settings and memo backups, a restore shown as a difference before it is applied, diagnostics (A27, A28).
   const lastDownload = () => evaluate('globalThis.__downloads.at(-1).text()');
   const upload = (json) => evaluate(`{const i=document.querySelector('input[type=file]');const t=new DataTransfer();t.items.add(new File([${JSON.stringify(json)}],'backup.json',{type:'application/json'}));i.files=t.files;i.dispatchEvent(new Event('change',{bubbles:true}));}`);
-  await go('/probe/maintenance'); await press('設定を控える');
+  // one backup file holds the settings and the memo (settings file §2.4)
+  await go('/probe/maintenance'); await press('控えを取る');
   const backup = JSON.parse(await lastDownload());
-  await press('メモを控える');
-  const memoBackup = JSON.parse(await lastDownload());
-  assert.ok(Object.keys(memoBackup.objects).some((k) => k.endsWith('/port/dut')), 'the memo backup has the port records');
+  assert.equal(backup.oep_settings, 1);
+  assert.ok(Object.keys(backup.memo).some((k) => k.endsWith('/port/dut')), 'the backup has the memo\'s port records');
   await go('/probe/settings'); await pick('[data-idle="GPIO20"]', 'pull-down'); await press('ピンの設定を適用'); await press('保存');
-  await go('/probe/maintenance'); await upload(JSON.stringify(backup)); await until('document.body.textContent.includes("設定の差分")');
+  await go('/probe/maintenance'); await upload(JSON.stringify(backup)); await until('document.body.textContent.includes("差分（backup.json）")');
   await press('この変更を適用'); await go('/probe/settings');
   assert.equal(await evaluate('document.querySelector(\'[data-idle="GPIO20"]\').value'), 'pull-up', 'the backup put back the idle state');
   await press('保存');
   await evaluate('globalThis.__memoObjects.delete([...globalThis.__memoObjects.keys()].find(k=>k.endsWith("/port/dut")))');
-  await go('/probe/maintenance'); await upload(JSON.stringify(memoBackup)); await until('document.body.textContent.includes("メモの差分")');
-  assert.match(await text(), /無い/); await press('この記録を書き戻す');
+  await go('/probe/maintenance'); await upload(JSON.stringify(backup)); await until('document.body.textContent.includes("差分（backup.json）")');
+  assert.match(await text(), /書くメモの記録oep\.probe\.memo\/port\/dut/); await press('この変更を適用');
   await go('/probe/wiring'); assert.match(await text(), /swap connector/, 'the restored record is read back');
   await go('/probe/maintenance'); await press('宣言を読み直す'); assert.match(await text(), /oep\.fixture\.i2c-controller/);
   // W07 hand over.

@@ -262,7 +262,8 @@ export async function checkDebug(wire, { dio, clk }) {
 }
 
 // -- settings (W05) --
-const st = () => new oep.settings.Settings(dev.host);
+/** The settings, with the memo area this page holds (the settings file carries both, settings file §2.4). */
+const st = () => { const s = new oep.settings.Settings(dev.host); s.memoArea = async () => dev.memo; return s; };
 /** The categories whose items match `item` (e.g. passthrough.{}.rx), with the route names its keys take. */
 export function categoriesWith(item) {
   if (!dev.catalog) return [];
@@ -296,9 +297,10 @@ export async function applySettings(category, values, unsets = []) {
   await refresh(); changed();
 }
 export async function saveSettings() { await ensureSession(); await st().save(); dev.unsaved = false; await refresh(); changed(); }
-export async function exportSettings() { return st().export(); }
+/** The settings file (every value and the memo's objects) and the memo objects left out of it (torn, or a name not UTF-8). */
+export async function exportSettings() { return st().exportAll(); }
 export async function planRestore(doc) { return st().planImport(doc); }
-export async function applyRestore(plan) { await ensureSession(); await st().applyImport(plan); dev.unsaved = true; await refresh(); changed(); }
+export async function applyRestore(plan) { await ensureSession(); await st().applyImport(plan); if (plan.sets.length || plan.unsets.length) dev.unsaved = true; await refresh(); changed(); }
 /** Save the settings and restart the probe (an item marked restart, such as usb.transports, takes effect then). The
  * link closes: a USB probe may come back as another device, so the page connects again through C01. */
 export async function saveAndRestart() {
@@ -311,35 +313,6 @@ export async function saveAndRestart() {
 }
 export const restartOffered = () => offered('oep.probe.restart').length > 0;
 export function itemOf(category, flat) { try { return dev.catalog.resolve(category, flat)?.[0] ?? null; } catch { return null; } }
-
-// -- memo backup and restore (W06): the same shape as the bench's backup (unit_id, objects: name -> text | base64) --
-export async function exportMemo() {
-  if (!dev.memo) return null;
-  const objects = {};
-  for (const e of await dev.memo.list()) {
-    const name = new TextDecoder().decode(e.name), data = await dev.memo.read(e.name);
-    try { objects[name] = { text: new TextDecoder('utf-8', { fatal: true }).decode(data) }; }
-    catch { objects[name] = { base64: btoa(String.fromCharCode(...data)) }; }
-  }
-  return { unit_id: unit(), objects: Object.fromEntries(Object.entries(objects).sort(([a], [b]) => a < b ? -1 : 1)) };
-}
-const bytesOf = (o) => o.text !== undefined ? new TextEncoder().encode(o.text) : Uint8Array.from(atob(o.base64), (c) => c.charCodeAt(0));
-export async function planMemoRestore(doc) {
-  if (!dev.memo) throw new Error(t('This probe has no memo area.', 'このプローブにはメモ領域がありません。'));
-  if (!doc || typeof doc.objects !== 'object') throw new Error(t('This is not a memo backup file.', 'メモの控えのファイルではありません。'));
-  const now = new Map((await dev.memo.list()).map((e) => [new TextDecoder().decode(e.name), e]));
-  const todo = [];
-  for (const [name, o] of Object.entries(doc.objects)) {
-    const data = bytesOf(o);
-    if (!now.has(name)) todo.push({ name, data, why: t('missing', '無い') });
-    else { const cur = await dev.memo.read(name); if (cur.length !== data.length || cur.some((b, i) => b !== data[i])) todo.push({ name, data, why: t('differs', '内容が違う') }); }
-  }
-  return { otherProbe: doc.unit_id && doc.unit_id.toLowerCase() !== unit().toLowerCase(), todo };
-}
-export async function applyMemoRestore(plan) { await ensureSession(); for (const tk of plan.todo) await dev.memo.write(tk.name, tk.data); await refresh(); changed(); }
-export async function memoRead(name) { return dev.memo.read(name); }
-export async function memoWrite(name, data) { await ensureSession(); await dev.memo.write(name, data); await refresh(); changed(); }
-export async function memoDelete(name) { await ensureSession(); await deleteMemo(name); await refresh(); changed(); }
 
 // -- diagnostics --
 export async function rereadDeclarations() { dev.caps = await oep.dump.collect(dev.host); changed(); }

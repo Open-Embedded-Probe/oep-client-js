@@ -20,6 +20,7 @@ import * as reg from './registry.js';
 import { Writer, concat, equal, fromHex, getU16, getU32, hex, text, utf8 } from './bytes.js';
 import * as m from './message.js';
 import { describe, listEntries, maxOpMs, offers, require } from './core.js';
+import { Memo, crc32 } from './memo.js';
 
 const C = reg.CORE;
 /** fn 0's settings ops. */
@@ -76,8 +77,10 @@ export class Item {
 /**
  * What an import does (settings file §4): the values to set and unset (wire rows), the secrets the probe has no value
  * for, and the members that do not resolve on this probe.
+ * memoDeletes / memoWrites: the memo objects to delete, then to write (name bytes; data), when the file has a memo
+ * (settings file §4).
  * @typedef {{ sets: SetRow[], unsets: KeyRow[], secretWithoutValue: [string, string][], unresolved: [string, string][],
- *   otherProbe: boolean }} ImportPlan
+ *   otherProbe: boolean, memoDeletes: Uint8Array[], memoWrites: [Uint8Array, Uint8Array][] }} ImportPlan
  */
 
 /** "a.b.c.d" -> 4 bytes (RangeError when it is not one). @param {unknown} s */
@@ -459,23 +462,86 @@ export class Settings {
   }
 
   // -- the file (settings file §3, §4) --
-  async export() { return exportFile(await this.catalog(), (await this.get()).values); }
+  /** The probe's memo area (oep.probe.memo), null when it has none. */
+  async memoArea() {
+    const entry = (await listEntries(this.host)).find((e) => e.name === Memo.NAME);
+    return entry ? Memo.open(this.host, { fn: entry.fn }) : null;
+  }
+
+  /** The settings file: every value, and the memo area's objects when the probe has one. */
+  async export() { return (await this.exportAll()).doc; }
+
+  /** The file (settings file §3) and the memo objects left out of it (torn, or a name not UTF-8: shown to the user). */
+  async exportAll() {
+    const mm = await this.memoArea();
+    /** @type {{ memo: Record<string, unknown>, leftOut: Uint8Array[] } | null} */
+    let memo = null;
+    if (mm) {
+      /** @type {[Uint8Array, Uint8Array, number][]} */
+      const objects = [];
+      for (const e of await mm.list()) objects.push([e.name, isUtf8(e.name) ? await mm.read(e.name, { check: false }) : new Uint8Array(), e.crc]);
+      memo = memoFile(objects);
+    }
+    return { doc: exportFile(await this.catalog(), (await this.get()).values, memo?.memo), leftOut: memo?.leftOut ?? [] };
+  }
 
   /** @param {unknown} doc */
-  async planImport(doc) { return planImport(await this.catalog(), (await this.get()).values, doc); }
+  async planImport(doc) {
+    /** @type {{ maxObject: number, held: { name: Uint8Array, size: number, crc: number }[] } | null} */
+    let held = null;
+    if (isObject(doc) && MEMO in doc) {
+      const mm = await this.memoArea();
+      held = mm ? { maxObject: (await mm.limits()).maxObject, held: await mm.list() } : null;
+    }
+    return planImport(await this.catalog(), (await this.get()).values, doc, held);
+  }
 
-  /** Unset first (a disable that replaces an idle), then set. Needs the lock. @param {ImportPlan} plan */
+  /** Unset first (a disable that replaces an idle), then set; the memo objects to delete, then to write (settings file
+   * §4). Needs the lock. @param {ImportPlan} plan */
   async applyImport(plan) {
     /** @type {number | null} */
     let generation = null;
     if (plan.unsets.length) generation = await this.unset(plan.unsets);
     if (plan.sets.length) generation = await this.set(plan.sets);
+    if (plan.memoDeletes.length || plan.memoWrites.length) {
+      const mm = /** @type {Memo} */ (await this.memoArea());
+      for (const name of plan.memoDeletes) await mm.delete(name);
+      for (const [name, data] of plan.memoWrites) await mm.write(name, data);
+    }
     return generation;
   }
 }
 
-/** The settings file of every value (settings file §3). @param {Catalog} cat @param {Value[]} values */
-export function exportFile(cat, values) {
+/** The file's memo area (settings file §2.4). */
+export const MEMO = 'memo';
+/** @param {Uint8Array} b */
+const isUtf8 = (b) => { try { new TextDecoder('utf-8', { fatal: true }).decode(b); return true; } catch { return false; } };
+
+/** The file's memo (settings file §2.4, §3) from the memo objects [name, data, crc] in their order: UTF-8 data as a
+ * string, other data as { bytes: hex }. Left out (returned): a torn object (its data's CRC-32 is not its crc) and one
+ * whose name is not UTF-8. @param {[Uint8Array, Uint8Array, number][]} objects */
+export function memoFile(objects) {
+  /** @type {Record<string, unknown>} */
+  const memo = {};
+  /** @type {Uint8Array[]} */
+  const leftOut = [];
+  for (const [name, data, crc] of objects) {
+    if (!isUtf8(name) || crc32(data) !== crc) { leftOut.push(name); continue; }
+    memo[text(name)] = isUtf8(data) ? new TextDecoder().decode(data) : { bytes: hex(data) };
+  }
+  return { memo, leftOut };
+}
+
+/** A file's memo value as the object's data (settings file §2.4); RangeError when it is neither form. @param {unknown} value */
+export function memoData(value) {
+  if (typeof value === 'string') return utf8(value);
+  if (isObject(value) && Object.keys(value).length === 1 && typeof value.bytes === 'string') return fromHex(value.bytes);
+  throw new RangeError(`memo: ${JSON.stringify(value)} is neither a string nor {"bytes": hex}`);
+}
+
+/** The settings file of every value (settings file §3), with the memo area's objects when the probe has one.
+ * @param {Catalog} cat @param {Value[]} values @param {Record<string, unknown>} [memo] */
+export function exportFile(cat, values, memo) {
   /** @type {Record<string, Record<string, unknown>>} */
   const out = {};
   for (const v of values) {
@@ -486,27 +552,37 @@ export function exportFile(cat, values) {
     (out[category] ??= {})[flat] = it.secret ? { secret: true } : cat.toJson(it, v.data);
   }
   const probe = Object.fromEntries(Object.entries(cat.probe).map(([k, v]) => [k === 'unitId' ? 'unit_id' : k, v]));
-  return { oep_settings: FILE_VERSION, probe, settings: out };
+  /** @type {{ oep_settings: number, probe: Record<string, unknown>, settings: Record<string, Record<string, unknown>>, memo?: Record<string, unknown> }} */
+  const doc = { oep_settings: FILE_VERSION, probe, settings: out };
+  if (memo !== undefined) doc.memo = memo;
+  return doc;
 }
 
 /** @param {unknown} v @returns {v is Record<string, any>} */
 const isObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** The file's form (settings file §2): RangeError when it is not one this host reads. @param {unknown} doc
- * @returns {asserts doc is { oep_settings: number, probe?: Record<string, unknown>, settings: Record<string, Record<string, unknown>> }} */
+ * @returns {asserts doc is { oep_settings: number, probe?: Record<string, unknown>, settings: Record<string, Record<string, unknown>>, memo?: Record<string, unknown> }} */
 export function checkFile(doc) {
   if (!isObject(doc) || doc.oep_settings !== FILE_VERSION) throw new RangeError(`not a settings file of version ${FILE_VERSION}`);
   if (!isObject(doc.settings) || !Object.values(doc.settings).every(isObject)) {
     throw new RangeError('settings: an object of categories, each an object of values');
   }
+  if (MEMO in doc) {
+    if (!isObject(doc[MEMO])) throw new RangeError('memo: an object of names to data');
+    for (const value of Object.values(doc[MEMO])) memoData(value);
+  }
 }
 
-/** What making the file's values the probe's takes (settings file §4).
- * @param {Catalog} cat @param {Value[]} current @param {unknown} doc @returns {ImportPlan} */
-export function planImport(cat, current, doc) {
+/** What making the file's values the probe's takes (settings file §4). memo: the probe's memo area when the file has
+ * one - its max_object and its objects (list's name, size, crc) -, null when the probe has none (each object unresolved).
+ * @param {Catalog} cat @param {Value[]} current @param {unknown} doc
+ * @param {{ maxObject: number, held: { name: Uint8Array, size: number, crc: number }[] } | null} [memo]
+ * @returns {ImportPlan} */
+export function planImport(cat, current, doc, memo = null) {
   checkFile(doc);
   /** @type {ImportPlan} */
-  const plan = { sets: [], unsets: [], secretWithoutValue: [], unresolved: [], otherProbe: false };
+  const plan = { sets: [], unsets: [], secretWithoutValue: [], unresolved: [], otherProbe: false, memoDeletes: [], memoWrites: [] };
   const probe = isObject(doc.probe) ? doc.probe : {};
   const mine = /** @type {Record<string, string | undefined>} */ ({ unit_id: cat.probe.unitId, model: cat.probe.model });
   plan.otherProbe = ['unit_id', 'model'].some((k) => probe[k] !== undefined && probe[k] !== null && probe[k] !== mine[k]);
@@ -532,6 +608,20 @@ export function planImport(cat, current, doc) {
   }
   plan.unsets = current.filter((v) => !wanted.has(id(v.fn, v.number, v.key)))
     .map((v) => /** @type {KeyRow} */ ([v.fn, v.number, v.key]));
+  if (isObject(doc[MEMO])) {
+    const files = Object.entries(doc[MEMO]).map(([name, value]) => /** @type {[string, Uint8Array]} */ ([name, memoData(value)]));
+    if (!memo) for (const [name] of files) plan.unresolved.push([MEMO, name]);
+    else {
+      const have = new Map(memo.held.map((e) => [hex(e.name), e]));
+      for (const [name, data] of files) {
+        const now = have.get(hex(utf8(name)));
+        if (data.length > memo.maxObject) plan.unresolved.push([MEMO, name]);
+        else if (!now || now.size !== data.length || now.crc !== crc32(data)) plan.memoWrites.push([utf8(name), data]);
+      }
+      const named = new Set(files.map(([name]) => hex(utf8(name))));
+      plan.memoDeletes = memo.held.filter((e) => !named.has(hex(e.name))).map((e) => e.name);
+    }
+  }
   return plan;
 }
 

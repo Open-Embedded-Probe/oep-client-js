@@ -162,23 +162,27 @@ export function maintenance() {
           el('progress', { id: 'update-progress', max: m.progress?.total || 1, value: m.progress?.done ?? 0 }), el('p', { id: 'update-status' }, m.progress?.text ?? '')]
           : note(t('This probe cannot be updated from this page (a classic ESP32 is rewritten with the same serial steps as installing; a CH32 is written with WCH\'s tools).', 'このプローブはこのページからの更新に対応していません（classic ESP32は導入と同じシリアルの手順で書き直します。CH32はWCHの道具で書きます）。')),
         actions(action(t('Fetch the released images again', '配布イメージを再取得'), D.loadRelease))),
-      panel(el('h2', {}, t('Settings and memo backup', '設定とメモの控え')), p(t('Back up the settings (pin names, idle, pass-through and so on) and the memo records (part numbers, memos, tool records) to separate files. Secrets are not included.', '設定（ピン名・待機・素通しなど）と、メモ領域の記録（型番・メモ、道具の記録）を別々のファイルに控えます。秘密の値は含みません。'), 'muted'),
-        actions(action(t('Back up settings', '設定を控える'), async () => download(`${D.unit()}.oep-settings.json`, JSON.stringify(await D.exportSettings(), null, 2) + '\n', 'application/json'), 'primary', { id: 'export-settings' }),
-          action(t('Back up the memo', 'メモを控える'), async () => { const doc = await D.exportMemo(); if (!doc) throw new Error(t('This probe has no memo area.', 'このプローブにはメモ領域がありません。')); download(`${D.unit()}.oep-memo.json`, JSON.stringify(doc, null, 2) + '\n', 'application/json'); }, '', { disabled: !D.dev.memo, id: 'export-memo' })),
-        el('h3', { class: 'mt' }, t('Restore from a backup', '控えから戻す')), p(t('Choosing a file shows the differences before anything is applied.', 'ファイルを選ぶと、適用する前に差分を表示します。'), 'muted'),
-        el('label', { class: 'field' }, t('Settings or memo backup file', '設定またはメモの控えのファイル'), readFile(async (doc, name) => {
+      panel(el('h2', {}, t('Backup of settings and memo', '設定とメモの控え')), p(t('One file holds the settings (pin names, idle states, pass-through and so on) and the memo records (part numbers, memos, tools\' records) - the OEP settings file, which oep-client-python reads too. Secrets are not included. Take one before a firmware update.', '設定（ピン名・待機・素通しなど）とメモ欄の記録（型番・メモ・道具の記録）を、1つのファイルに控えます。OEPの設定のファイルで、oep-client-pythonでも読めます。秘密の値は含みません。ファームの更新の前に取っておきます。'), 'muted'),
+        actions(action(t('Take a backup', '控えを取る'), async () => {
+          const { doc, leftOut } = await D.exportSettings();
+          download(`${D.unit()}.oep-settings.json`, JSON.stringify(doc, null, 2) + '\n', 'application/json');
+          m.leftOut = leftOut.map((n) => { try { return new TextDecoder('utf-8', { fatal: true }).decode(n); } catch { return Array.from(n, (b) => b.toString(16).padStart(2, '0')).join(''); } });
+        }, 'primary', { id: 'export-settings' })),
+        m.leftOut?.length ? note(t(`Not in the backup (torn, or a name that is not text): ${m.leftOut.join(', ')}`, `控えに入れなかった記録（壊れている、または名前が文字でない）: ${m.leftOut.join('、')}`), 'amber') : null,
+        el('h3', { class: 'mt' }, t('Restore from a backup', '控えから戻す')), p(t('Choosing a file shows the differences before anything is applied. A file with a memo makes the memo area the file\'s: records it lacks are deleted.', 'ファイルを選ぶと、適用する前に差分を表示します。メモ欄を含むファイルは、メモ欄をファイルのとおりにします（ファイルに無い記録は消えます）。'), 'muted'),
+        el('label', { class: 'field' }, t('Backup file (.oep-settings.json)', '控えのファイル（.oep-settings.json）'), readFile(async (doc, name) => {
           m.restoreError = '';
-          if (doc.objects) { m.memoPlan = await D.planMemoRestore(doc); m.memoFile = name; }
-          else { m.plan = await D.planRestore(doc); m.planFile = name; }
+          m.plan = await D.planRestore(doc); m.planFile = name;
           render();
         })),
         m.restoreError ? note(m.restoreError, 'error') : null,
-        m.plan ? el('div', { class: 'panel' }, el('h3', {}, t(`Settings differences (${m.planFile})`, `設定の差分（${m.planFile}）`)), m.plan.otherProbe ? note(t('This backup is from another probe. Applying it puts that unit\'s settings into this one.', '別のプローブの控えです。適用すると、この個体に別の個体の設定が入ります。'), 'amber') : null,
-          keyValues([[t('Values to apply', '適用する値'), String(m.plan.sets.length)], [t('Values to clear', '解除する値'), String(m.plan.unsets.length)], [t('Items this unit does not have', 'この個体に無い項目'), String(m.plan.unresolved?.length ?? 0)], [t('Secrets (not in the file)', '秘密の値（ファイルに無い）'), String(m.plan.secretWithoutValue?.length ?? 0)]]),
-          actions(action(t('Apply these changes', 'この変更を適用'), async () => { await D.applyRestore(m.plan); m.plan = null; m.restored = t('Settings applied. Save them to keep them after a restart.', '設定を適用しました。再起動後も残すには保存します。'); }, 'primary'), button(t('Cancel', 'やめる'), () => { m.plan = null; render(); }))) : null,
-        m.memoPlan ? el('div', { class: 'panel' }, el('h3', {}, t(`Memo differences (${m.memoFile})`, `メモの差分（${m.memoFile}）`)), m.memoPlan.otherProbe ? note(t('This backup is from another probe.', '別のプローブの控えです。'), 'amber') : null,
-          m.memoPlan.todo.length ? keyValues(m.memoPlan.todo.map((tk) => [tk.name, t(`${tk.why} (${tk.data.length} B)`, `${tk.why}（${tk.data.length} B）`)])) : p(t('Nothing to restore.', '戻すものはありません。'), 'muted'),
-          actions(action(t('Write these records back', 'この記録を書き戻す'), async () => { await D.applyMemoRestore(m.memoPlan); m.memoPlan = null; m.restored = t('The memo records were written back.', 'メモの記録を書き戻しました。'); }, 'primary', { disabled: !m.memoPlan.todo.length }), button(t('Cancel', 'やめる'), () => { m.memoPlan = null; render(); }))) : null,
+        m.plan ? el('div', { class: 'panel' }, el('h3', {}, t(`Differences (${m.planFile})`, `差分（${m.planFile}）`)), m.plan.otherProbe ? note(t('This backup is from another probe. Applying it puts that unit\'s settings into this one.', '別のプローブの控えです。適用すると、この個体に別の個体の設定が入ります。'), 'amber') : null,
+          keyValues([[t('Values to apply', '適用する値'), String(m.plan.sets.length)], [t('Values to clear', '解除する値'), String(m.plan.unsets.length)],
+            [t('Memo records to write', '書くメモの記録'), m.plan.memoWrites.length ? m.plan.memoWrites.map(([n]) => new TextDecoder().decode(n)).join(', ') : '0'],
+            [t('Memo records to delete', '消すメモの記録'), m.plan.memoDeletes.length ? m.plan.memoDeletes.map((n) => new TextDecoder().decode(n)).join(', ') : '0'],
+            [t('Not on this unit (not sent)', 'この個体に無い（送らない）'), m.plan.unresolved.length ? m.plan.unresolved.map(([c, f]) => `${c} ${f}`).join(', ') : '0'],
+            [t('Secrets (not in the file)', '秘密の値（ファイルに無い）'), String(m.plan.secretWithoutValue.length)]]),
+          actions(action(t('Apply these changes', 'この変更を適用'), async () => { await D.applyRestore(m.plan); m.plan = null; m.restored = t('Applied. The settings are kept after a restart once saved (the bar at the top); the memo records are written already.', '適用しました。設定は上の帯で保存すると再起動後も残ります。メモの記録は書き終えています。'); }, 'primary'), button(t('Cancel', 'やめる'), () => { m.plan = null; render(); }))) : null,
         m.restored ? note(m.restored) : null,
         )),
     el('details', { class: 'panel mt' }, el('summary', {}, t('Diagnostics, declarations, storage', '診断・機能の宣言・保存領域')),

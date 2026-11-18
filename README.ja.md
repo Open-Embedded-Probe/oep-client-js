@@ -50,7 +50,7 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
   `restartProbe({ reopen, waitMs })`、probe の restart_max_ms まで繰り返す ―、list / describe、plan）
 - 設定（settings.js）: `new Settings(host)`: `catalog()` はこの起動の名前、`show()` はすべての値を `{ category, name, value }` で、
   `setNamed(category, { flat: value })` / `unsetNamed` / `unsetAll`、生の `set` / `unset`、`save()`、`state()`、`needsSave()`、
-  `network()`。`export()` / `planImport(doc)` / `applyImport(plan)` は設定ファイル（oep-client-python docs/oep-settings-file.ja.md）。
+  `network()`。`export()` / `exportAll()` / `planImport(doc)` / `applyImport(plan)` は設定ファイル（oep-spec docs/oep-settings-file.ja.md）。メモ欄のオブジェクトはその `memo`（§2.4。入れ直しで書いて消してそろえる）。
   `findLine(source, name, { port })` は host ガイド §5.3 の線の探し方（接続名 S の線 N はラベル `S.N`）。秘密の値（Wi-Fi のパスフレーズ）は
   読まない: get はデータを返さず、`show()` とファイルは `{ secret: true }`。set で 0 byte を送ると保つ
 - 経路: ブラウザは WebSerial、WebUSB（vendor bulk）、WebHID（`oep-client-js/browser`）。シリアルポートは 8N1、フロー制御なし、DTR と

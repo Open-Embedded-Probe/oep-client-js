@@ -487,18 +487,39 @@ function valuesOf(h) {
 }
 
 test('settings file: export writes every value with the probe\'s names (settings file §2, §3)', () => {
-  for (const c of FILE.export) assert.deepEqual(settings.exportFile(vectorCatalog(c.probe), valuesOf(c.get_values_hex)), c.file, c.name);
+  for (const c of FILE.export) {
+    // the memo area's objects (§2.4, §3): in list order, a torn one and one whose name is not UTF-8 left out
+    const memo = c.memo_objects ? settings.memoFile(c.memo_objects.map((/** @type {any} */ o) => /** @type {[Uint8Array, Uint8Array, number]} */ ([hx(o.name_hex), hx(o.data_hex), o.crc]))) : null;
+    assert.deepEqual(settings.exportFile(vectorCatalog(c.probe), valuesOf(c.get_values_hex), memo?.memo), c.file, c.name);
+    if (memo) assert.deepEqual(memo.leftOut.map(hex), c.memo_not_written_hex, c.name);
+  }
 });
 
 test('settings file: import into a probe with other numbers (settings file §4)', () => {
   for (const c of FILE.import) {
-    const plan = settings.planImport(vectorCatalog(c.probe), valuesOf(c.current_values_hex), c.file);
+    const memo = c.current_memo ? { maxObject: c.memo_max_object, held: c.current_memo.map((/** @type {any} */ o) => ({ name: hx(o.name_hex), size: o.size, crc: o.crc })) } : null;
+    const plan = settings.planImport(vectorCatalog(c.probe), valuesOf(c.current_values_hex), c.file, memo);
+    // deletes first, then writes in the file's order (§4)
+    assert.deepEqual(plan.memoDeletes.map(hex), c.expected_memo_delete_hex ?? [], c.name);
+    assert.deepEqual(plan.memoWrites.map(([n, d]) => ({ name_hex: hex(n), data_hex: hex(d) })), c.expected_memo_write ?? [], c.name);
     assert.deepEqual(plan.sets.map(([fn, n, k, d]) => [fn, n, k, hex(d)]),
       c.expected_set.map((/** @type {any} */ r) => [r.fn, r.number, r.key, r.data_hex]), c.name);
     assert.deepEqual(plan.unsets, c.expected_unset.map((/** @type {any} */ r) => [r.fn, r.number, r.key]), c.name);
     assert.deepEqual(plan.secretWithoutValue, c.secret_without_value, c.name);
     assert.deepEqual(plan.unresolved, c.unresolved, c.name);
   }
+});
+
+test('settings file: a memo the probe cannot hold is unresolved; a file without memo leaves the memo area alone (§4)', () => {
+  const c = FILE.import.find((/** @type {any} */ x) => x.file.memo);
+  const plan = settings.planImport(vectorCatalog(c.probe), valuesOf(c.current_values_hex), c.file, null);
+  for (const name of Object.keys(c.file.memo)) assert.ok(plan.unresolved.some(([cat, n]) => cat === 'memo' && n === name), name);
+  assert.deepEqual([plan.memoWrites, plan.memoDeletes], [[], []]);
+  const { memo, ...without } = c.file;
+  const held = { maxObject: 64, held: c.current_memo.map((/** @type {any} */ o) => ({ name: hx(o.name_hex), size: o.size, crc: o.crc })) };
+  const none = settings.planImport(vectorCatalog(c.probe), valuesOf(c.current_values_hex), without, held);
+  assert.deepEqual([none.memoWrites, none.memoDeletes], [[], []], 'no memo in the file: nothing written or deleted');
+  assert.throws(() => settings.checkFile({ ...c.file, memo: { x: 5 } }), RangeError);
 });
 
 test('ops: where this client has the op, its request is the case\'s and its reading gives the case\'s values', async () => {
