@@ -14,9 +14,9 @@ function emptyConnections() {
     actions(link(t('Register wiring →', '配線を登録する →'), '/probe/wiring/new', true, { 'data-new-wiring': '' })));
 }
 function portCard(port) {
-  const rec = D.recordOf(port.name), groups = groupsOf(port), connector = D.isConnector(port.name);
+  const rec = D.recordOf(port.name), groups = groupsOf(port);
   return el('article', { class: 'connection-card', 'data-port': port.name },
-    el('header', {}, el('div', {}, el('h2', {}, port.name), p(connector ? t('Connector (the target is identified each time)', 'コネクタ（相手はつなぐたびに識別）') : rec.part || t('Target part number not given', '相手の型番は未記入'), 'muted mb0')),
+    el('header', {}, el('div', {}, el('h2', {}, port.name), p(rec.part || t('No target part number (a connector you swap boards on, or not written)', '相手の型番なし（差し替えて使うコネクタ、または未記入）'), 'muted mb0')),
       badge(D.dev.memo ? t('saved in the probe', 'プローブに保存') : t('part number and memo in this browser only', '型番・メモはこのブラウザだけ'), D.dev.memo ? '' : 'amber')),
     wiringSummary(port), rec.note ? p(rec.note, 'compact muted') : null, el('code', {}, `oep://${D.unit()}/${port.name}`),
     actions(link(t('Edit wiring and target', '配線・相手の情報を編集'), `/probe/wiring/${encodeURIComponent(port.name)}`, true),
@@ -55,7 +55,7 @@ function draftFrom(port) {
   const groups = groupsOf(port).map((g) => ({ ...g, pins: Object.fromEntries(Object.entries(g.pins).map(([k, v]) => [k, String(v)])), target: {} }));
   for (const [, label] of port.lines) { const pl = /** @type {any} */ (label).split('@'); if (pl[1]) { const line = pl[0].split('.')[1]?.toLowerCase(); for (const g of groups) if (line in g.pins) g.target[line] = pl[1]; } }
   const rec = D.recordOf(port.name);
-  return { editId: port.name, name: port.name, part: rec.part ?? '', note: rec.note ?? '', connector: D.isConnector(port.name), groups, purpose: groups[0]?.type ?? '', original: { name: port.name, lines: port.lines.map(([c, l]) => [c, l]) }, check: {} };
+  return { editId: port.name, name: port.name, part: rec.part ?? '', note: rec.note ?? '', groups, purpose: groups[0]?.type ?? '', original: { name: port.name, lines: port.lines.map(([c, l]) => [c, l]) }, check: {} };
 }
 export function editor(id, query) {
   const purpose = query.get('purpose');
@@ -67,18 +67,15 @@ export function editor(id, query) {
     const port = id === 'new' ? null : D.portOf(id);
     if (id !== 'new' && !port) return frame([heading(t('This wiring was not found.', 'この配線は見つかりません。'), t('It may have been renamed or deleted.', '名前の変更か削除が行われた可能性があります。')), link(t('To the wiring list', '配線の一覧へ'), '/probe/wiring', true)]);
     state.returnTo = '/probe/wiring';
-    state.draft = port ? draftFrom(port) : { editId: 'new', name: '', part: '', note: '', connector: false, purpose, groups: [newGroup(purpose === 'debug' ? 'debug' : purpose, '')], original: null, check: {} };
+    state.draft = port ? draftFrom(port) : { editId: 'new', name: '', part: '', note: '', purpose, groups: [newGroup(purpose === 'debug' ? 'debug' : purpose, '')], original: null, check: {} };
     state.dirty = false;
   }
   const d = state.draft;
-  const touch = () => { state.dirty = true; d.check = {}; };
-  const kindPanel = el('fieldset', { class: 'form-group' }, el('legend', {}, t('Kind of registration', '登録の種類')),
-    el('div', { class: 'two-grid' }, ...[[false, t('Fixed target', '相手が決まっている'), t('Fixed with its wiring. Records the target\'s part number and memo.', '配線ごと固定。相手の型番とメモを記録します。')], [true, t('Connector (targets are swapped)', 'コネクタ（相手を差し替える）'), t('Fixed pins; whatever is connected is identified and shown each time. No part number is recorded.', 'ピンを固定し、つなぐ相手はその都度識別して表示します。相手の型番は記録しません。')]].map(([v, tk, desc]) =>
-      el('button', { type: 'button', class: `pattern-card${d.connector === v ? ' selected' : ''}`, 'aria-pressed': String(d.connector === v), 'data-kind': v ? 'connector' : 'fixed', onclick: () => { d.connector = v; touch(); render(); } }, el('strong', {}, tk), el('span', {}, desc)))),
-    d.original && d.connector !== D.isConnector(d.original.name) ? note(t('Changing the kind changes how the part number is kept (a connector records none).', '種類を変えると、相手の型番の扱いが変わります（コネクタでは型番を記録しません）。')) : null);
+  const touch = () => { state.dirty = true; d.check = {}; showProblems(d); };
   const targetFields = el('fieldset', { class: 'form-group' }, el('legend', {}, t('Name and target', '名前・相手の情報')),
-    el('div', { class: 'field-grid' }, field(t('Connection name', '接続名'), d.name, (v) => { d.name = v; touch(); }, t('For example sensor / board-1. Up to 16 letters, digits and hyphens, starting with a letter. Also used in the address oep://<unit>/<name>.', '例: sensor / board-1。英字で始まる16文字以内の英数字・ハイフン。アドレス oep://<個体>/<接続名> にも使います。'), null, 'text', { id: 'conn-name' }),
-      !d.connector ? field(t('Target chip or board part number (optional)', '相手のIC・基板の型番（任意）'), d.part, (v) => { d.part = v; touch(); }, t('For example CH32V003F4P6, STM32F103C8T6. Not the probe\'s own part number, nor a connection check result.', '例: CH32V003F4P6、STM32F103C8T6。プローブ自身の型番ではありません。接続確認の結果でもありません。'), null, 'text', { id: 'conn-part' }) : null),
+    el('div', { class: 'field-grid' }, el('div', {}, field(t('Connection name', '接続名'), d.name, (v) => { d.name = v; touch(); }, t('For example sensor / board-1. Up to 16 letters, digits and hyphens, starting with a letter. Also used in the address oep://<unit>/<name>.', '例: sensor / board-1。英字で始まる16文字以内の英数字・ハイフン。アドレス oep://<個体>/<接続名> にも使います。'), null, 'text', { id: 'conn-name', 'aria-describedby': 'conn-name-check' }),
+        el('p', { id: 'conn-name-check', class: 'field-check', role: 'status' })),
+      field(t('Target chip or board part number (optional)', '相手のIC・基板の型番（任意）'), d.part, (v) => { d.part = v; touch(); }, t('For a target that stays on this wiring, for example CH32V003F4P6. For a connector you plug different boards into, leave it empty: the connection check shows what is plugged in each time.', 'この配線にずっとつなぐ相手なら、例えば CH32V003F4P6。いろいろなボードを差し替えるコネクタなら空欄のままにします（つないだ相手は、そのたびに接続確認で分かります）。'), null, 'text', { id: 'conn-part' })),
     el('div', { class: 'mt' }, field(t('Use and wiring memo (optional)', '用途・配線メモ（任意）'), d.note, (v) => { d.note = v; touch(); }, t('Connector number, voltage, use and so on. Writing a voltage changes no setting.', 'コネクタ番号、電圧、用途など。電圧を書いても設定は変わりません。'), null, 'textarea', { id: 'conn-note' })),
     d.original && d.name && d.name.toLowerCase() !== d.original.name.toLowerCase() ? note(t(`Renaming changes the address to oep://${D.unit()}/${d.name}, and the part number and memo move to the new name.`, `名前を変えると、アドレスが oep://${D.unit()}/${d.name} に変わり、型番・メモも新しい名前へ移します。`)) : null,
     !D.dev.memo ? note(t('This probe has no memo area, so the part number and memo are saved in this browser only (other PCs do not get them). The wiring is saved in the probe.', 'このプローブにはメモ領域がないため、型番・メモはこのブラウザだけに保存します（他のPCには渡りません）。配線はプローブに保存します。'), 'amber') : null);
@@ -86,11 +83,12 @@ export function editor(id, query) {
     ...d.groups.map((g, i) => groupEditor(g, i, d, touch)),
     el('div', { class: 'mt' }, el('h3', {}, t('Add a signal to this wiring', 'この配線に信号を追加')), p(t('It is added at the end of the list above.', '上の一覧の最後に加わります。'), 'compact muted'), el('div', { class: 'choice-row' }, ...['debug', 'uart', 'i2c', 'spi', 'custom'].map((tk) => button(t(`+ ${GROUP_TITLE[tk]}`, `＋ ${GROUP_TITLE[tk]}`), () => { d.groups.push(newGroup(tk)); touch(); render(); focusGroup(d.groups.length - 1); }, '', { disabled: tk !== 'custom' && d.groups.some((g) => g.type === tk), 'data-add-group': tk })))));
   return frame([heading(id === 'new' ? t('What goes to which pin?', '何を、どのピンにつなぎますか。') : t(`Edit the wiring of ${d.original?.name}`, `${d.original?.name}の配線を編集`), t('Set the target and its wiring in one place. Saving starts no connection or output.', '相手の情報と配線を、ひとつの場所で設定します。保存しても接続・出力は始まりません。'), 'CONNECTION'),
-    el('form', { id: 'connection-form', onsubmit: (e) => { e.preventDefault(); } }, targetFields, kindPanel, wiring,
-      el('div', { id: 'form-error', class: 'form-error', role: 'alert' }),
+    el('form', { id: 'connection-form', onsubmit: (e) => { e.preventDefault(); } }, targetFields, wiring,
+      el('div', { id: 'form-error', class: 'form-error', role: 'status' }),
       el('div', { class: 'save-bar' }, p(D.dev.saveable ? t('Saving applies the pin names to the probe and stores them, and records the part number and memo. Other unsaved changes in the probe are saved too.', '保存は、ピン名をプローブへ適用して永続保存し、型番・メモを記録します。本体の他の未保存の変更もまとめて保存されます。') : t('This probe cannot store settings. Saving becomes "Apply for now".', 'このプローブは永続保存できません。保存は「今回だけ適用」になります。')),
         actions(button(t('Cancel', 'キャンセル'), () => { state.dirty = false; state.draft = null; go(state.returnTo); }), action(D.dev.saveable ? (id === 'new' ? t('Save the wiring', '配線を保存') : t('Save changes', '変更を保存')) : t('Apply for now', '今回だけ適用'), () => saveDraft(id), 'primary', { id: 'save-connection', disabled: !D.dev.changeable })))),
 ]);
+  queueMicrotask(() => showProblems(d));   // once the form is in the page
 }
 function groupEditor(g, index, d, touch) {
   const pinField = (line, label, optional) => {
@@ -121,22 +119,77 @@ function debugCheck(g, index, d) {
   const r = d.check[index];
   const pins = () => ({ dio: g.wire === 'swio' ? g.pins.swio : g.pins.swdio, clk: g.pins.swclk });
   const ready = g.wire === 'swio' ? !!g.pins.swio : !!g.pins.swdio && !!g.pins.swclk;
-  return panel(el('h3', {}, t('Connection check (optional)', '接続確認（任意）')), p(d.connector ? t('Identifies and shows what is connected. What is identified is not saved with the wiring.', 'つないだ相手を識別して表示します。識別した相手は配線の記録に保存しません。') : t('With the target connected you can check its answer on this wiring. Without it, skip the check and save.', 'ターゲットがつながっていれば、指定した配線で応答を確認できます。未接続なら、この確認を飛ばして保存できます。')),
+  return panel(el('h3', {}, t('Connection check (optional)', '接続確認（任意）')), p(t('With a target plugged in, see whether it answers on these pins, and its ID. On a connector you plug different boards into, check here each time you swap. The result is not saved; without a target, skip it and save.', 'ターゲットをつないでいれば、このピンで応答するかと、そのIDを見られます。ボードを差し替えるコネクタなら、差し替えるたびにここで確かめます。結果は保存しません。ターゲットが無ければ、飛ばして保存できます。')),
     action(t('Check the connection on these pins', '指定したピンで接続確認'), async () => { const out = await D.checkDebug(g.wire, pins()); d.check[index] = out; }, '', { disabled: !ready, 'data-check': index }),
     el('p', { class: 'mt', role: 'status', id: `debug-check-${index}` }, r ? (r.ok ? t(`Answered: ${r.id}. The check connection is closed. The wiring is not saved yet.`, `応答あり: ${r.id}。確認用の接続は終了しています。配線はまだ保存していません。`) : t(`No answer (${r.reason}). Check the wiring, power and method. You can also save it as it is.`, `応答なし（${r.reason}）。配線・電源・方式を見直せます。このまま保存することもできます。`)) : t('Not checked. You can save without the connection check.', '未確認。接続確認を省略して保存できます。')));
+}
+/** What keeps the draft from being saved, checked as it is typed (the same rules saving applies, page.ja.md §6.4):
+ * the name's form and that no other wiring has it, a debug method chosen, the pins each kind needs, no pin twice nor one
+ * another wiring holds, signal and target pin names' forms, every label within 32 bytes.
+ * @returns {{ key: string, text: string }[]} */
+function draftProblems(d) {
+  /** @type {{ key: string, text: string }[]} */
+  const out = [];
+  const name = d.name.trim();
+  if (!name) out.push({ key: 'name', text: t('Give the wiring a connection name.', '接続名を入れてください。') });
+  else if (!/^[A-Za-z]/.test(name)) out.push({ key: 'name', text: t('A connection name starts with a letter.', '接続名は英字で始めてください。') });
+  else if (/[^A-Za-z0-9-]/.test(name)) out.push({ key: 'name', text: t(`"${name.match(/[^A-Za-z0-9-]/)?.[0]}" cannot be in a connection name: letters, digits and hyphens only.`, `「${name.match(/[^A-Za-z0-9-]/)?.[0]}」は接続名に使えません。英数字とハイフンだけです。`) });
+  else if (name.length > 16) out.push({ key: 'name', text: t(`${name.length} characters: a connection name is 16 at most.`, `${name.length}文字です。接続名は16文字までです。`) });
+  else if (D.dev.ports.some((x) => x.name.toLowerCase() === name.toLowerCase() && x.name.toLowerCase() !== d.original?.name.toLowerCase())) out.push({ key: 'name', text: t(`Another wiring is already named ${name} (upper and lower case count as the same).`, `${name} という配線がすでにあります（大文字と小文字は同じとみなします）。`) });
+  if (!d.groups.length) out.push({ key: 'groups', text: t('Add at least one signal.', '信号を1つ以上追加してください。') });
+  const used = new Map();
+  const mine = new Set((d.original?.lines ?? []).map(([c]) => c));
+  for (const g of d.groups) {
+    if (g.type === 'debug' && !g.wire) { out.push({ key: 'groups', text: t('Choose the target\'s debug method.', 'ターゲットのデバッグ方式を選んでください。') }); continue; }
+    for (const line of linesOf(g)) if (!OPTIONAL.has(line) && !g.pins[line] && g.type !== 'custom') out.push({ key: 'groups', text: t(`Choose a pin for ${line} of ${GROUP_TITLE[g.type]}.`, `${GROUP_TITLE[g.type]}の${line}にピンを選んでください。`) });
+    for (const [raw, ch] of Object.entries(g.pins)) {
+      const line = raw.trim();   // spaces around a name are dropped on saving
+      const bad = (/** @type {string} */ v) => v.match(/[^A-Za-z0-9_-]/)?.[0];
+      const shown = (/** @type {string} */ c) => (c === ' ' ? t('a space', '空白') : `「${c}」`);
+      if (g.type === 'custom' && !line) out.push({ key: 'groups', text: t('A signal has no name.', '名前の無い信号があります。') });
+      else if (g.type === 'custom' && bad(line)) out.push({ key: 'groups', text: t(`Signal name "${line}": ${shown(/** @type {string} */ (bad(line)))} cannot be used (letters, digits, _ and - only).`, `信号名「${line}」: ${shown(/** @type {string} */ (bad(line)))}は使えません（英数字・_・- だけ）。`) });
+      const target = g.target?.[raw]?.trim();
+      if (target && bad(target)) out.push({ key: 'groups', text: t(`Target pin name for ${line}, "${target}": ${shown(/** @type {string} */ (bad(target)))} cannot be used (letters, digits, _ and - only).`, `${line} の相手側のピン名「${target}」: ${shown(/** @type {string} */ (bad(target)))}は使えません（英数字・_・- だけ）。`) });
+      if (ch === '' || ch === undefined) continue;
+      const n = Number(ch);
+      if (used.has(n)) out.push({ key: 'groups', text: t(`${D.pinName(n)} is chosen twice (${used.get(n)} and ${line}).`, `${D.pinName(n)} を2回選んでいます（${used.get(n)} と ${line}）。`) });
+      used.set(n, line);
+      const other = D.dev.labels.find(([c]) => c === n)?.[1];
+      if (other && !mine.has(n)) out.push({ key: 'groups', text: t(`${D.pinName(n)} is already used by ${other}.`, `${D.pinName(n)} はすでに ${other} が使っています。`) });
+      const label = `${name}.${line}${target ? `@${target}` : ''}`;
+      if (name && new TextEncoder().encode(label).length > 32) out.push({ key: 'groups', text: t(`The pin name "${label}" is over 32 bytes: shorten the connection or signal name.`, `ピン名「${label}」が32 byteを超えます。接続名か信号名を短くしてください。`) });
+    }
+  }
+  return out;
+}
+/** Show the draft's problems where they are: the name's under its field, the rest above Save (which waits for none). */
+function showProblems(d) {
+  const problems = draftProblems(d);
+  const nameCheck = document.getElementById('conn-name-check');
+  if (nameCheck) {
+    const pr = problems.find((x) => x.key === 'name');
+    // nothing typed yet is not shouted at
+    nameCheck.textContent = pr && (d.name || state.dirty) ? pr.text : '';
+    document.getElementById('conn-name')?.setAttribute('aria-invalid', String(!!pr && !!(d.name || state.dirty)));
+  }
+  const box = document.getElementById('form-error');
+  const rest = problems.filter((x) => x.key !== 'name');
+  if (box) box.replaceChildren(...(state.dirty || d.original ? rest : []).map((x) => el('p', {}, x.text)));
+  const save = /** @type {HTMLButtonElement | null} */ (document.getElementById('save-connection'));
+  if (save) save.disabled = !D.dev.changeable || problems.length > 0;
 }
 async function saveDraft(id) {
   const d = state.draft, errorBox = document.getElementById('form-error');
   const name = d.name.trim();
-  const fail = (m) => { if (errorBox) errorBox.textContent = m; throw new Error(m); };
-  if (!/^[A-Za-z][A-Za-z0-9-]{0,15}$/.test(name)) fail(t('The connection name must be up to 16 letters, digits and hyphens, starting with a letter.', '接続名は英字で始まる、16文字以内の英数字・ハイフンにしてください。'));
-  if (!d.groups.length) fail(t('Add at least one signal.', '信号を1つ以上追加してください。'));
-  if (d.groups.some((g) => g.type === 'debug' && !g.wire)) fail(t('Choose the target\'s debug method.', 'ターゲットのデバッグ方式を選んでください。'));
-  for (const g of d.groups) for (const line of linesOf(g)) if (!OPTIONAL.has(line) && !g.pins[line] && g.type !== 'custom') fail(t(`Choose a pin for ${line} of ${GROUP_TITLE[g.type]}.`, `${GROUP_TITLE[g.type]}の${line}にピンを選んでください。`));
+  const problems = draftProblems(d);
+  if (problems.length) { if (errorBox) errorBox.textContent = problems[0].text; throw new Error(problems[0].text); }
   /** @type {[number, string][]} */
-  const desired = d.groups.flatMap((g) => Object.entries(g.pins).filter(([, ch]) => ch !== '' && ch !== undefined).map(([line, ch]) => [Number(ch), g.target?.[line] ? `${line}@${g.target[line]}` : line]));
+  const desired = d.groups.flatMap((g) => Object.entries(g.pins).filter(([, ch]) => ch !== '' && ch !== undefined).map(([raw, ch]) => {
+    const line = raw.trim(), target = g.target?.[raw]?.trim();
+    return [Number(ch), target ? `${line}@${target}` : line];
+  }));
   const debug = d.groups.find((g) => g.type === 'debug' && g.wire !== 'swio')?.wire ?? '';
-  const out = await D.saveConnection({ original: d.original, name, desired, part: d.part.trim(), note: d.note, connector: d.connector, debug });
+  const out = await D.saveConnection({ original: d.original, name, desired, part: d.part.trim(), note: d.note, debug });
   state.dirty = false; state.draft = null;
   state.notice = t(`"${name}" ${out.persistent ? 'was saved' : 'was applied for now (this probe cannot store settings)'}. ${out.inProbe ? '' : 'The part number and memo were saved in this browser. '}Saving never starts a connection or an output.`, `「${name}」を${out.persistent ? '保存しました' : '今回だけ適用しました（このプローブは永続保存できません）'}。${out.inProbe ? '' : '型番・メモはこのブラウザに保存しました。'}保存によって接続・出力が始まることはありません。`);
   go(state.returnTo);

@@ -14,7 +14,7 @@ export function connectionChange({ name, labels, original = null, desired }) {
   if (new Set(desired.map(([ch]) => ch)).size !== desired.length || new Set(desired.map(([, line]) => line.toLowerCase())).size !== desired.length) throw new Error('Signal names and pins must be unique.');
   const next = new Map(desired.map(([ch, line]) => {
     if (!Number.isInteger(ch) || ch < 0 || ch > 65534) throw new Error('Invalid pin number.');
-    if (!/^(?:[a-zA-Z0-9_-]+(?:@[a-zA-Z0-9_-]+)?|@[a-zA-Z0-9_-]+)$/.test(line)) throw new Error('Invalid signal name.');
+    if (!/^(?:[a-zA-Z0-9_-]+(?:@[a-zA-Z0-9_-]+)?|@[a-zA-Z0-9_-]+)$/.test(line)) throw new Error(`Invalid signal or target pin name: "${line}" (letters, digits, _ and - only).`);
     if (current.has(ch) && !before.has(ch)) throw new Error(`Pin ${ch} is already used by ${current.get(ch)}.`);
     const label = `${name}${line.startsWith('@') ? '' : '.'}${line}`;
     if (new TextEncoder().encode(label).length > 32) throw new Error('A complete pin label must fit in 32 bytes. Shorten the connection or signal name.');

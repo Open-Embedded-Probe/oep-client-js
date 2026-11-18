@@ -1,7 +1,7 @@
 // Pieces several screens share: the probe's band and tabs (page.ja.md §6.1), the "connect first" screen, wiring.
 import { el, p, badge, actions, link, panel, heading, note } from './ui.js';
 import { state, go, routeNow, action, button } from './core.js';
-import { dev, unit, pinName, portLines, isConnector, recordOf, disconnect, browser, saveSettings } from './device.js';
+import { dev, unit, pinName, portLines, recordOf, disconnect, browser, saveSettings } from './device.js';
 import { DEBUG_WIRES, GUIDE_BASE } from './data.js';
 import { t, tr, onLanguage } from './i18n.js';
 import { BOARDS as BOARD_SPECS, boardOf } from './boards.js';
@@ -24,7 +24,6 @@ export function debugChoices(onChoose, selected = '', consoleOnly = false) {
 export function groupsOf(port) {
   const lines = portLines(port), groups = [];
   const take = (names) => Object.fromEntries(names.filter((n) => lines.has(n)).map((n) => [n, lines.get(n)]));
-  const web = dev.records && port ? (isConnector(port.name) ? 'connector' : 'fixed') : 'fixed';
   if (lines.has('swio')) groups.push({ type: 'debug', wire: 'swio', pins: take(['swio', 'nrst']) });
   else if (lines.has('swdio') || lines.has('swclk')) groups.push({ type: 'debug', wire: debugWireOf(port), pins: take(['swdio', 'swclk', 'nrst']) });
   if (lines.has('rx') || lines.has('tx')) groups.push({ type: 'uart', pins: take(['rx', 'tx']) });
@@ -33,7 +32,7 @@ export function groupsOf(port) {
   const known = new Set(['swio', 'swdio', 'swclk', 'nrst', 'rx', 'tx', 'sda', 'scl', 'sck', 'mosi', 'miso', 'cs']);
   const other = [...lines].filter(([n]) => !known.has(n));
   if (other.length) groups.push({ type: 'custom', pins: Object.fromEntries(other) });
-  return groups.map((g) => ({ ...g, kind: web }));
+  return groups;
 }
 /** rvswd and swd share swdio / swclk: the web record tells which, else the record's part, else unknown. */
 export function debugWireOf(port) {
@@ -46,9 +45,10 @@ export function debugWireOf(port) {
 }
 export const GROUP_TITLE = { get debug() { return t('Debug', 'デバッグ'); }, uart: 'UART', i2c: 'I2C', spi: 'SPI', get custom() { return t('Other signals', 'そのほかの信号'); } };
 export function wiringSummary(port) {
-  return el('div', { class: 'wiring-summary' }, ...groupsOf(port).flatMap((g) => [
+  // one line per group: what kind it is, then its pins (page.ja.md §6.3)
+  return el('div', { class: 'wiring-summary' }, ...groupsOf(port).map((g) => el('div', { class: 'wire-row' },
     badge(g.type === 'debug' ? (wireById(g.wire)?.short ?? 'SWD / RVSWD') : GROUP_TITLE[g.type], 'gray'),
-    ...Object.entries(g.pins).map(([line, ch]) => el('span', {}, `${line} → ${pinName(ch)}`))]));
+    el('span', { class: 'wire-pins-line' }, ...Object.entries(g.pins).map(([line, ch]) => el('span', {}, `${line} → ${pinName(ch)}`))))));
 }
 
 export function needConnection(returnTo) {

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Wiring editor: the entries are checked as they are typed - the connection name's problem (not a letter first, a character it cannot take, too long, another wiring's name) under its field, the others (a pin missing or chosen twice or held by another wiring, a signal or target pin name with a character it cannot take, naming the signal, a label over 32 bytes) above Save, which waits until there are none; spaces around a signal or target pin name are dropped. The choice between a fixed target and a connector is gone: the part number field says to fill it for a target that stays and leave it empty for a connector boards are swapped on. The wiring list shows each signal group on its own line.
+- (JA) 配線の編集: 入力を打つたびに確かめる。接続名の誤り（英字で始まらない、使えない文字、長すぎる、ほかの配線と同じ名前）はその欄の下に、ほかの誤り（ピンが無い・2回選んだ・ほかの配線が使っている、信号名や相手側のピン名に使えない文字（どの信号かを書く）、32 byteを超えるラベル）は保存の上に出し、無くなるまで保存しない。信号名と相手側のピン名の前後の空白は外す。「相手が決まっている／コネクタ」の選択は無くし、型番の欄で、ずっとつなぐ相手なら書き、ボードを差し替えるコネクタなら空けると案内する。配線の一覧は信号のまとまりごとに1行で出す。
+
 - (EN) Making a probe: the whole board card is the choice and goes straight on to preparing that board; the separate "Next" button at the bottom is gone.
 - (JA) プローブを作る: ボードのカード全体が選択で、そのままそのボードの準備へ進む。下にあった別の「次へ」のボタンは無くした。
 

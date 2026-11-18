@@ -225,17 +225,28 @@ try {
   await press('シリアルポートを選ぶ'); assert.equal(await evaluate('location.hash'), '#/probe/settings');
   // W03: debug + UART wiring saved with the target absent: no scan, attach or pin assignment (A13).
   await evaluate('globalThis.__forbidTargetIO=true');
-  await go('/probe/wiring/new?purpose=uart'); await tap('[data-kind=connector]');
+  await go('/probe/wiring/new?purpose=uart');
+  assert.equal(await evaluate('document.querySelector("[data-kind]")'), null, 'no fixed / connector choice: the part number field guides it');
   await choose('[data-line="0-rx"]', 3);
   await tap('[data-add-group=custom]'); await choose('[data-line="1-signal1"]', 6);
-  await pick('#conn-name', 'dut'); await pick('#conn-note', 'swap connector');
-  assert.equal(await evaluate('document.getElementById("conn-part")'), null, 'a connector records no part number');
+  // the name is checked as it is typed: the message under the field, Save off until it is right (page.ja.md §6.4)
+  const nameCheck = () => evaluate('document.getElementById("conn-name-check").textContent');
+  const saveOff = () => evaluate('document.getElementById("save-connection").disabled');
+  await pick('#conn-name', '1dut'); assert.match(await nameCheck(), /英字で始め/); assert.equal(await saveOff(), true);
+  await pick('#conn-name', 'du_t'); assert.match(await nameCheck(), /「_」は接続名に使えません/); assert.equal(await saveOff(), true);
+  await pick('#conn-name', 'x035'); assert.match(await nameCheck(), /x035 という配線がすでにあります/); assert.equal(await saveOff(), true);
+  await pick('#conn-name', 'dut'); assert.equal(await nameCheck(), ''); assert.equal(await saveOff(), false);
+  await pick('#conn-note', 'swap connector');
   await snapshot('03-editor');
   await press('配線を保存'); assert.equal(await evaluate('location.hash'), '#/probe/wiring');
   await evaluate('globalThis.__forbidTargetIO=false');
-  await go('/probe/wiring'); assert.match(await text(), /コネクタ（相手はつなぐたびに識別）/); assert.match(await text(), /rx → GPIO/);
+  await go('/probe/wiring'); assert.match(await text(), /相手の型番なし（差し替えて使うコネクタ、または未記入）/); assert.match(await text(), /rx → GPIO/);
   // Editing a saved port keeps its debug lines and changes the record (A14).
-  await go('/probe/wiring/x035'); await pick('#conn-part', 'CH32X035G8U6'); await press('変更を保存');
+  // a space around a target pin name is dropped, not refused; one inside is named in the check above Save
+  await go('/probe/wiring/x035'); await pick('[data-target-pin="0-swdio"]', 'PA 13');
+  assert.match(await evaluate('document.getElementById("form-error").textContent'), /swdio の相手側のピン名「PA 13」: 空白は使えません/);
+  await pick('[data-target-pin="0-swdio"]', 'PA13 '); assert.equal(await evaluate('document.getElementById("form-error").textContent'), '');
+  await pick('#conn-part', 'CH32X035G8U6'); await press('変更を保存');
   assert.equal(await evaluate('location.hash'), '#/probe/wiring'); assert.match(await text(), /CH32X035G8U6/); assert.match(await text(), /swclk → GPIO54/);
   // One connection check from the editor, results not saved (A43).
   await go('/probe/wiring/x035'); await press('指定したピンで接続確認'); assert.match(await evaluate('document.getElementById("debug-check-0").textContent'), /応答あり: dmstatus/);
@@ -341,7 +352,7 @@ try {
   await pick('#language', 'ja'); await delay(120); assert.match(await h1(), /[\u3040-\u30ff\u4e00-\u9fff]/, 'back to Japanese');
   await press('接続を終了');
   assert.deepEqual(exceptions, []);
-  console.log('Browser page: public pages, ESP install with the port reused and a retry without rewriting, Pico install by BOOTSEL and the new device taken, Pico and P4 (DFU) updates, a tab opened before connecting kept through it, wiring saved without target I/O (memo records), edit, connection check (enabled once the pins are chosen), the cable pulled and connected again to the same tab, passthrough applied and saved from the unsaved bar and named in the tools tab, idle pins, settings and memo backup and restore, declarations, Wi-Fi (classic ESP32), hand-over, narrow screens, the language from the browser and from the selector (inputs kept, remembered) and every screen in English passed.');
+  console.log('Browser page: public pages, ESP install with the port reused and a retry without rewriting, Pico install by BOOTSEL and the new device taken, Pico and P4 (DFU) updates, a tab opened before connecting kept through it, wiring saved without target I/O (memo records) with its name checked as it is typed, edit, connection check (enabled once the pins are chosen), the cable pulled and connected again to the same tab, passthrough applied and saved from the unsaved bar and named in the tools tab, idle pins, settings and memo backup and restore, declarations, Wi-Fi (classic ESP32), hand-over, narrow screens, the language from the browser and from the selector (inputs kept, remembered) and every screen in English passed.');
 } finally {
   browserSocket?.close(); socket?.destroy(); if (waiting) waiting.end(); server?.closeAllConnections(); server?.close();
   for (const child of children) { child.stdin?.end(); child.kill(); }

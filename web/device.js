@@ -10,7 +10,7 @@ const usbApi = /** @type {any} */ (navigator).usb, serialApi = /** @type {any} *
 export const VERSION = oep.VERSION;
 export const browser = { usb: !!usbApi && isSecureContext, serial: !!serialApi && isSecureContext, hid: !!hidApi && isSecureContext, secure: isSecureContext };
 
-/** The web page's own memo objects: a port registered as a connector (page.ja.md §6.3). oep-if-memo §4.1: our owner name. */
+/** The web page's own memo objects: which debug wire a port's swdio / swclk are (page.ja.md §6.4). oep-if-memo §4.1: our owner name. */
 export const WEB_OWNER = 'io.github.open-embedded-probe.web';
 const webPortName = (port) => `${WEB_OWNER}/port/${port.toLowerCase()}`;
 const OWNER = 'OEP Web';
@@ -18,8 +18,8 @@ const OWNER = 'OEP Web';
 export const dev = {
   /** @type {any} */ host: null, /** @type {any} */ info: null, /** @type {any} */ caps: null, /** @type {any} */ catalog: null,
   /** @type {[number,string][]} */ labels: [], /** @type {{name:string, lines:[number,string][]}[]} */ ports: [],
-  /** @type {Map<string, any>} */ records: new Map(), /** @type {Set<string>} */ connectors: new Set(),
-  /** this page's own record of each port (kind: connector, debug: rvswd | swd) @type {Map<string, any>} */ webRecords: new Map(),
+  /** @type {Map<string, any>} */ records: new Map(),
+  /** this page's own record of each port (debug: rvswd | swd, which swdio / swclk mean) @type {Map<string, any>} */ webRecords: new Map(),
   /** @type {any} */ memo: null, /** @type {any[]} */ memos: [],
   changeable: false, saveable: false, /** @type {any[]} */ settingsRows: [], /** @type {any} */ settingsState: null, /** @type {any} */ network: null,
   /** settings applied but not saved by this page */ unsaved: false,
@@ -109,7 +109,7 @@ function lostConnection(h, error) {
   dev.lostSession = h.session !== null ? { unit, sid: h.session, corr: h.corr } : null;
   clearInterval(dev.keepalive); dev.keepalive = null;
   Object.assign(dev, { host: null, info: null, caps: null, catalog: null, labels: [], ports: [], memo: null, memos: [], settingsRows: [], settingsState: null, network: null, unsaved: false });
-  dev.records.clear(); dev.connectors.clear(); dev.webRecords.clear();
+  dev.records.clear(); dev.webRecords.clear();
   const why = error instanceof Error && error.message ? error.message : t('the transport closed', '経路が閉じました');
   dev.lost = t(`The connection to ${unit} ended (${why}). Was the cable pulled or the probe reset? Connect again: everything is read afresh, and nothing is sent again by itself. Settings applied but not saved are gone if the probe lost power.`,
     `${unit} との接続が切れました（${why}）。ケーブルが抜けたか、プローブがリセットされた可能性があります。もう一度つなぐと、すべて読み直します。自動で送り直すものはありません。保存していない設定は、プローブの電源が切れていれば消えています。`);
@@ -121,7 +121,7 @@ export async function disconnect() {
   const h = dev.host;
   clearInterval(dev.keepalive); dev.keepalive = null;
   Object.assign(dev, { host: null, info: null, caps: null, catalog: null, labels: [], ports: [], memo: null, memos: [], settingsRows: [], settingsState: null, network: null });
-  dev.records.clear(); dev.connectors.clear(); dev.webRecords.clear();
+  dev.records.clear(); dev.webRecords.clear();
   if (h) { try { if (h.session) await h.end(); } finally { await h.link.close().catch(() => {}); } }
   changed();
 }
@@ -153,7 +153,7 @@ export async function refresh() {
   dev.labels = await oep.settings.labels(dev.host);
   dev.settingsState = (await st.offers('state')) ? await st.state().catch(() => null) : null;
   dev.network = (await st.offers('network')) && dev.catalog.netif.size ? await st.network().catch(() => null) : null;
-  dev.memo = null; dev.memos = []; dev.records.clear(); dev.connectors.clear(); dev.webRecords.clear();
+  dev.memo = null; dev.memos = []; dev.records.clear(); dev.webRecords.clear();
   if (offered('oep.probe.memo').length) {
     dev.memo = await oep.memo.Memo.open(dev.host);
     dev.memos = await dev.memo.list();
@@ -166,7 +166,6 @@ export async function refresh() {
     dev.records.set(port.name.toLowerCase(), record && typeof record === 'object' && !Array.isArray(record) ? record : {});
     const web = dev.memo ? (names.has(webPortName(port.name)) ? await readJson(webPortName(port.name)) : null) : localWeb(port.name);
     if (web) dev.webRecords.set(port.name.toLowerCase(), web);
-    if (web?.kind === 'connector') dev.connectors.add(port.name.toLowerCase());
   }));
 }
 async function readJson(name) {
@@ -176,7 +175,6 @@ const localKey = (port, kind = 'port') => `oep-${kind}:${unit()}:${port.toLowerC
 function localRecord(port) { try { return JSON.parse(localStorage.getItem(localKey(port)) ?? '{}'); } catch { return {}; } }
 function localWeb(port) { try { return JSON.parse(localStorage.getItem(localKey(port, 'web')) ?? 'null'); } catch { return null; } }
 export const recordOf = (port) => dev.records.get(port.toLowerCase()) ?? {};
-export const isConnector = (port) => dev.connectors.has(port.toLowerCase());
 export const portOf = (name) => dev.ports.find((p) => p.name.toLowerCase() === String(name).toLowerCase()) ?? null;
 /** A port's lines as { line -> channel } (lower case). */
 export function portLines(port) {
@@ -189,7 +187,7 @@ export function portLines(port) {
 /**
  * Labels, then the probe's persistent save, then the records: three stores, not one transaction (§6.3). The stage that
  * failed is named; the stages before it stay done.
- * @param {{ original: {name:string, lines:[number,string][]} | null, name: string, desired: [number,string][], part: string, note: string, connector: boolean, debug?: string }} c
+ * @param {{ original: {name:string, lines:[number,string][]} | null, name: string, desired: [number,string][], part: string, note: string, debug?: string }} c
  */
 export async function saveConnection(c) {
   await ensureSession();
@@ -208,9 +206,9 @@ export async function saveConnection(c) {
     stage = t('saving the part number and memo', '相手の型番・メモの保存');
     const previous = c.original ? recordOf(c.original.name) : {};
     const wiringChanged = plan.unset.length > 0 || plan.set.length > 0;
-    const fields = { ...previous, part: c.connector ? null : c.part, note: c.note, ...(wiringChanged || c.connector ? { target: null } : {}) };
+    const fields = { ...previous, part: c.part, note: c.note, ...(wiringChanged ? { target: null } : {}) };
     const renamed = c.original && c.original.name.toLowerCase() !== c.name.toLowerCase();
-    const web = c.connector || c.debug ? { ...(c.connector ? { kind: 'connector' } : {}), ...(c.debug ? { debug: c.debug } : {}) } : null;
+    const web = c.debug ? { debug: c.debug } : null;
     if (dev.memo) {
       await dev.memo.updatePortRecord(c.name, fields);
       if (web) await dev.memo.write(webPortName(c.name), new TextEncoder().encode(JSON.stringify(web)));
