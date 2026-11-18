@@ -17,161 +17,59 @@ before the freeze, revision 1 alone does not fix the forms, so an implementation
 oep-spec checkout beside it, the tests compare the copy with it. The history is in [CHANGELOG.md](CHANGELOG.md).
 Until the freeze the Japanese text (`.ja.md`) is the specification's working text.
 
-What is there:
+Its scope is setting up and keeping probes. The use cases it serves:
+
+1. **Make a probe and update its firmware**: an ESP32 / P4 / P4X over its USB serial (the page's esptool-js), a Pico /
+   Pico 2 by BOOTSEL and PICOBOOT over WebUSB (`rp2ResetToBoot`, `rp2Write`), a P4 / P4X's update by USB DFU, the image
+   chosen from the Release's firmware-<version>.json (`fetchFirmwareManifest`, `pickFirmware`, `verifyFirmware`).
+2. **Check that it connects and what it declares**: the transports, confirm, list and describe, `dump` (each
+   interface's declarations as text or JSON, and what core §1.2 requires and the probe did not give).
+3. **Set it up, back it up and put it back**: the settings (core §13: labels, idle and disabled pins, the log
+   pass-through, Wi-Fi, `usb.transports` with save and restart), the settings file, the memo area (`oep.probe.memo`, the
+   port record `oep.probe.memo/port/<port>`).
+4. **Register the wiring to a target and check it**: the labels and the port records; a debug wire's connection check
+   (`wire.Wire.check`: attach on the pins, the id that answered - DMSTATUS on rvswd / swio, DPIDR on swd, an RP2040's
+   multidrop core 0 tried when SWD gets no answer - and detach).
+5. **Hand the probe over to the tool that does the work**: debugging (the IDEs, oep-client-python), logs (a serial
+   monitor through the pass-through, oep-client-python), captures (WireSkein), buses, signals and peers
+   (oep-client-python). This package does none of that work.
+
+The parts:
 
 - the core: the registry (generated from oep-spec), frames (COBS + CRC, length), messages, the link (corr matching, one
   resend after a wait, up to 3 at once after a broken frame on a held serial port (host guide §8), pipelining, pushes
-  and events; every answer waited at least core §4.4's floor - argument time + 1000 ms + a
-  serial port's transfer time, `Link.waitFloorMs` -; the transports §5 resync on length frames, its confirm 250 ms after the
-  host's last write, vendor bulk waiting for quiet up to the longest lease and HID not at all (its reports' first finds
-  the frames again, transports §1), none for a pause inside a frame; an unanswered resend fails the transport, `TransportFailed`,
-  and the next request first recovers with a confirm, COBS included; a frame shorter than its header is broken), the host
-  (confirm - `limits.transport`, the index this host came in on; later confirms ask for the revision in use; one outside
-  core §7.1's bounds, a max_op_ms outside 1..600000 or an fn 0 ops outside core §7.4's form makes the probe
-  `NotUsable`, an fn's ops outside it that fn `FnNotUsable` -, `clock()` - fn 0's clock against this host's
-  `performance.now()`: `{ hostBeforeMs, hostAfterMs, roundTripMs, uptimeNs, bootId }`, the probe's time matching the
-  midpoint within half the round trip -, session - every open a new one under a new random id in the request header; end, a lapsed lease
-  or force release everything the session made, and a request of an ended session is `NoSession` (no resume); a
-  closed transport does not end it, so `connect` (`keepSession`, default on) keeps the open session's id per probe -
-  Node: `<unit_id>.session` under `$OEP_SESSION_DIR`, `$XDG_RUNTIME_DIR/oep-client` or the user's cache directory, the
-  same file as oep-client-python's; a browser: localStorage with a Web Lock - and the next run's first open opens that
-  id and ends it at once (`Host.endPrevious`, `keptsession.KeptSession`, host guide §5) -, lock,
-  subscribe - `subscribe(fn, minBytes, maxDelayMs)` / `unsubscribe(fn)`: fn's own ops 0x30 / 0x32 (core §11.3) -,
-  restart - `requestRestart()`, and `restartProbe({ reopen, waitMs })`: oep.probe.restart's restart (found by name), then
-  wait a moment (about 100 ms, host guide §5.2), open again through `reopen` when given (or keep the link) and confirm,
-  retried until the probe's restart_max_ms (`core.restartMaxMs`, that interface's describe, read before the restart; a
-  longer `waitMs` is cut to it; 10 s when it declares none; past it the probe is gone and the last error is thrown), and return the new boot_id, `NotRestarted` when it
-  stayed the same), list / describe (list pages by `first` alone and the host keeps the names under a prefix on label
-  boundaries; each fn's `ops`: `core.ops` / `offers`, `Interface.ops()` / `.offers(op)`;
-  `core.require` throws, without sending, the same `Rejected` with detail unknown_operation the probe answers) / plan
-  (`core.planApply` / `planRelease` / `planRoles` on oep.probe.plan, found by name);
-- the interfaces: the debug wires (rvswd, swio, swd) and riscv-dm, ARM ADI / MEM-AP / Cortex-M, the target console, the
-  fixtures (gpio, uart, i2c-target, spi-target, i2c-controller, spi-controller, pwm, counter, dac), the captures (logic, analog, capture-group, sigrok .sr), the settings
-  (core §13), the memo area (`oep.probe.memo`, with the port record `oep.probe.memo/port/<port>`) and the `oep dump` view;
-- the transports: WebSerial, WebUSB (vendor bulk), WebHID in the browser; TCP, serial ports (`serialport`) and USB (`usb`)
-  in Node (the native packages optional); serial ports open 8N1 without flow control, DTR and RTS asserted (transports §4);
-  a USB probe is found by the project's USB VID:PID `1209:4F45` alone (transports §3: the WebUSB / WebHID choosers' default
-  filter, Node's `findUsbProbes` / `findSerialProbes` / `findProbes`, `openUsb()` - exactly one probe on it is opened, by
-  vendor bulk, else its CDC port; several: `SeveralProbesError` lists them, name one); the
-  WebSerial chooser has no default filter, so a UART bridge or a built-in USB serial stays selectable; a probe on TCP
-  (Node only - a browser can neither open TCP nor send mDNS, so the page has no TCP) is opened by `openTcp({ host, port
-  })`, and no port is fixed (transports §3): `openTcp({ host })` takes the port its DNS-SD `_oep._tcp` record announces,
-  `openTcp({ unitId })` opens the probe whose TXT `unit_id` it is (describe's unit_id checked after opening, as for any
-  named probe), and `browse()` / `findUnit()` / `portOf()` (`oep-client-js/node`, src/node/discovery.js) are the
-  dependency-free mDNS query behind them (sent out of every IPv4 interface, `interfaceAddresses()`, the answers merged; IPv4, the local link only: behind a NAT or across subnets nothing is found -
-  give host and port; the address is also the wifi state's `ipv4` over another transport). The service name `oep` is
-  not registered, so another service may advertise `_oep._tcp` (host guide §4.1): `verifyFound(found)` checks every
-  instance at once - a TCP connection, confirm (an `OEP!` answer) and fn 0's describe, whose unit_id must be the TXT
-  unit_id, 1 s per answer, no session opened - and `browse({ verify: true, onDropped })` keeps only those; `findUnit()`
-  (and so `openTcp({ unitId })`) verifies by default and passes over an instance it cannot verify (`verify: false`: the
-  first announced one);
-- the firmware update: USB DFU (the ESP32-P4 / P4X), PICOBOOT over WebUSB (the RP2040 / RP2350: `rp2Write`, after
-  `rp2ResetToBoot`) and the Release's firmware-<version>.json;
-- the browser workspace: setup and named connections, GPIO/UART/I2C/SPI/PWM/counter/DAC, target debugging,
-  memory and console, settings and memo storage, initial firmware installation and updates and diagnostics. Capture leads to WireSkein; target-specific
-  flash programming leads to the appropriate development tools;
-- port_speed (oep-if-link §3 is the handshake, an op of the optional interface `oep.probe.link` that the probe offers when its
-  ops set it; the procedure is the oep-spec host guide §17, opt-in):
-  `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, record })` (or
-  `portSpeed: true | [candidates]` with `flows` / `verify` / `record` on `connect` / `openWebSerial` / `openSerial`) runs
-  a UART bridge faster for the session; the request is baud, step and verify_ms, on the port it comes in on (`speed.speedRequest`).
-  **The default ceiling is 500000** (host guide §17): the default
-  candidate is 500000 alone, and a rate above `speed.DEFAULT_CEILING` goes in the candidates only when the user named it
-  (the page's rates field, a setting). Such a rate, in the minimal and the full form alike, is committed only after its
-  **1 s verify** (host guide §17.3.3): in the try state, full frames (source max_frame - 7, sink max_frame - 12) of oep.probe.link source (in) and
-  sink (out), and duplex too when the full form verifies it, each for at least 1 s (`speed.FAST_VERIFY_MS`) at its n,
-  judged as a flow is, no second run at n = 1; its try asks verify_ms 4000 (6000 with duplex), so it needs a lease of
-  5000 (7000) ms or more (`speed.leaseFor(candidates, { flows, verify })`; `connect` takes at least that, a shorter
-  lease skips the candidate). Committed, it has the probation and in-use judging of any rate (why: on a bridge, 921600
-  passed 16 full frames each way and still broke answers in every 9 KiB upload; 500000 was clean on every bridge
-  measured). The **minimal form** (the default, about 50 ms, no measurement): each candidate
-  in order - `try` (answered at the speed now, then the probe switches) -> the host switches to the requested baud (the
-  probe's answered baud only when the platform refuses it) -> 20 ms -> a `confirm` (100 ms, up to 3) -> `commit`. The
-  **full form** (`verify: true`, or `flows` given): a baseline at the boot speed per flow (this session's frames, or 60
-  measured), then for each candidate every flow the session will use - `flows` of `'in' | 'out' | 'duplex'` or
-  `[flow, n]` (in = oep.probe.link source probe -> host, out = oep.probe.link sink host -> probe, duplex = both interleaved; `n` in flight,
-  0 = the most the link keeps) - 16 full frames (oep-if-link §2), counting broken and lost and measuring KB/s; a flow fails
-  on broken + lost >= 3 over max(2 x baseline, 5 %), runs once more at n = 1 first (then n = 1 is the link's cap,
-  `inflightCap`), and one failed flow fails the candidate. A failed candidate reverts (step 2) and goes back to the boot
-  speed, confirmed there. The first candidate that passes is kept; a rate the probe's UART cannot make is skipped. The
-  report (`host.link.speed`: `base`, `rate`, `chosen`, `baseline`, `trials` with `flows`, `inKBs` / `outKBs` /
-  `duplexKBs`, `stepDowns`, `skipped`; `speedText(report)`) is there to budget a capture or a write. WebSerial changes
-  the rate by closing and opening the same port again (DTR / RTS asserted again together at once), Node's
-  `serialport` by `update`. An `end`, a revert or a restart takes the link back to the boot speed at once; while raised the link
-  sends a keepalive when quiet for 1 s (under half of port_speed_idle_ms, 3 s), and `host.link.keepAlive()` does the
-  same for a caller that sits idle. A request unanswered at a raised rate goes again at that rate first - its first
-  wait at most `RAISED_FIRST_WAIT_MS` (a third of port_speed_idle_ms) and a quarter of the lease, never under core
-  §4.4's floor (host guide §17.3.2 item 4) - and only when that gets no answer either falls back to the boot speed,
-  confirmed within port_speed_idle_ms + host_wait_add_ms (an Error when no confirm comes, never the raised rate
-  again), and goes once more there. In use, a committed rate's first 32 KiB and 1 s (`probationBytes`,
-  `probationMs`) are its probation: 3 or more broken or lost frames over max(2 x baseline, 5 %), or a missed answer,
-  count as a verify failure and step down at once (the 16-frame verify stays the quick gate). After it the link judges
-  the frames of the last 3 s (none under 50): over max(2 x baseline, 10 %) broken or lost steps down. A step down is
-  port_speed revert, the boot speed, a confirm, then the next lower candidate of that call that has not failed in the
-  session (a fresh try -> confirm -> verify -> commit; none left: the boot speed); a rate that broke stays unused for
-  the session, and so does every rate above it (`speed.steppedDown`, `downWhy`, `stepDowns` with `to` and
-  `probation`). `maxTries` bounds the candidates one call tries (a capture host wants 2). `record: true` (off by
-  default; or a file path, or a `speedrecord.SpeedRecord`) keeps passed / failed rates - a pass for 30 days, a failure
-  for 1 day, a failure measured within 2 s (`settleMs`) of a breakdown at another rate as unknown - in Node per (port
-  path, unit_id) in `~/.cache/oep-client/link-speed.json` (`$XDG_CACHE_HOME`; the same file as oep-client-python's),
-  in a browser in localStorage by unit_id - and puts a passed rate first, failed ones out (`report.skipped`; every
-  candidate failed: the slowest is tried once, `report.retried`); an `x-` unit_id (core §7.5) keys nothing. The port
-  raised is the one this host came in on (confirm's transport TLV) when that is a UART bridge. The same procedure as
-  oep-client-python.
-- the console (oep-if-console): a write goes into the stream's send queue (the probe's own size, not declared) and is
-  answered with what fitted; `ConsoleIO` writes at most a frame at a time and goes on from each `accepted`. A stream is the probe's per connection and mechanism: a closed one stays readable until the next open,
-  which gives the same number back.
-- the debug waits (oep-if-debug §1, §4.3): attach, scan and riscv-dm's reset answer within max_op_ms, the argument time
-  of the host's wait (`Wire.attachMs()`, `scanMs()`, `RiscvDm.resetMs()`; `core.FALLBACK_MAX_OP_MS` for a probe that
-  declares none). attach names its pins in the fixed part (`pins` null: the wire's one candidate pair,
-  `candidatePairs()` from describe) and makes a new connection every time (pins a live one holds: `Unavailable` cause 1);
-  `scan()` without pairs tries the candidate pairs, in requests that fit max_frame; `holds()` lists the ports held at
-  their rest; rvswd's `idleClock` says the rest a connection uses. riscv-dm's reset answers status flags pc (`reset()` ->
-  `{ flags, pc }`, DATA0 written back first); a run whose preparation failed is stopped 3 (`RunResult.notRun`), an unknown
-  stopped byte `unknownStopped`; `readRegister` keeps DATA0 (`dataSaved`) and `resume` / `step` / `run` / `reset` write it
-  back first (`restoreData`, debug §4); `declared()` names the optional ops offered (halt and resume among them).
-- block operations: riscv-dm / arm-adi `readBlock` / `writeBlock` move at most min(max_length, what the route's
-  max_frame carries) / 4 words (oep-if-debug §4.5); a probe with block ops that declares no max_length throws
-  `riscv.NoMaxLength`. A MEM-AP on a probe without read_block / write_block is driven with raw transfer lists.
-- the fixtures: gpio's set is [channel, mode] pairs (no strength selection; the output strength is the probe's own),
-  i2c-target has one form (`configure(address, { nackFrom })` - nackFrom: the n-th data byte of each write and after
-  NACKed, where describe declares it -, every write with data one frame, reads from `preloadTx` slots or 0xFF,
-  `status()` -> `{ state, queued, rxFrames, txSlots, errors }`, `internalPullups()`; stretch an optional op), spi-target
-  has no reset, uart's `status()` is `{ baud, format, configured }` (baud 0: not configured).
-- the settings (oep-spec core §13; settings.js): fn 0's get / set / unset / save / state / network. Each owner - the core
-  (fn 0) or an interface - declares its items in its describe; `new Settings(host)`: `catalog()` = the names of this
-  boot (each fn's category `core` / `name/instance`, the items and their choices, the channel / route / netif names),
-  `show()` = every value as `{ category, name, value }` (no origin: the firmware's initial values are values like any
-  other, core §13.4), `changeable()` (set / unset offered), `setNamed(category,
-  { flat: value })` / `unsetNamed` / `unsetAll`, raw `set` / `unset` by [fn, number, key], `save()`, `state()`,
-  `needsSave()`, `network()`; `export()` / `planImport(doc)` / `applyImport(plan)` = the settings file
-  (oep-client-python docs/oep-settings-file.ja.md); `findLine(source, name, { port })` is host guide §5.3's line
-  lookup: port S's line N is the label `S.N`, compared ignoring ASCII case (without a port, the one port named);
-  `portsNamed(labels)` the ports as written. A secret (the Wi-Fi passphrase) is never read:
-  get gives no data, `show()` and the file `{ secret: true }`; 0 bytes in a set keep it. The page's settings tab sets a
-  secret in a password field that is cleared once read and never filled back (empty: keep).
-- capture: configure's TLVs follow core §2.3 (a value the probe does not handle is `Unsupported` with the tag as
-  received); data format 1, the logic blocks (`dataFormat`, `carriage` role -> [sample / any_high / any_low /
-  change_latch, D] for the reduced channels, `roles`, `blockMax`; a segment's size follows from its samples, read as
-  `blocks()` or `columns()`, captureblocks.js) and 4, the test counter; `triggerOpts` (arm, rearm, when, hysteresis),
-  §3.8's `glitchFilterNs` and `inputHysteresis` (critical; off unless asked; in use: `Config.glitchNs` / `.hysteresis`),
-  trigger records (`triggers()`), stream_buffer over data_rate (`Config.tolerableDelayS()`), judge_latency_ns; streaming frames' segment
-  info (`Received.segments`); `read()` throws `ReadGap` for bytes the probe no longer has; status's named extensions
-  (`CaptureDrops.of(status)`, the Arduino firmware's drop diagnostics). The capture-group binds tracks started at once,
-  or with a `TriggerSource` of `Stage`s and `Cond`s (§4.4; `triggerCaps()` says what it takes).
-- any op by name: `call(hst, interface, 'add', { fields: { a: 2, b: 3 } })` packs the request and reads the answer by
-  the describe's op_name / op_field (core §7.4; by number with `payload` bytes too); `callWait` starts a job
-  (oep::SimpleInterface::job) and reads its status op until it ends. `dump` shows the ops by name and their fields.
-- besides: attach and scan
-  wait their budgets (`attachMs`, `scanMs`); `Unsupported.supported` (confirm's range); an `x-` unit_id names no USB
-  device; text from an answer is shown without control characters (`message.shown`), open's owner is cut on a
-  character (`ownerText`), a label the probe would refuse is not sent; `dump` names what core §1.2 requires and the
-  probe did not give (`missing`); `riscv.StepError` (`stepLeft`).
+  and events; every answer waited at least core §4.4's floor - argument time + 1000 ms + a serial port's transfer time,
+  `Link.waitFloorMs` -; the transports §5 resync on length frames, its confirm 250 ms after the host's last write,
+  vendor bulk waiting for quiet up to the longest lease and HID not at all (its reports' first finds the frames again,
+  transports §1), none for a pause inside a frame; an unanswered resend fails the transport, `TransportFailed`, and the
+  next request first recovers with a confirm, COBS included; a frame shorter than its header is broken; a serial port's
+  first confirm is retried for port_speed_idle_ms + host_wait_add_ms, as a rate another host raised goes back by then),
+  the host (confirm - `limits.transport`; later confirms ask for the revision in use; one outside core §7.1's bounds, a
+  max_op_ms outside 1..600000 or an fn 0 ops outside core §7.4's form makes the probe `NotUsable`, an fn's ops outside
+  it that fn `FnNotUsable` -, `clock()`, the session - every open a new one under a new random id; a closed transport
+  does not end it, so `connect` (`keepSession`, default on) keeps the open session's id per probe - Node: `<unit_id>.session`
+  under `$OEP_SESSION_DIR`, `$XDG_RUNTIME_DIR/oep-client` or the user's cache directory, the same file as
+  oep-client-python's; a browser: localStorage with a Web Lock - and the next run's first open ends it at once
+  (`Host.endPrevious`, `keptsession.KeptSession`, host guide §5) -, the lock, restart - `requestRestart()` and
+  `restartProbe({ reopen, waitMs })`, retried until the probe's restart_max_ms -, list / describe, plan);
+- the settings (settings.js): `new Settings(host)`: `catalog()` = the names of this boot, `show()` = every value as
+  `{ category, name, value }`, `setNamed(category, { flat: value })` / `unsetNamed` / `unsetAll`, raw `set` / `unset`,
+  `save()`, `state()`, `needsSave()`, `network()`; `export()` / `planImport(doc)` / `applyImport(plan)` = the settings
+  file (oep-client-python docs/oep-settings-file.ja.md); `findLine(source, name, { port })` is host guide §5.3's line
+  lookup (port S's line N is the label `S.N`). A secret (the Wi-Fi passphrase) is never read: get gives no data, `show()`
+  and the file `{ secret: true }`; 0 bytes in a set keep it;
+- the transports: WebSerial, WebUSB (vendor bulk), WebHID in the browser (`oep-client-js/browser`); serial ports open 8N1
+  without flow control, DTR and RTS asserted (transports §4); a USB probe is found by the project's USB VID:PID
+  `1209:4F45` alone (transports §3: the WebUSB / WebHID choosers' default filter); the WebSerial chooser has no default
+  filter, so a UART bridge or a built-in USB serial stays selectable. Node (`oep-client-js/node`) has TCP only,
+  `openTcp({ host, port })`: the tests' virtual bench, a local broker or a probe on the network given by host and port;
+- besides: `Unsupported.supported` (confirm's range); an `x-` unit_id names no USB device; text from an answer is shown
+  without control characters (`message.shown`), open's owner is cut on a character (`ownerText`), a label the probe
+  would refuse is not sent.
 
 Tested against oep-client-python's virtual bench (a probe, the targets behind it and the fixture wiring, modelled after
-the real jigs: `python -m oep_client.virtual_bench_serve`) and scripted devices (oep-spec's test vectors among them:
-sessions.json, ops.json, ops_encoding.json, capture_formats.json and logic_layout.json included); the browser transports, DFU and the page are not yet checked on
-hardware.
+the real jigs: `python -m oep_client.virtual_bench_serve`) and scripted devices (oep-spec's test vectors among them: hid_reports.json, sessions.json, ops.json and
+ops_encoding.json included); the browser transports, DFU and the page are not yet checked on hardware.
 
 Until the v1 freeze the spec may break and this package follows it at once, with the probe firmware
 ([OpenEmbeddedProbe](https://github.com/Open-Embedded-Probe/oep-probe-arduino)) and
@@ -183,7 +81,7 @@ Until the v1 freeze the spec may break and this package follows it at once, with
 |---|---|---|
 | `src/` | `oep-client-js` | the core, no environment (bundled to `dist/oep-client.js`) |
 | `src/browser/` | `oep-client-js/browser` | WebSerial, WebUSB, WebHID |
-| `src/node/` | `oep-client-js/node` | serial ports, USB, TCP |
+| `src/node/` | `oep-client-js/node` | TCP |
 | `web/` | - | the web page (built to `site/` for GitHub Pages; not in the npm package) |
 | `test/` | - | `node:test`, against oep-client-python's virtual bench over TCP |
 
@@ -201,7 +99,7 @@ npm run test:browser # Chromium UI verification against the Python virtual probe
 ```
 
 The browser page follows the [requirements and screen specification](docs/page.ja.md), [connection handoff](docs/page-connection.ja.md) and [acceptance criteria](docs/page-acceptance.ja.md) (Japanese).
-It covers the OEP introduction, use cases and boards (readable without a device), probe creation (ESP32 / P4 / P4X over USB serial, Pico / Pico 2 over BOOTSEL) through initial setup, wiring and target records (fixed targets and connectors, several ports), purpose-based operations (debug, debug-wire console, UART, I2C, SPI, GPIO, PWM, counter, DAC, I2C / SPI peers), probe settings (passthrough, idle states, Wi-Fi), update / backup / restore / diagnostics, and handover to IDEs, WireSkein and Python.
+It covers the OEP introduction, use cases and boards (readable without a device), probe creation (ESP32 / P4 / P4X over USB serial, Pico / Pico 2 over BOOTSEL) through initial setup, wiring and target records (fixed targets and connectors, several ports) with a debug wire's connection check, what each purpose needs prepared here and the tool that does its work, probe settings (pass-through, idle states, Wi-Fi, USB transports), update / backup / restore / diagnostics, and handover to IDEs, WireSkein and Python.
 The page is in English and Japanese: the browser's languages choose by default (English for any other), and the selector in the header overrides it for this browser. S3 / C3 / C6 take a compatible merged image; CH32 initial installation is not offered. Hardware verification is listed in the acceptance criteria §3.2.
 The site bundles a pinned `esptool-js`; the npm library gains no runtime dependency.
 `npm run serve` fetches release images on first use and caches them in `.cache/firmware`. Refresh with `node scripts/fetch-firmware.js`.

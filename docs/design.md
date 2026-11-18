@@ -10,6 +10,11 @@ How oep-client-js is laid out, what goes where and what it does not do.
   v1 (`docs/oep-core.ja.md` and `interfaces/*.ja.md`).
 - A web page built on the same library ("OEP Probe Tool") on GitHub Pages: set a probe up and update its firmware from
   the browser alone.
+- Its scope is setting up and keeping probes: making one and updating its firmware, checking that it connects and what
+  it declares, its settings and memo backed up and put back, the wiring to a target registered and checked (a debug
+  wire's attach and detach), and the probe handed over to the tool for the work. The work itself - debugging, captures,
+  buses and signals, peers, automated tests - is oep-client-python's, WireSkein's and the IDEs'; this package does none
+  of it.
 - The counterpart of the Python [oep-client-python](https://github.com/Open-Embedded-Probe/oep-client-python). It is one
   of the tools that follow the spec; when the spec breaks, it is fixed together with the others.
 
@@ -18,12 +23,12 @@ How oep-client-js is laid out, what goes where and what it does not do.
 ```text
 src/            the library (the core, no environment)   -> npm "oep-client-js" (bundled to dist/oep-client.js)
   index.js        the entry: VERSION and the core's public API
-  the rest        frames (cobs.js), messages, the link, the host, core, settings, the interfaces (fixture.js, capture.js,
-                  riscv.js, arm.js, console.js and others), registry.js (generated)
+  the rest        frames (cobs.js), messages, the link, the host, core, settings, memo, dump, the debug wire's connection
+                  check (wire.js), the firmware (firmware.js, picoboot.js, dfu.js), registry.js (generated)
 src/browser/    the browser's transports                 -> npm "./browser"
   index.js        WebSerial, WebUSB (vendor bulk, DFU), WebHID
 src/node/       Node's transports                        -> npm "./node"
-  index.js        serial ports (serialport), USB (usb), TCP (node:net; found by DNS-SD over mDNS: discovery.js, node:dgram)
+  index.js        TCP (node:net): the tests' virtual bench, a probe given by host and port
 web/            the web page's sources                    -> site/ (scripts/build-site.js) -> GitHub Pages
 test/           tests (node:test), against the Python virtual bench over TCP
 scripts/        build, site, tests, release tools
@@ -35,24 +40,20 @@ docs/           this document, the release steps
 - `site/` is not in the npm package (the page is served from Pages); `src/node/` is not in `site/`.
 - Types are JSDoc, checked with `// @ts-check` and `tsc --noEmit`; the code is not TypeScript. `tsc` writes the
   declarations (`types/`) from the JSDoc.
-- The OEP library has no runtime dependencies. Only the site bundles a pinned esptool-js for ESP ROM programming. Node's `serialport` and `usb` are native modules: optional, installed by whoever talks to
-  probes from Node (a browser-only user never gets them).
+- The OEP library has no runtime dependencies. Only the site bundles a pinned esptool-js for ESP ROM programming.
 
 ## 3. Transports
 
 | Transport | Browser (`./browser`) | Node (`./node`) | Frames (transports §1) |
 |---|---|---|---|
-| USB CDC, USB-Serial/JTAG, USB-UART bridge | WebSerial | serialport | COBS + CRC |
-| vendor bulk (class 0xFF) | WebUSB | usb (WebUSB-shaped) | length(u16) message |
+| USB CDC, USB-Serial/JTAG, USB-UART bridge | WebSerial | - | COBS + CRC |
+| vendor bulk (class 0xFF) | WebUSB | - | length(u16) message |
 | vendor HID | WebHID | - | length messages in reports with count and first |
-| TCP (a probe on Wi-Fi, a local broker, the tests' virtual bench) | - | node:net | length(u16) message |
+| TCP (the tests' virtual bench, a local broker, a probe on Wi-Fi given by host and port) | - | node:net | length(u16) message |
 
-- TCP is Node's alone: a browser can neither open a TCP connection nor send mDNS, so the page offers no TCP. A probe on
-  TCP is found as transports §3 says - DNS-SD `_oep._tcp` over mDNS, the port the SRV record's (none is fixed), TXT
-  `unit_id` - by `browse()` / `findUnit()` / `portOf()` (src/node/discovery.js, no dependency; the query goes out of every IPv4 interface) or given as host and port
-  (`openTcp({ host, port })`); `openTcp({ unitId })` checks describe's unit_id after opening. `oep` is not a registered
-  service name, so what a browse finds is verified before use (host guide §4.1): `verify` / `browse({ verify: true })`
-  and `findUnit()` (by default) keep only the instances that answer confirm and whose describe unit_id is their TXT one.
+- TCP is Node's alone: a browser can neither open a TCP connection nor send mDNS, so the page offers no TCP. Node opens
+  it by host and port (`openTcp({ host, port })`; `unitId` checks describe's unit_id after opening). Finding probes on
+  the network (DNS-SD) and Node's serial ports and USB are oep-client-python's.
 
 - WebUSB, WebSerial and WebHID are Chromium only (Chrome, Edge), and the page must be served over HTTPS (or localhost).
 - Probes are recognised as transports §3 says: automatically only by the project's own USB VID:PID, `1209:4F45`
@@ -61,24 +62,21 @@ docs/           this document, the release steps
   with a confirm only first, closed with `NotOepProbe` when no valid answer comes. The WebUSB / WebHID choosers' default
   filters are that VID:PID (`PROJECT_USB_FILTERS`; WebHID with the OEP collection, usage page 0xFF4F / usage 0x45).
   WebSerial's chooser gets no built-in filter (a UART bridge or a built-in USB serial is never on that VID:PID);
-  `PROJECT_SERIAL_FILTERS` narrows it to probes. In Node, `findUsbProbes` and `findSerialProbes` list the devices and the
-  CDC ports on that VID:PID, `findProbes` lists each device once whatever ways in it has, and `openUsb()` with nothing
-  given opens the one probe there (vendor bulk, else its CDC port); with several it opens none and `SeveralProbesError`
-  lists them (unit id, ways in) - name one. Nothing looks at iProduct. Inside a probe the ports are chosen by the interface values
+  `PROJECT_SERIAL_FILTERS` narrows it to probes. Nothing looks at iProduct. Inside a probe the ports are chosen by the interface values
   (registry `usb`).
 
 ## 4. Browser workspace
 
 The page's purpose, scope and flows are in the [requirements and screen specification](page.ja.md), [connection handoff](page-connection.ja.md) and [acceptance criteria](page-acceptance.ja.md) (Japanese).
 
-`web/` is split into `app.js` (public pages, probe creation, connecting, routing), `work.js` (initial setup, home, wiring list and editor),
-`operate.js` (purpose-based operations, capture preparation, passthrough), `manage.js` (probe settings, maintenance, other tools) and
-`device.js` (everything done to the connected probe). Screens reach the probe only through `device.js`; saving, loading and moving between
-screens never scan, attach, assign pins or drive outputs. `npm run test:browser` runs installation through handover against the Python virtual
-probe in Chromium.
+`web/` is split into `app.js` (public pages, probe creation, connecting, routing), `work.js` (initial setup by purpose, home, wiring list and
+editor with the connection check), `passthrough.js` (the log pass-through setting), `manage.js` (probe settings, maintenance, the hand-over to
+tools) and `device.js` (everything done to the connected probe). Screens reach the probe only through `device.js`; saving, loading and moving
+between screens never attach, assign pins or drive outputs - the connection check attaches only when asked. `npm run test:browser` runs
+installation through handover against the Python virtual probe in Chromium.
 
-- `web/app.js`: connection/session state and the screens. `web/signals.js`: the forms of the declared I/O functions.
-- `web/model.js`: input validation, routes and display values. `web/boards.js`: board guidance.
+- `web/data.js`: the boards, the purposes (what the page prepares for each, and the tool that does the work) and the documents.
+- `web/model.js`: connection names and firmware versions. `web/boards.js`: board guidance.
 - `web/oep-client.js`: the source's public API entry, replaced by the site build with an entry that refers to `site/src/`.
 - `tsconfig.web.json` checks the browser code too, and `npm run test:browser` exercises it in Chromium with the Python
   virtual probe.
@@ -96,8 +94,6 @@ probe in Chromium.
   repeats anything that changes it.
 - **A probe not used**: a confirm outside core §7.1's bounds, or a max_op_ms outside 1..600000, throws `NotUsable` and
   the host sends nothing more to that probe (C-20, C-47). The page says why, with the values.
-- **VS Code**: an extension (Node) can use `./node`, but the native modules need builds for VS Code's Electron. A webview
-  has no WebSerial / WebUSB.
 
 ## 6. Tests
 

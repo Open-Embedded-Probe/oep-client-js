@@ -10,6 +10,9 @@ oep-client-js の構成と、何をどこに置くか、何を作らないか。
   の v1（`docs/oep-core.ja.md` と `interfaces/*.ja.md`）に従います。
 - 同じライブラリを使った Web ページ（「OEP Probe Tool」）を GitHub Pages に置きます。probe の設定と firmware の更新を、ブラウザだけで
   できるようにします。
+- 対象はプローブの設定と保守です: プローブを作り firmware を更新する、つながるかと宣言を確かめる、設定とメモを控えて戻す、ターゲットへの
+  配線を登録して確かめる（デバッグ線の attach と detach）、作業をする道具へ引き継ぐ。作業そのもの ― デバッグ、取り込み、バスと信号、
+  相手役、自動試験 ― は oep-client-python、WireSkein、IDE が行い、この package はしません。
 - Python の [oep-client-python](https://github.com/Open-Embedded-Probe/oep-client-python) と対になります。仕様を追う道具の 1 つで、
   仕様を壊すときは、ほかの道具と一緒に直します。
 
@@ -18,12 +21,12 @@ oep-client-js の構成と、何をどこに置くか、何を作らないか。
 ```text
 src/            ライブラリ（環境に依らない核）         -> npm の "oep-client-js"（dist/oep-client.js にバンドル）
   index.js        入口。VERSION と、核の公開 API
-  ほか            フレーム（cobs.js）、メッセージ、link、host、core、settings、各インターフェース（fixture.js、capture.js、riscv.js、arm.js、console.js など）、
-                  registry.js（生成物）
+  ほか            フレーム（cobs.js）、メッセージ、link、host、core、settings、memo、dump、デバッグ線の接続確認（wire.js）、
+                  firmware（firmware.js、picoboot.js、dfu.js）、registry.js（生成物）
 src/browser/    ブラウザの経路                         -> npm の "./browser"
   index.js        WebSerial、WebUSB（vendor bulk、DFU）、WebHID
 src/node/       Node の経路                            -> npm の "./node"
-  index.js        シリアルの口（serialport）、USB（usb）、TCP（node:net。mDNS の DNS-SD で見つける: discovery.js、node:dgram）
+  index.js        TCP（node:net）: 試験の仮想ベンチ、host と port で指定する probe
 web/            Web ページのソース                      -> site/（scripts/build-site.js）-> GitHub Pages
 test/           試験（node:test）。Python の仮想ベンチに TCP でつなぐ
 scripts/        build、サイト、試験、リリースの道具
@@ -35,24 +38,20 @@ docs/           この文書、リリースの手順
 - `site/` は npm の配布物に入れません（Web ページは Pages から配ります）。`src/node/` も `site/` に入れません。
 - 型は JSDoc で書き、`// @ts-check` と `tsc --noEmit` で確かめます。TypeScript では書きません。型定義（`types/`）は `tsc` が
   JSDoc から作ります。
-- OEPライブラリの実行時依存は増やしません。サイトだけにESP ROM書き込み用の固定版esptool-jsをbundleします。Node の `serialport` と `usb` はネイティブのモジュールなので、使う人が入れる任意の依存にします
-  （ブラウザだけで使う人には入らない）。
+- OEPライブラリの実行時依存は増やしません。サイトだけにESP ROM書き込み用の固定版esptool-jsをbundleします。
 
 ## 3. 経路
 
 | 経路 | ブラウザ（`./browser`） | Node（`./node`） | フレーム（transports §1） |
 |---|---|---|---|
-| USB CDC、USB-Serial/JTAG、USB-UART bridge | WebSerial | serialport | COBS + CRC |
-| vendor bulk（class 0xFF） | WebUSB | usb（WebUSB と同じ形） | length(u16) message |
+| USB CDC、USB-Serial/JTAG、USB-UART bridge | WebSerial | - | COBS + CRC |
+| vendor bulk（class 0xFF） | WebUSB | - | length(u16) message |
 | vendor HID | WebHID | - | count と first を持つ report に詰めた length message |
-| TCP（Wi-Fi の probe、ローカルのブローカー、試験の仮想ベンチ） | - | node:net | length(u16) message |
+| TCP（試験の仮想ベンチ、ローカルのブローカー、host と port で指定する Wi-Fi の probe） | - | node:net | length(u16) message |
 
-- TCP は Node だけです: ブラウザは TCP の接続を開けず mDNS も送れないので、ページに TCP はありません。TCP の probe は
-  transports §3 のとおりに見つけます ― mDNS の DNS-SD `_oep._tcp`、port は SRV の record のもの（決まった port は無い）、TXT の
-  `unit_id` ― `browse()` / `findUnit()` / `portOf()`（src/node/discovery.js、依存なし。問い合わせは IPv4 の口すべてから送る）で見つけるか、host と port を渡します
-  （`openTcp({ host, port })`）。`openTcp({ unitId })` は開いた後に describe の unit_id を確かめます。`oep` は登録した service の
-  名前ではないので、browse で見つけたものは使う前に確かめます（host ガイド §4.1）: `verify` / `browse({ verify: true })` と
-  `findUnit()`（既定）は、confirm に答え、describe の unit_id が TXT のものと同じ instance だけを残します。
+- TCP は Node だけです: ブラウザは TCP の接続を開けず mDNS も送れないので、ページに TCP はありません。Node は host と port で開きます
+  （`openTcp({ host, port })`。`unitId` を渡すと開いた後に describe の unit_id を確かめる）。ネットワーク上の probe の探索（DNS-SD）と、
+  Node のシリアルの口・USB は oep-client-python が受け持ちます。
 
 - WebUSB、WebSerial、WebHID は Chromium 系（Chrome、Edge）だけで、ページは HTTPS（か localhost）で配る必要があります。
 - probe の見分け方は transports §3 のとおりです: 自動で見分けるのはプロジェクトの USB の VID:PID `1209:4F45` だけ（`PROJECT_VID_PIDS`。
@@ -60,20 +59,19 @@ docs/           この文書、リリースの手順
   （`connect({ unitId })`、違えば `UnitIdMismatch`）。開いた経路には、まず confirm だけを送り、正しい応答が無ければ閉じる（`NotOepProbe`）。
   WebUSB / WebHID の選択の既定の filter はこの VID:PID（`PROJECT_USB_FILTERS`。WebHID は OEP の collection、usage page 0xFF4F /
   usage 0x45 も）。WebSerial の選択には既定の filter を付けない（UART bridge や内蔵の USB serial はこの VID:PID にならない）。
-  `PROJECT_SERIAL_FILTERS` で probe だけに絞れる。Node では `findUsbProbes` と `findSerialProbes` が、この VID:PID の device と CDC の口を
-  並べ、`findProbes` は口の種類にかかわらず device ごとに 1 つを並べる。何も指定しない `openUsb()` はそこにプローブがちょうど 1 つならそれを（vendor bulk、無ければその CDC の口）開き、2 つ以上なら何も開かず `SeveralProbesError` が各プローブ（unit id、口）を並べるので 1 つを指定する。iProduct はどこも見ない。probe の中の口は interface の値で選ぶ（registry の `usb`）。
+  `PROJECT_SERIAL_FILTERS` で probe だけに絞れる。iProduct はどこも見ない。probe の中の口は interface の値で選ぶ（registry の `usb`）。
 
 ## 4. Web ページ
 
 画面の目的、機能の範囲、遷移は [要件定義・画面仕様](page.ja.md)、接続の継続条件は [引継ぎ仕様](page-connection.ja.md)、検証は [受入条件](page-acceptance.ja.md) を参照します。
 
-`web/` の分け方: `app.js`（公開ページ、プローブの作成、接続、画面の振り分け）、`work.js`（初期設定、作業ホーム、配線の一覧と編集）、
-`operate.js`（用途ごとの操作、キャプチャの準備、素通し）、`manage.js`（本体設定、更新・保守、外部ツール）、`device.js`（接続中のプローブへの操作の
-すべて）。画面は `device.js` だけを通してプローブに触れ、保存・読込・画面の移動ではスキャン・attach・ピンの割当・出力をしません。
-`npm run test:browser` は Python の仮想プローブと Chromium で、導入から引継ぎまでを確かめます。
+`web/` の分け方: `app.js`（公開ページ、プローブの作成、接続、画面の振り分け）、`work.js`（用途ごとの初期設定、作業ホーム、配線の一覧と
+接続確認つきの編集）、`passthrough.js`（ログの素通しの設定）、`manage.js`（本体設定、更新・保守、道具への引継ぎ）、`device.js`（接続中の
+プローブへの操作のすべて）。画面は `device.js` だけを通してプローブに触れ、保存・読込・画面の移動では attach・ピンの割当・出力をしません
+（接続確認は求められたときだけ attach する）。`npm run test:browser` は Python の仮想プローブと Chromium で、導入から引継ぎまでを確かめます。
 
-- `web/app.js`: 接続・セッションと各作業画面。`web/signals.js`: 宣言された入出力機能の操作フォーム。
-- `web/model.js`: 入力検証、ルーティング、表示用の値の変換。`web/boards.js`: ボードの案内。
+- `web/data.js`: ボード、用途（このページで準備することと、作業をする道具）、資料。
+- `web/model.js`: 接続名と firmware の版。`web/boards.js`: ボードの案内。
 - `web/oep-client.js`: ソース上の公開 API 入口。サイトビルド時に `site/src/` を参照する入口へ置き換えます。
 - `tsconfig.web.json` で画面のコードも検査し、`npm run test:browser` で Chromium と Python 仮想プローブによる操作を確認します。
 
@@ -89,8 +87,6 @@ docs/           この文書、リリースの手順
   ページは、状態を変える操作を繰り返す前に、状態を読み直します。
 - **使わない probe**: core §7.1 の範囲の外の confirm、1..600000 の外の max_op_ms は `NotUsable` を投げ、host はその probe に
   もう何も送りません（C-20、C-47）。ページは値を添えて理由を見せます。
-- **VS Code**: 拡張機能（Node）からは `./node` を使えますが、ネイティブのモジュールは VS Code（Electron）の版に合わせたビルドが
-  要ります。Webview からは WebSerial / WebUSB を使えません。
 
 ## 6. 試験
 

@@ -18,143 +18,52 @@ OEP の probe と話し、設定し、firmware を更新します。これを使
 
 凍結までは日本語の文（`.ja.md`）が仕様の作業の文。
 
-入っているもの:
+対象はプローブの設定と保守です。対応する場面:
 
-- 核: registry（oep-spec から生成）、フレーム（COBS + CRC、length）、メッセージ、リンク（corr の照合、待ちの後に 1 回の送り直し、持っているシリアルの口で
-  壊れたフレームが来たらすぐ 3 回までの送り直し（host ガイド §8）、パイプライン、push と出来事。応答はどれも core §4.4 の下限 ― 引数の時間 + 1000 ms + シリアルの口の転送時間、
-  `Link.waitFloorMs` ― 以上待つ。length のフレームでの transports §5 の立て直しは、host の最後の書き込みから 250 ms 待ってから confirm し、
-  vendor bulk では静かになるのを lease の最長まで待ち、HID では待たない（report の first でフレームを見つけ直す、transports §1）。
-  フレームの途中の休みでは立て直さない。送り直しにも応答が無ければ経路の失敗 `TransportFailed` で、次の要求の前に
-  confirm で立て直す（COBS でも）。header より短いフレームは壊れたフレーム）、
-  host（confirm ― この host が来た経路の番号 `limits.transport`、2 回目からは使っている revision を求める。core §7.1 の範囲の外の
-  confirm、1..600000 の外の max_op_ms、core §7.4 の形に合わない fn 0 の ops は、その probe を `NotUsable` にし、合わない fn の ops は
-  その fn を `FnNotUsable` にする ―、`clock()` ― fn 0 の clock をこの host の `performance.now()` と突き合わせる:
-  `{ hostBeforeMs, hostAfterMs, roundTripMs, uptimeNs, bootId }`。probe の時刻は往復の半分の不確かさで中点に当たる ―、セッション ― open はいつも新しい乱数の id を
-  要求の見出しに置いて新しいセッションを開く。end、lease の期限切れ、force はセッションが作ったものをすべて解放し、終わった
-  セッションの要求は `NoSession`（再開なし）。経路が閉じてもセッションは終わらないので、`connect`（`keepSession`、既定で ON）は
-  開いたセッションの id を probe ごとに残し ― Node は `$OEP_SESSION_DIR`、`$XDG_RUNTIME_DIR/oep-client`、または利用者の cache の
-  場所の `<unit_id>.session`（oep-client-python と同じファイル）、ブラウザは localStorage と Web Lock ―、次の実行の最初の open は
-  その id で open してすぐ end する（`Host.endPrevious`、`keptsession.KeptSession`、host ガイド §5）―、ロック、購読 ― `subscribe(fn, minBytes, maxDelayMs)` / `unsubscribe(fn)`: fn 自身の
-  op 0x30 / 0x32（core §11.3）―、再起動 ― `requestRestart()` と `restartProbe({ reopen, waitMs })`: oep.probe.restart（名前で探す）の
-  restart の後、少し（約 100 ms、host ガイド §5.2）待ち、`reopen` があればそれで開き直し（無ければ link のまま）、confirm する。
-  probe の restart_max_ms（`core.restartMaxMs`。そのインターフェースの describe。restart の前に読む。それより長い `waitMs` は
-  そこで切る。宣言が無ければ 10 s）まで繰り返し、
-  過ぎれば probe は無くなったものとして最後のエラーを投げる。新しい boot_id を返す。同じなら `NotRestarted` ―）、list / describe
-  （list は `first` だけで頁を送り、接頭辞の絞り込みはラベルの境で host が行う。fn ごとの `ops`: `core.ops` / `offers`、`Interface.ops()` / `.offers(op)`。`core.require` は送らずに、probe が答えるのと同じ
-  detail unknown_operation の `Rejected` を投げる）/ plan（`core.planApply` / `planRelease` / `planRoles` は oep.probe.plan を名前で探す）
-- インターフェース: debug の線（rvswd、swio、swd）と riscv-dm、ARM の ADI / MEM-AP / Cortex-M、target のコンソール、
-  fixture（gpio、uart、i2c-target、spi-target、i2c-controller、spi-controller、pwm、counter、dac）、キャプチャ（ロジック、アナログ、capture-group、sigrok の .sr）、設定（core §13）、
-  メモ欄（`oep.probe.memo`。口の記録 `oep.probe.memo/port/<口>`）、`oep dump` の表示
-- 経路: ブラウザは WebSerial、WebUSB（vendor bulk）、WebHID。Node は TCP、シリアルの口（`serialport`）、USB（`usb`）
-  （ネイティブの package は任意）。シリアルの口は 8N1、フロー制御なし、DTR と RTS を立てて開く（transports §4）。USB の probe は
-  プロジェクトの USB の VID:PID `1209:4F45` だけで見つける（transports §3: WebUSB / WebHID の選択の既定の filter、Node の
-  `findUsbProbes` / `findSerialProbes` / `findProbes`、`openUsb()` ― この VID:PID のプローブがちょうど 1 つならそれを vendor bulk で、
-  無ければその CDC の口で開く。2 つ以上なら `SeveralProbesError` が並べるので 1 つを指定する）。WebSerial の選択には既定の
-  filter を付けないので、UART bridge や内蔵の USB serial も選べる。TCP の probe（Node だけ。ブラウザは TCP を開けず mDNS も
-  送れないので、ページに TCP は無い）は `openTcp({ host, port })` で開く。決まった port は無い（transports §3）:
-  `openTcp({ host })` はその DNS-SD `_oep._tcp` の record が広告する port を使い、`openTcp({ unitId })` は TXT の `unit_id` が
-  それの probe を開く（ほかの名指した probe と同じく、開いた後に describe の unit_id を確かめる）。`browse()` / `findUnit()` /
-  `portOf()`（`oep-client-js/node`、src/node/discovery.js）はその裏の、依存の無い mDNS の問い合わせ（IPv4 の口すべてから送り（`interfaceAddresses()`）、答えをまとめる。IPv4、届くのは同じリンク
-  だけ: NAT の後ろや別のサブネットでは見つからないので host と port を渡す。アドレスはほかの経路での wifi の state の `ipv4` でも分かる）。
-  service の名前 `oep` は登録した名前ではないので、別のサービスが `_oep._tcp` を広告しうる（host ガイド §4.1）: `verifyFound(found)`
-  はどの instance もすべて同時に確かめる ― TCP でつなぎ、confirm（`OEP!` の答え）と fn 0 の describe を送り、describe の unit_id が
-  TXT の unit_id と同じかを見る（答え 1 つあたり 1 秒、session は開かない）。`browse({ verify: true, onDropped })` はそれで残った
-  ものだけを返す。`findUnit()`（つまり `openTcp({ unitId })`）は既定で確かめ、確かめられない instance は飛ばす（`verify: false` なら
-  広告された最初のもの）
-- firmware の更新: USB の DFU（ESP32-P4 / P4X）、WebUSB での PICOBOOT（RP2040 / RP2350: `rp2ResetToBoot` の後に `rp2Write`）と、
-  Release の firmware-<version>.json
-- ブラウザの作業画面: 導入・接続先登録、GPIO/UART/I2C/SPI/PWM/カウンタ/DAC、ターゲットのデバッグ・メモリ・コンソール、
-  設定とメモ領域、firmware初回書き込み・更新・診断。キャプチャはWireSkein、ターゲット固有の書き込みは対応する道具へ案内します。
-- port_speed（oep-if-link §3 は握手だけで、任意のインターフェース `oep.probe.link` の op。probe は ops が立てるときに持つ。手順は
-  oep-spec の host 開発ガイド §17。使うときだけ）:
-  `raiseSpeed(host, candidates = [500000], { flows, verify, baseline, frames, verifyMs, record })`（または
-  `connect` / `openWebSerial` / `openSerial` の `portSpeed: true | [候補]` と `flows` / `verify` / `record`）で、セッションの間
-  UART bridge を速くする。要求は baud、step、verify_ms で、要求が来た口に効く（`speed.speedRequest`）。**既定の上限は 500000**
-  （host ガイド §17）: 既定の候補は 500000 だけで、`speed.DEFAULT_CEILING`
-  より速い速さは利用者が名指したとき（ページの rates の欄、設定）だけ候補に入れる。その速さは、最小の形でも完全な形でも、
-  **1 秒の確かめ**（host 開発ガイド §17.3.3）を通ってから決める: 試しの状態で、満杯のフレーム（source は max_frame − 7、sink は max_frame − 12）を oep.probe.link の
-  source（in）と sink（out）で、完全な形が duplex を確かめるなら duplex でも、それぞれ 1 秒以上（`speed.FAST_VERIFY_MS`）その
-  同時数で流し、流し方と同じ基準で判定する（n = 1 での流し直しはしない）。その試すは verify_ms 4000（duplex を含めて 6000）を
-  頼むので、lease は 5000（7000）ms 以上が要る（`speed.leaseFor(candidates, { flows, verify })`。`connect` は少なくともそれで取り、
-  短い lease ではその候補を飛ばす）。決めた後は、ほかの速さと同じ試用期間と使用中の判定（理由: ある変換では 921600 が両方向
-  16 フレームずつの確かめを通っても 9 KiB の書き込みのたびに応答が壊れた。500000 は測ったどの変換でも壊れなかった）。**最小の形**（既定、約 50 ms、計測なし）: 候補ごとに順に `試す`（今の速さで応答してから probe が
-  切り替える）→ host は要求した baud に切り替える（platform が断ったときだけ probe の応答の baud）→ 20 ms → `confirm`（100 ms、
-  3 回まで）→ `決める`。**完全な形**（`verify: true` か `flows` を渡す）: 起動時の速さの基準を流し方ごとに取り（このセッションの
-  フレーム、無ければ 60 フレーム）、候補ごとに使う流し方だけ流す。流し方 = `'in' | 'out' | 'duplex'` か `[流し方, n]`（in =
-  oep.probe.link の source probe → host、out = oep.probe.link の sink host → probe、duplex = 両方を交互。`n` は同時数、0 = link が出す最大）で、
-  満杯のフレーム（oep-if-link §2）を 16 個流し、壊れと失われを数え KB/s を測る。壊れ + 失われが 3 以上で割合が max(基準 × 2, 5 %) を
-  超えたら流し方は通らず、n = 1 で流し直し（通れば n = 1 が link の上限 `inflightCap`）、1 つでも通らなければ候補は通らない。
-  通らない候補は戻して（step 2）起動時の速さに戻り confirm し直す。最初に通った候補を使う。probe の UART が作れない速さは飛ばす。
-  結果（`host.link.speed`: `base`、`rate`、`chosen`、`baseline`、`flows` と `inKBs` / `outKBs` / `duplexKBs` を持つ `trials`、
-  `stepDowns`、`skipped`。`speedText(report)`）はキャプチャや書き込みの予算を立てるのに使う。WebSerial は同じ口を閉じて開き直して
-  速さを変え（すぐに DTR / RTS を一緒に立て直す）、Node の `serialport` は `update` で変える。`end`、戻す、restart の応答で link は
-  すぐ起動時の速さに戻る。上げている間は 1 秒（port_speed_idle_ms 3 秒の半分より短い）黙れば keepalive を送り、長く黙る
-  呼び出し側は `host.link.keepAlive()` で同じことをする。上げた速さで応答の来ない要求は、まずその速さのまま送り直す ― 最初の待ちは
-  `RAISED_FIRST_WAIT_MS`（port_speed_idle_ms の 3 分の 1）と lease の 4 分の 1 まで、core §4.4 の下限は下回らない（host ガイド
-  §17.3.2 の 4）― それにも応答が無いときだけ起動時の速さに戻って port_speed_idle_ms + host_wait_add_ms の内に confirm し（通らなければ
-  Error。上げた速さへは戻さない）、そこでもう一度送る。使っている間、
-  決めた速さの最初の 32 KiB と 1 秒（`probationBytes`、`probationMs`）は試用期間で、壊れ・失われが 3 以上かつ max(基準 × 2, 5 %) 超、
-  または応答が来なければ、確かめの失敗としてすぐ降りる（16 フレームの確かめは素早い関門として残す）。その後は直近 3 秒のフレーム
-  （50 未満なら判定しない）を見て、max(基準 × 2, 10 %) を超えて壊れ・失われたら降りる。降りるのは port_speed の戻す、起動時の速さ、
-  confirm の後、その呼び出しの候補のうちこのセッションで通らなかったものより下の次の候補を新しく試す → confirm → 確かめ → 決める
-  （残っていなければ起動時の速さ）。壊れた速さとそれより上はそのセッションの間は使わない（`speed.steppedDown`、`downWhy`、`to` と
-  `probation` を持つ `stepDowns`）。`maxTries` は 1 回の呼び出しで試す候補の数の上限（キャプチャの host は 2）。`record: true`
-  （既定は OFF。パスか `speedrecord.SpeedRecord` でもよい）は通った / 通らなかった速さを残す（通ったは 30 日、通らなかったは 1 日、
-  別の速さの破綻から 2 秒（`settleMs`）以内に測った失敗は「不明」）― Node では（口のパス、unit_id）ごとに
-  `~/.cache/oep-client/link-speed.json`（`$XDG_CACHE_HOME`。oep-client-python と同じファイル）、ブラウザでは localStorage に unit_id
-  ごと ― 通った速さを先頭に、通らなかった速さを外す（`report.skipped`。全部の候補が通らなかったとあれば、いちばん遅い候補を 1 回
-  試す: `report.retried`）。`x-` の unit_id（core §7.5）では何も残さない。上げるのはこの host が来た経路（confirm の
-  transport TLV）で、それが UART bridge のとき。oep-client-python と同じ手順
-- コンソール（oep-if-console）: write はストリームの送りの列（大きさは probe が決め、宣言しない）に入り、入った分を答える。
-  `ConsoleIO` は多くても 1 フレームずつ書き、`accepted` の続きから送る。ストリームは接続と mechanism ごとに probe の
-  もの: 閉じたものは次の open まで読め、次の open は同じ番号を返す
-- debug の待ち（oep-if-debug §1、§4.3）: attach、scan、riscv-dm の reset は max_op_ms のうちに答え、それが host の待ちの引数の時間
-  （`Wire.attachMs()`、`scanMs()`、`RiscvDm.resetMs()`。宣言の無い probe には `core.FALLBACK_MAX_OP_MS`）。attach はピンを固定部分で
-  名指し（`pins` が null なら、describe から作る `candidatePairs()` の 1 組）、毎回新しい接続を作る（生きた接続が持つピンは
-  `Unavailable` cause 1）。`scan()` はペアを渡さなければ候補の組を、max_frame に収まる要求に分けて試す。`holds()` は休ませて
-  保っている口を返す。rvswd の `idleClock` は接続の休ませ方。riscv-dm の reset の応答は status flags pc（`reset()` は
-  `{ flags, pc }`。先に DATA0 を書き戻す）。準備が失敗した run は stopped 3（`RunResult.notRun`）、知らない stopped は
-  `unknownStopped`。`readRegister` は DATA0 を取っておき（`dataSaved`）、`resume` / `step` / `run` / `reset` は先に書き戻す
-  （`restoreData`、debug §4）。`declared()` は持っている任意の op を名前で返す（halt と resume も任意）
-- block の操作: riscv-dm / arm-adi の `readBlock` / `writeBlock` は、max_length と経路の max_frame が運べる分の小さいほう / 4 語
-  まで（oep-if-debug §4.5）。block op を持つのに max_length を宣言しない probe は `riscv.NoMaxLength`。read_block / write_block の
-  無い probe の MEM-AP は、生の transfer の並びで動かす
-- fixture: gpio の set は [channel, mode] の組（強さの選択は無く、出力の強さは probe が決める）。i2c-target は 1 つの形
-  （`configure(address, { nackFrom })`。nackFrom は書き込みごとに n 番目のデータの byte から後に NACK を返す、describe が宣言するとき。
-  データのある書き込み 1 回が 1 フレーム、読み出しは `preloadTx` の置き場か 0xFF、`status()` は
-  `{ state, queued, rxFrames, txSlots, errors }`、`internalPullups()`。stretch は任意の op）。spi-target に reset は無い。uart の
-  `status()` は `{ baud, format, configured }`（baud 0 は設定前）
-- 設定（oep-spec core §13、settings.js）: fn 0 の get / set / unset / save / state / network。持ち主（core の fn 0 か
-  interface）が自分の describe で項目を宣言する。`new Settings(host)`: `catalog()` はこの boot の名前（fn ごとのカテゴリ
-  `core` / `name/instance`、項目と選択肢、channel・経路・netif の名前）、`show()` は全部の値を `{ category, name, value }`
-  で（出どころは無い。firmware の初期値もほかの値と同じ、core §13.4）、`changeable()`（set / unset があるか）、`setNamed(category, { 平らな名前: 値 })` / `unsetNamed` / `unsetAll`、
-  [fn, number, key] での `set` / `unset`、`save()`、`state()`、`needsSave()`、`network()`。`export()` / `planImport(doc)` /
-  `applyImport(plan)` は設定のファイル（oep-client-python docs/oep-settings-file.ja.md）。`findLine(source, name, { port })`
-  は host ガイド §5.3 の線の探し方で、口 S の線 N は label `S.N`（ASCII の大小文字を区別しない。口を省くと名付けられた口が 1 つのとき
-  だけそれ）。`portsNamed(labels)` は口の名前を書いたとおりに。secret（Wi-Fi の
-  passphrase）は読まない: get はデータを返さず、`show()` とファイルは `{ secret: true }`。set で 0 バイトなら今の値を保つ。
-  ページの設定のタブは secret を password の欄で受け、読んだら消し、埋め戻さない（空: 保つ）
-- キャプチャ: configure の TLV は core §2.3 に従う（扱わない値は受け取ったままの tag で `Unsupported`）。データ形式 1 のロジック
-  ブロック（`dataFormat`、`carriage` は縮約するチャネルの role → [sample / any_high / any_low / change_latch, D]、`roles`、
-  `blockMax`。区画の長さはサンプル数で決まり、`blocks()` か `columns()` で読む、captureblocks.js）と 4 の試験用カウンタ。
-  `triggerOpts`（arm、rearm、when、hysteresis）、§3.8 の `glitchFilterNs` と `inputHysteresis`（critical。求めなければ切り。
-  使った値は `Config.glitchNs` / `.hysteresis`）、トリガの記録（`triggers()`）、stream_buffer と data_rate
-  （`Config.tolerableDelayS()`）、judge_latency_ns。ストリームのフレームの区画の情報（`Received.segments`）。probe がもう持たない
-  バイトの `read()` は `ReadGap`。status の名前つきの拡張（`CaptureDrops.of(status)`、Arduino の firmware の落としの診断）。
-  capture-group は即時に一緒に始めるトラックを束ねるか、`Stage` と `Cond` の `TriggerSource` で束ねる（§4.4。`triggerCaps()`
-  で何を受けるかがわかる）
-- 名前で任意の op を呼ぶ: `call(hst, interface, 'add', { fields: { a: 2, b: 3 } })` は describe の op_name / op_field
-  （core §7.4）で要求を詰め、答えを読む（番号と `payload` のバイト列でも呼べる）。`callWait` はジョブ
-  （oep::SimpleInterface::job）を始め、status の op で終わるまで読む。`dump` は op を名前と欄つきで出す
-- そのほか: attach と scan は予算の分
-  待つ（`attachMs`、`scanMs`）。`Unsupported.supported`（confirm の扱える範囲）。`x-` の unit_id では USB の機器を探さない。
-  応答の文字列は制御文字を除いて見せ（`message.shown`）、open の owner は文字の境で切り（`ownerText`）、probe が断るラベルは
-  送らない。`dump` は core §1.2 が求めるもので probe が出さなかったものを示す
-  （`missing`）。`riscv.StepError`（`stepLeft`）
+1. **プローブを作る・ファームを更新する**: ESP32 / P4 / P4X は USB シリアルから（ページの esptool-js）、Pico / Pico 2 は BOOTSEL と
+   WebUSB での PICOBOOT（`rp2ResetToBoot`、`rp2Write`）、P4 / P4X の更新は USB の DFU。イメージは Release の firmware-<version>.json
+   から選ぶ（`fetchFirmwareManifest`、`pickFirmware`、`verifyFirmware`）。
+2. **つながるかと、何を宣言しているかを確かめる**: 経路、confirm、list と describe、`dump`（インターフェースごとの宣言を文か JSON で。
+   core §1.2 が求めるもので probe が出さなかったものも）。
+3. **設定し、控えて戻す**: 設定（core §13: ラベル、待機と使わせないピン、ログの素通し、Wi-Fi、保存と再起動つきの `usb.transports`）、
+   設定ファイル、メモ領域（`oep.probe.memo`、口の記録 `oep.probe.memo/port/<口>`）。
+4. **ターゲットへの配線を登録して確かめる**: ラベルと口の記録。デバッグ線の接続確認（`wire.Wire.check`: ピンで attach し、応答した
+   ID ― rvswd / swio は DMSTATUS、swd は DPIDR。SWD で応答が無ければ RP2040 の multidrop の core 0 も試す ― を読んで detach）。
+5. **作業をする道具へ引き継ぐ**: デバッグ（IDE、oep-client-python）、ログ（素通しを通したシリアルモニタ、oep-client-python）、
+   取り込み（WireSkein）、バス・信号・相手役（oep-client-python）。この package はそれらの作業をしない。
+
+部品:
+
+- 核: registry（oep-spec から生成）、フレーム（COBS + CRC、length）、メッセージ、リンク（corr の照合、待ちの後に 1 回の送り直し、
+  持っているシリアルの口で壊れたフレームが来たらすぐ 3 回までの送り直し（host ガイド §8）、パイプライン、push と出来事。応答はどれも
+  core §4.4 の下限 ― 引数の時間 + 1000 ms + シリアルの口の転送時間、`Link.waitFloorMs` ― 以上待つ。length のフレームでの
+  transports §5 の立て直しは、host の最後の書き込みから 250 ms 待ってから confirm し、vendor bulk では静かになるのを lease の最長まで
+  待ち、HID では待たない（report の first でフレームを見つけ直す、transports §1）。フレームの途中の休みでは立て直さない。送り直しにも
+  応答が無ければ経路の失敗 `TransportFailed` で、次の要求の前に confirm で立て直す（COBS でも）。header より短いフレームは壊れた
+  フレーム。シリアルの口の最初の confirm は port_speed_idle_ms + host_wait_add_ms のあいだ繰り返す（別の host が上げた速さはそれまでに
+  戻る）、host（confirm ― `limits.transport`。2 回目からは使っている revision を求める。core §7.1 の範囲の外、1..600000 の外の
+  max_op_ms、core §7.4 の形の外の fn 0 の ops は probe を `NotUsable` に、fn の ops がその形の外ならその fn を `FnNotUsable` に ―、
+  `clock()`、セッション ― open のたびに新しい乱数の id。経路が閉じても終わらないので、`connect`（`keepSession`、既定で有効）は開いた
+  セッションの id を probe ごとに残す ― Node は `$OEP_SESSION_DIR`、`$XDG_RUNTIME_DIR/oep-client` か利用者の cache の
+  `<unit_id>.session`（oep-client-python と同じファイル）、ブラウザは localStorage と Web Lock ― 次の実行の最初の open がそれをすぐ
+  終える（`Host.endPrevious`、`keptsession.KeptSession`、host ガイド §5）―、ロック、restart ― `requestRestart()` と
+  `restartProbe({ reopen, waitMs })`、probe の restart_max_ms まで繰り返す ―、list / describe、plan）
+- 設定（settings.js）: `new Settings(host)`: `catalog()` はこの起動の名前、`show()` はすべての値を `{ category, name, value }` で、
+  `setNamed(category, { flat: value })` / `unsetNamed` / `unsetAll`、生の `set` / `unset`、`save()`、`state()`、`needsSave()`、
+  `network()`。`export()` / `planImport(doc)` / `applyImport(plan)` は設定ファイル（oep-client-python docs/oep-settings-file.ja.md）。
+  `findLine(source, name, { port })` は host ガイド §5.3 の線の探し方（口 S の線 N はラベル `S.N`）。秘密の値（Wi-Fi のパスフレーズ）は
+  読まない: get はデータを返さず、`show()` とファイルは `{ secret: true }`。set で 0 byte を送ると保つ
+- 経路: ブラウザは WebSerial、WebUSB（vendor bulk）、WebHID（`oep-client-js/browser`）。シリアルの口は 8N1、フロー制御なし、DTR と
+  RTS を立てて開く（transports §4）。USB の probe はプロジェクトの VID:PID `1209:4F45` だけで見つける（transports §3: WebUSB / WebHID の
+  選択の既定の filter）。WebSerial の選択には既定の filter が無く、UART の変換チップや内蔵の USB シリアルも選べる。Node
+  （`oep-client-js/node`）は TCP だけで、`openTcp({ host, port })`: 試験の仮想ベンチ、ローカルのブローカー、host と port で指定する
+  ネットワーク上の probe
+- そのほか: `Unsupported.supported`（confirm の範囲）。`x-` の unit_id は USB の機器を名指さない。答えの文は制御文字を除いて示す
+  （`message.shown`）。open の owner は文字の切れ目で切る（`ownerText`）。probe が断るラベルは送らない
 
 oep-client-python の仮想ベンチ（probe とその先の target、治具の配線を実際の治具に合わせて作ったもの:
 `python -m oep_client.virtual_bench_serve`）と台本のデバイスで試しています（oep-spec の試験ベクタを含み、sessions.json、
-ops.json、ops_encoding.json、capture_formats.json、logic_layout.json も）。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
+ops.json、ops_encoding.json、hid_reports.json も）。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
 
 v1 の凍結までは仕様が壊れることがあり、この package は probe の firmware
 （[OpenEmbeddedProbe](https://github.com/Open-Embedded-Probe/oep-probe-arduino)）と
@@ -166,7 +75,7 @@ v1 の凍結までは仕様が壊れることがあり、この package は prob
 |---|---|---|
 | `src/` | `oep-client-js` | 環境に依らない核（`dist/oep-client.js` にバンドル） |
 | `src/browser/` | `oep-client-js/browser` | WebSerial、WebUSB、WebHID |
-| `src/node/` | `oep-client-js/node` | シリアルの口、USB、TCP |
+| `src/node/` | `oep-client-js/node` | TCP |
 | `web/` | - | Web ページ（`site/` にビルドして GitHub Pages へ。npm の配布物には入れない） |
 | `test/` | - | `node:test`。oep-client-python の仮想ベンチに TCP でつなぐ |
 
@@ -184,7 +93,7 @@ npm run test:browser # ChromiumとPython仮想プローブで画面操作を確�
 ```
 
 ブラウザのページは[要件定義・画面仕様](docs/page.ja.md)、[接続引継ぎ](docs/page-connection.ja.md)、[受入条件](docs/page-acceptance.ja.md)に沿って作っています。
-OEPの紹介と用途・ボードの説明（機器なしで読める）、プローブの作成（ESP32・P4・P4XはUSBシリアル、Pico・Pico 2はBOOTSEL）から初期設定、配線と相手の記録（相手固定とコネクタ、複数の口）、用途ごとの操作（デバッグ、デバッグ線のログ、UART、I2C、SPI、GPIO、PWM、カウンタ、DAC、I2C・SPIの相手役）、本体設定（素通し、待機状態、Wi-Fi）、更新・控え・復元・診断、IDE・WireSkein・Pythonへの引継ぎを扱います。
+OEPの紹介と用途・ボードの説明（機器なしで読める）、プローブの作成（ESP32・P4・P4XはUSBシリアル、Pico・Pico 2はBOOTSEL）から初期設定、配線と相手の記録（相手固定とコネクタ、複数の口）とデバッグ線の接続確認、用途ごとにこのページで準備することと作業をする道具、本体設定（素通し、待機状態、Wi-Fi、USBの接続経路）、更新・控え・復元・診断、IDE・WireSkein・Pythonへの引継ぎを扱います。
 画面は英語と日本語です。既定はブラウザの言語で選び（どちらでもなければ英語）、ヘッダの選択でこのブラウザの言語を変えられます。S3/C3/C6は対応するmergedファームウェアイメージの持ち込みで導入します。CH32の初回書き込みは対象外です。実機での確認は、受入条件の §3.2 に残っています。
 ESP書き込み用の固定版 `esptool-js` はサイトに同梱し、npmライブラリの実行時依存には加えません。
 `npm run serve` は初回に配布ファームウェアイメージを取得し、`.cache/firmware` に保存します。再取得は `node scripts/fetch-firmware.js` で行えます。
