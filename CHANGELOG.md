@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Installing on an ESP32 now resets the chip into its new firmware: esptool-js 0.7.1's after('hard_reset') only releases RTS and never asserts it, so the chip stayed in the flasher stub and the probe did not answer until the board was replugged. The page pulses RTS itself (esptool's hard reset: IO0 released, EN low for 100 ms), after the write and after reading the chip. The wiring editor puts the name and the target first, always shows the target pin names, and brings a signal just added into view.
+- (JA) ESP32 への導入で、書き込みの後にチップを新しいファームで起動し直すようにした。esptool-js 0.7.1 の after('hard_reset') は RTS を放すだけで立てないため、チップは書き込み用のスタブのまま残り、ボードを挿し直すまでプローブが応答しなかった。ページが自分で RTS を立てて放す（esptool の hard reset: IO0 は放し、EN を 100 ms Low）。書き込みの後とチップを読んだ後の両方で。配線の編集は名前と相手の情報を先頭にし、相手側のピン名を常に見せ、追加した信号を見える位置へ動かす。
+
 - (EN) The page: choosing a debug wiring's pins enables its connection check at once (it waited for some other redraw). A transport that ends by itself (the cable pulled, the probe reset) is noticed at once: the page forgets the probe, says so with the reason on the screen in use, and connecting again comes back there, first ending the session the old transport left on the probe (it locked the page out until its lease ran out). `Link.closeListeners` tells of such an end. The connect screen names the three paths - USB serial, USB (the OEP device, WebUSB) and USB HID - and which boards use which.
 - (JA) 画面: デバッグの配線でピンを選ぶと、接続確認のボタンがすぐ使えるようになる（別の再描画を待っていた）。経路がひとりでに閉じる（ケーブルが抜けた、プローブがリセットされた）と、その場で気づく: プローブを忘れ、今いる画面に理由を出し、もう一度つなぐと同じ画面へ戻る。そのとき古い経路がプローブに残したセッションを先に終える（lease が切れるまでページ自身を締め出していた）。`Link.closeListeners` がそうした終わりを知らせる。接続の画面は3つの口 ― USBシリアル、USB（OEPの機器、WebUSB）、USB HID ― と、どのボードがどれかを示す。
 

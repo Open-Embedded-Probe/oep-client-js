@@ -48,7 +48,7 @@ try {
       if (path === '/firmware/test-p4.bin') { res.end(p4Image); return; }
       if (path === '/esp-loader.js') {
         res.setHeader('Content-Type', 'text/javascript');
-        res.end(`export class Transport { constructor(port){globalThis.__flashPort=port;} async disconnect(){globalThis.__flashClosed=true;} }
+        res.end(`export class Transport { constructor(port){globalThis.__flashPort=port;} async setDTR(v){} async setRTS(v){(globalThis.__flashRts??=[]).push(v);} async disconnect(){globalThis.__flashClosed=true;} }
           export class ESPLoader { chip={CHIP_NAME:'ESP32'}; async main(){return 'ESP32 test ROM';}
             async writeFlash(o){globalThis.__flashCount=(globalThis.__flashCount??0)+1;globalThis.__flashWrite={address:o.fileArray[0].address,size:o.fileArray[0].data.length,eraseAll:o.eraseAll};o.reportProgress(0,o.fileArray[0].data.length,o.fileArray[0].data.length);}
             async after(mode){globalThis.__flashReset=mode;} }`); return;
@@ -188,6 +188,7 @@ try {
   await click('このボードにOEPを導入'); await until('location.hash==="#/probe"', 20000); await ok('install');
   assert.deepEqual(await evaluate('globalThis.__flashWrite'), { address: 0, size: flashImage.length, eraseAll: false });
   assert.equal(await evaluate('globalThis.__reusedSerialPort'), true, 'the programming port is reused');
+  assert.deepEqual(await evaluate('globalThis.__flashRts.slice(-2)'), [true, false], 'the chip is reset into its firmware (RTS pulsed)');
   assert.match(await text(), /OEPを導入できました/); assert.match(await text(), /道具へプローブを渡す/); await snapshot('02-installed');
   await press('接続を終了');
   // A failed reconnection keeps the write and offers a retry without writing again (A09).

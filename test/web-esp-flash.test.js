@@ -11,12 +11,14 @@ function fixture(chip = 'ESP32', major = 1, fail = '') {
   image[chip === 'ESP32' ? 0x1000 : chip === 'ESP32-P4' ? 0x2000 : 0] = 0xe9;
   image[0x8000] = 0xaa; image[0x8001] = 0x50;
   const load = async () => ({
-    Transport: class { constructor(/** @type {any} */ port) { events.push(['port', port]); } async disconnect() { events.push(['close']); if (fail === 'connect-close') throw Error('close failed'); } },
+    Transport: class { constructor(/** @type {any} */ port) { events.push(['port', port]); }
+      async setDTR(/** @type {boolean} */ v) { events.push(['dtr', v]); } async setRTS(/** @type {boolean} */ v) { events.push(['rts', v]); }
+      async disconnect() { events.push(['close']); if (fail === 'connect-close') throw Error('close failed'); } },
     ESPLoader: class {
       chip = { CHIP_NAME: chip, getMajorChipVersion: async () => major };
       async main() { if (fail.startsWith('connect')) throw Error('connect failed'); return chip; }
       async writeFlash(/** @type {any} */ options) { events.push(['write', options]); if (fail === 'write') throw Error('write failed'); options.reportProgress(0, image.length, image.length); }
-      async after(/** @type {string} */ mode) { events.push(['reset', mode]); }
+      async after(/** @type {string} */ mode) { events.push(['after', mode]); }
     },
   });
   return { image, load, events };
@@ -29,7 +31,9 @@ test('ESP initial installation writes the merged image at zero and releases its 
   assert.equal(options.fileArray[0].address, 0);
   assert.equal(options.fileArray[0].data, f.image);
   assert.equal(options.eraseAll, false);
-  assert.deepEqual(f.events.slice(-2), [['reset', 'hard_reset'], ['close']]);
+  // esptool's hard reset: IO0 released, EN pulled low by RTS and let go (esptool-js 0.7.1's after() never asserts RTS)
+  assert.deepEqual(f.events.slice(-4), [['dtr', false], ['rts', true], ['rts', false], ['close']]);
+  assert.equal(f.events.some((e) => e[0] === 'after'), false);
   assert.equal(progress.at(-1)[0], f.image.length);
 });
 
@@ -56,7 +60,7 @@ test('serial port is released on ROM connection and programming failures', async
     const f = fixture('ESP32', 1, fail);
     await assert.rejects(flashEsp({ ...f, model: 'esp32', port: {} }), /connect failed|write failed/);
     assert.deepEqual(f.events.at(-1), ['close']);
-    assert.equal(f.events.some((e) => e[0] === 'reset'), false);
+    assert.equal(f.events.some((e) => e[0] === 'rts'), false);
   }
 });
 

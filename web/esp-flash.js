@@ -1,4 +1,15 @@
 // ESP ROM programming is separate from the OEP protocol and works on blank boards.
+
+/** Reset the chip into its firmware through the auto-reset circuit: RTS asserted pulls EN low, released after 100 ms,
+ * DTR (IO0) left released so the chip boots from flash - esptool's hard reset. esptool-js 0.7.1's after('hard_reset')
+ * only releases RTS and never asserts it, so the chip stayed in the flasher stub (at the write's baud) and the new
+ * firmware did not answer until the board was replugged. @param {any} transport */
+export async function hardReset(transport) {
+  await transport.setDTR(false);
+  await transport.setRTS(true);
+  await new Promise((r) => setTimeout(r, 100));
+  await transport.setRTS(false);
+}
 /** @type {Record<string, string>} */
 const MODELS = { 'ESP32': 'esp32', 'ESP32-S3': 'esp32s3', 'ESP32-C3': 'esp32c3', 'ESP32-C6': 'esp32c6' };
 /** Read the chip and its major revision from the ROM, so the board is never asked (page.ja.md §5.1 step 2).
@@ -13,7 +24,7 @@ export async function detectEsp(port, { load = () => import('./esp-loader.js') }
     const chip = /** @type {any} */ (loader.chip);
     const major = name === 'ESP32-P4' && chip.getMajorChipVersion ? await chip.getMajorChipVersion(loader) : null;
     const model = name === 'ESP32-P4' ? (major === 1 ? 'esp32p4' : major === 3 ? 'esp32p4x' : null) : MODELS[name] ?? null;
-    await loader.after?.('hard_reset');
+    await hardReset(transport);
     return { name, major, model };
   } finally { await transport.disconnect().catch(() => {}); }
 }
@@ -48,7 +59,7 @@ export async function flashEsp({ port, model, image, onProgress = () => {}, log 
     }
     await loader.writeFlash({ fileArray: [{ data: image, address: 0 }], flashSize: 'detect', flashMode: 'keep', flashFreq: 'keep',
       eraseAll: false, compress: true, reportProgress: (/** @type {number} */ _index, /** @type {number} */ done, /** @type {number} */ total) => onProgress(done, total, `${done} / ${total} bytes`) });
-    await loader.after('hard_reset');
+    await hardReset(transport);
     return description;
   } catch (error) {
     failed = true;

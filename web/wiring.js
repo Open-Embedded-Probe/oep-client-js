@@ -43,6 +43,13 @@ function candidatesFor(g, line) {
   const all = D.channelList();
   return set.size ? all.filter(([ch]) => set.has(ch)) : all;
 }
+/** After adding: the new group brought into view, its first choice focused. @param {number} index */
+function focusGroup(index) {
+  const g = document.querySelectorAll('.wire-group')[index];
+  if (!g) return;
+  g.scrollIntoView({ block: 'center' });
+  /** @type {HTMLElement | null} */ (g.querySelector('button.pattern-card, select, input'))?.focus({ preventScroll: true });
+}
 function newGroup(type, wire = '') { return { type, wire, pins: type === 'custom' ? { signal1: '' } : {}, target: {} }; }
 function draftFrom(port) {
   const groups = groupsOf(port).map((g) => ({ ...g, pins: Object.fromEntries(Object.entries(g.pins).map(([k, v]) => [k, String(v)])), target: {} }));
@@ -77,9 +84,9 @@ export function editor(id, query) {
     !D.dev.memo ? note(t('This probe has no memo area, so the part number and memo are saved in this browser only (other PCs do not get them). The wiring is saved in the probe.', 'このプローブにはメモ領域がないため、型番・メモはこのブラウザだけに保存します（他のPCには渡りません）。配線はプローブに保存します。'), 'amber') : null);
   const wiring = el('fieldset', { class: 'form-group' }, el('legend', {}, t('Signals and probe pins', '信号とプローブ側のピン')), p(t('Several kinds, such as debug and UART, can be registered together. The choices come from this probe\'s declarations.', 'デバッグとUARTなど、複数の種類を一緒に登録できます。候補はこのプローブの宣言から出しています。'), 'muted'),
     ...d.groups.map((g, i) => groupEditor(g, i, d, touch)),
-    el('div', { class: 'mt' }, el('h3', {}, t('Add another signal', '別の信号も追加する')), el('div', { class: 'choice-row' }, ...['debug', 'uart', 'i2c', 'spi', 'custom'].map((tk) => button(t(`+ ${GROUP_TITLE[tk]}`, `＋ ${GROUP_TITLE[tk]}`), () => { d.groups.push(newGroup(tk)); touch(); render(); }, '', { disabled: tk !== 'custom' && d.groups.some((g) => g.type === tk), 'data-add-group': tk })))));
+    el('div', { class: 'mt' }, el('h3', {}, t('Add a signal to this wiring', 'この配線に信号を追加')), p(t('It is added at the end of the list above.', '上の一覧の最後に加わります。'), 'compact muted'), el('div', { class: 'choice-row' }, ...['debug', 'uart', 'i2c', 'spi', 'custom'].map((tk) => button(t(`+ ${GROUP_TITLE[tk]}`, `＋ ${GROUP_TITLE[tk]}`), () => { d.groups.push(newGroup(tk)); touch(); render(); focusGroup(d.groups.length - 1); }, '', { disabled: tk !== 'custom' && d.groups.some((g) => g.type === tk), 'data-add-group': tk })))));
   return frame([heading(id === 'new' ? t('What goes to which pin?', '何を、どのピンにつなぎますか。') : t(`Edit the wiring of ${d.original?.name}`, `${d.original?.name}の配線を編集`), t('Set the target and its wiring in one place. Saving starts no connection or output.', '相手の情報と配線を、ひとつの場所で設定します。保存しても接続・出力は始まりません。'), 'CONNECTION'),
-    el('form', { id: 'connection-form', onsubmit: (e) => { e.preventDefault(); } }, kindPanel, wiring, targetFields,
+    el('form', { id: 'connection-form', onsubmit: (e) => { e.preventDefault(); } }, targetFields, kindPanel, wiring,
       el('div', { id: 'form-error', class: 'form-error', role: 'alert' }),
       el('div', { class: 'save-bar' }, p(D.dev.saveable ? t('Saving applies the pin names to the probe and stores them, and records the part number and memo. Other unsaved changes in the probe are saved too.', '保存は、ピン名をプローブへ適用して永続保存し、型番・メモを記録します。本体の他の未保存の変更もまとめて保存されます。') : t('This probe cannot store settings. Saving becomes "Apply for now".', 'このプローブは永続保存できません。保存は「今回だけ適用」になります。')),
         actions(button(t('Cancel', 'キャンセル'), () => { state.dirty = false; state.draft = null; go(state.returnTo); }), action(D.dev.saveable ? (id === 'new' ? t('Save the wiring', '配線を保存') : t('Save changes', '変更を保存')) : t('Apply for now', '今回だけ適用'), () => saveDraft(id), 'primary', { id: 'save-connection', disabled: !D.dev.changeable })))),
@@ -99,7 +106,7 @@ function groupEditor(g, index, d, touch) {
         field(t('Signal name', '信号名'), line, (v) => { const val = g.pins[line]; delete g.pins[line]; g.pins[v] = val; touch(); }, t('Letters, digits, _ and -. For example boot0, led, ch0', '英数字・_・-。例: boot0、led、ch0'), null, 'text', { 'data-custom-name': `${index}-${line}`, onchange: () => render() }),
         pinField(line, t('Probe pin', 'プローブのピン'), false))) : lines.map((line) => pinField(line, LINE_TITLE()[line] ?? line, OPTIONAL.has(line)))),
       g.type === 'custom' ? button(t('Add a signal name', '信号名を追加'), () => { g.pins[`signal${Object.keys(g.pins).length + 1}`] = ''; touch(); render(); }) : null),
-    lines.length || g.type === 'custom' ? el('details', { class: 'mt', open: Object.values(g.target ?? {}).some(Boolean) }, el('summary', {}, t('Target pin name (optional)', '相手側のピン名（任意）')),
+    lines.length || g.type === 'custom' ? el('div', { class: 'mt' }, el('h4', {}, t('Target pin name (optional)', '相手側のピン名（任意）')),
       p(t('If known, record the target\'s pin name (PA13 and so on). You can register without it.', '分かれば、相手の端子名（PA13 など）を記録します。分からなくても登録できます。'), 'compact muted'),
       el('div', { class: 'wire-pins' }, ...(g.type === 'custom' ? Object.keys(g.pins) : lines).map((line) => field(line, g.target?.[line] ?? '', (v) => { g.target[line] = v; touch(); }, '', null, 'text', { 'data-target-pin': `${index}-${line}` })))) : null,
     p(t('Share GND with the target. Speed, address and the like are set in the tool that does the work, not saved with the wiring.', 'GNDは相手と共通にします。速度・アドレスなどは作業をする道具で指定し、配線には保存しません。'), 'compact muted mt'),
