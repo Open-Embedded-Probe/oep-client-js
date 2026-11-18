@@ -28,8 +28,8 @@ connects the real browser host library to the virtual probe; it is never include
 It checks the public pages and old addresses; the ESP32 install (a simulated ROM: offset zero, the same serial port reused, a
 retry that does not write again); the Pico install by BOOTSEL (the one new device opened without another chooser); the
 Pico and P4 (DFU) updates; connecting with the purpose kept; wiring registered with the target absent (no attach or pin
-assignment; the part and note go to the memo area), editing and the connection check; a purpose's page leading to the
-hand-over; passthrough, idle pins and Wi-Fi; settings and memo backups restored after their difference is shown;
+assignment; the part and note go to the memo area), editing and the connection check; a probe tab opened before connecting and
+come back to after it; the unsaved bar's Save; the tools tab naming the pass-through; passthrough, idle pins and Wi-Fi; settings and memo backups restored after their difference is shown;
 declarations; hand-over; a 390 px wide screen; the language from the browser and from the header's selector (inputs, route and
 connection kept, remembered over a reload), and every screen in English without Japanese left. Wi-Fi runs on a second virtual probe (the classic ESP32 profile). CI
 runs it after `npm run check`. Flashing, DFU, the boot ROM, USB permission dialogs and electrical signals are stand-ins

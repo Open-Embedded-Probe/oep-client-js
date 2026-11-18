@@ -3,14 +3,12 @@ import { el } from './ui.js';
 import { t } from './i18n.js';
 
 export const state = {
-  /** the purpose chosen before installing or connecting (§4.2): kept through board choice, permissions and retries */
-  intent: '',
   /** where C01 returns after connecting */
-  connectReturn: '/work',
+  connectReturn: '/probe',
   /** the installation in progress (I01) */
   install: null,
   /** the wiring editor's draft (W03) */
-  draft: null, dirty: false, returnTo: '/connections',
+  draft: null, dirty: false, returnTo: '/probe/wiring',
   passthrough: null, settingsDraft: {}, maintenance: {},
   notice: '', busy: false, transferred: false,
 };
@@ -18,7 +16,7 @@ export const state = {
 let renderer = (/** @type {boolean} */ _focus) => {};
 export function setRenderer(fn) { renderer = fn; }
 export function render(focus = false) { renderer(focus); }
-export const routeNow = () => location.hash.startsWith('#/') ? location.hash.slice(1) : '/home';
+export const routeNow = () => location.hash.startsWith('#/') ? location.hash.slice(1) : '/';
 
 export function announce(text) { const a = document.getElementById('announcer'); if (a) a.textContent = text; }
 export function feedback(text, kind = '') {

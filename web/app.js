@@ -1,59 +1,50 @@
-// OEP Web: the public entrance (P01-P04), probe creation (I01), connecting (C01) and the router. Screens follow
-// docs/page.ja.md; the work screens are in work.js, passthrough.js and manage.js.
-import { el, p, badge, actions, link, external, note, panel, heading, keyValues, sectionTitle, field, resetFieldIds, textLink } from './ui.js';
+// OEP Probe Tool (docs/page.ja.md): the start (S1), making a probe (S2), connecting (S3), the probe's tabs (P1-P6) and the
+// router. The tabs are in probe.js and wiring.js; everything done to a probe goes through device.js.
+import { el, p, badge, actions, link, external, note, panel, heading, keyValues, field, resetFieldIds, textLink } from './ui.js';
 import { state, setRenderer, render, go, routeNow, discardThen, action, button, setErrorText, announce } from './core.js';
 import * as D from './device.js';
-import { BOARDS, SETUP_PATTERNS, USE_CASE_DETAILS, DOCS, guide } from './data.js';
+import { BOARDS, USES, DOCS } from './data.js';
 import { t, tr, lang, setLang, LANGUAGES, onLanguage, applyDocument } from './i18n.js';
 import { BOARDS as SPECS, FEATURES } from './boards.js';
-import { connected, purposeRoute, purposeTitle, choosePurpose, patternChoices, workspaceShell } from './common.js';
-import { setup, work, connections, editor, fixture } from './work.js';
-import { passthrough } from './passthrough.js';
-import { settings, maintenance, handoff } from './manage.js';
+import { connected, needConnection, probeFrame } from './common.js';
+import { wiringList, editor } from './wiring.js';
+import { overview, settings, tools, maintenance } from './probe.js';
 
 setErrorText(D.errorText);
 D.onChange(() => { if (!state.busy) render(); });
 
-function shell(content, workspace) {
-  const nav = [['/home', t('About OEP', 'OEPとは')], ['/usecases', t('What it does', 'できること')], ['/boards', t('Boards', '対応ボード')], ['/learn', t('Technology and docs', '技術・資料')]];
-  const route = routeNow();
+function shell(content) {
   return [
-    el('header', { class: 'site-header' }, el('a', { href: '#/home', class: 'brand', 'aria-label': t('OEP home', 'OEP トップ') }, el('span', { class: 'brand-icon' }, 'OEP'), el('span', { class: 'brand-name' }, 'Open Embedded Probe', el('small', {}, 'CONNECT. EXPLORE. BUILD.'))),
-      el('nav', { class: 'public-nav', 'aria-label': t('About OEP', 'OEPの案内') }, ...nav.map(([path, name]) => el('a', { href: `#${path}`, class: route === path ? 'active' : '', 'aria-current': route === path ? 'page' : 'false' }, name))),
+    el('header', { class: 'site-header' }, el('a', { href: '#/', class: 'brand', 'aria-label': t('OEP Probe Tool start', 'OEP Probe Tool のスタート') }, el('span', { class: 'brand-icon' }, 'OEP'), el('span', { class: 'brand-name' }, 'OEP Probe Tool', el('small', {}, t('MAKE. SET UP. HAND OVER.', 'MAKE. SET UP. HAND OVER.')))),
+      el('span', { class: 'header-gap' }),
       el('label', { class: 'language' }, el('span', { class: 'sr-only' }, t('Language', '言語')),
         el('select', { id: 'language', onchange: (e) => setLang(e.target.value) }, ...LANGUAGES.map(([id, name]) => el('option', { value: id, selected: id === lang }, name)))),
-      el('a', { class: 'btn header-action', href: connected() ? '#/work' : '#/install/select' }, connected() ? t('Back to work →', '作業に戻る →') : t('Make a probe →', 'プローブを作る →'))),
+      connected() && !routeNow().startsWith('/probe') ? el('a', { class: 'btn header-action', href: '#/probe' }, t('To the probe →', 'プローブへ →')) : null),
     !D.browser.secure ? note(t('Connecting devices needs HTTPS or localhost. You can still read everything here.', '機器の接続にはHTTPSかlocalhostが必要です。説明はこのまま読めます。'), 'amber') : (!D.browser.usb && !D.browser.serial) ? note(t('To connect devices, use desktop Chrome or Edge. You can still read everything in this browser.', '機器の接続には、デスクトップ版のChromeかEdgeを使ってください。説明はこのブラウザでも読めます。'), 'amber') : null,
-    workspace ? workspaceShell(content) : el('main', { id: 'content', class: 'container', tabindex: -1 }, content),
+    el('main', { id: 'content', class: 'container', tabindex: -1 }, content),
     el('footer', { class: 'footer' }, el('span', {}, 'Open Embedded Probe', p(t('Connecting boards and development tools in a common way.', 'ボードと開発ツールを、共通の方法でつなぐ。'), 'mb0')), el('span', {}, `oep-client-js ${D.VERSION ?? ''}`), external('GitHub / OEP', 'https://github.com/Open-Embedded-Probe')),
   ];
 }
-function heroDiagram() {
-  return el('div', { class: 'bench', role: 'img', 'aria-label': t('The browser and development tools on the PC reach the chip or board under development through an OEP probe.', 'PCのブラウザや開発ツールがOEPプローブを介して、開発中のICや基板につながります。') },
-    el('span', { class: 'bench-label' }, 'ONE PROBE, MANY POSSIBILITIES'),
-    el('div', { class: 'bench-row' }, el('div', { class: 'diagram-box' }, t('Browser', 'ブラウザ'), el('span', {}, t('Setup and maintenance', 'セットアップ・保守'))), el('div', { class: 'diagram-box' }, t('IDE / tests', 'IDE / テスト'), el('span', {}, t('Development, automation', '開発・自動化')))),
-    el('div', { class: 'probe-board' }, el('strong', {}, 'OEP'), el('small', {}, 'YOUR DEVELOPMENT BOARD')),
-    el('div', { class: 'connection-line' }, t('↓ debug, buses, signals, capture ↓', '↓ デバッグ・通信・信号・観測 ↓')),
-    el('div', { class: 'bench-row' }, el('div', { class: 'diagram-box' }, t('Chip or board under development', '開発中のIC・基板'), el('span', {}, t('Target', 'ターゲット')))));
+
+// -- S1: the start (page.ja.md §3) --
+function start() {
+  const known = D.knownProbes().slice(0, 5);
+  return el('div', { class: 'page' },
+    el('section', { class: 'hero start' }, el('div', { class: 'hero-copy' }, p('OPEN EMBEDDED PROBE', 'eyebrow'),
+      el('h1', { tabindex: -1 }, t('Turn the board at hand into a common probe for embedded development.', '手元のボードを、組み込み開発の共通プローブに。')),
+      p(t('This page makes a board an OEP probe, sets it up, keeps it, and hands it to the tools that do the work: the IDE, Python and WireSkein. Reading needs no device permission.', 'このページは、ボードをOEPのプローブにし、設定して保守し、作業をする道具（IDE、Python、WireSkein）へ渡します。読むだけなら機器の許可は要りません。')),
+      actions(link(t('Make a board a probe →', 'ボードをプローブにする →'), '/make', true, { 'data-start': 'make' }), connected() ? link(t('To the probe →', 'プローブへ →'), '/probe', false, { 'data-start': 'probe' }) : link(t('Connect a probe', 'プローブにつなぐ'), '/connect', false, { 'data-start': 'connect' })))),
+    known.length ? el('section', { class: 'section' }, el('h2', {}, t('Probes used in this browser', 'このブラウザで使ったプローブ')),
+      el('div', { class: 'stack' }, ...known.map((k) => el('a', { class: 'setup-choice', href: '#/connect', 'data-known': k.unitId }, el('div', {}, el('h3', {}, k.unitId), p(k.model ?? '', 'muted mb0')), el('span', { class: 'arrow' }, '→')))),
+      p(t('This list is kept in this browser only.', 'この一覧はこのブラウザだけにあります。'), 'muted compact')) : null,
+    el('section', { class: 'section' }, el('h2', {}, t('What OEP is used for, and where', 'OEPでできることと、作業する場所')),
+      p(t('This page prepares the probe for each use; the work itself is done in the tool on the right.', 'このページは用途ごとにプローブを準備し、作業そのものは右の道具で行います。'), 'muted'),
+      el('div', { class: 'table-wrap' }, el('table', { class: 'uses' }, el('thead', {}, el('tr', {}, el('th', {}, t('Use', '用途')), el('th', {}, t('Prepared on this page', 'このページで準備すること')), el('th', {}, t('Tool that does the work', '作業をする道具')))),
+        el('tbody', {}, ...USES.map((u) => el('tr', { 'data-use': u.id }, el('td', {}, u.title), el('td', {}, u.prepare), el('td', {}, u.tool))))))),
+    el('section', { class: 'section' }, el('h2', {}, t('Documents', '資料')),
+      el('div', { class: 'link-list' }, ...DOCS.map(([tk, d, href]) => el('a', { href, target: '_blank', rel: 'noopener', class: 'link-row' }, el('div', {}, el('h3', {}, tk), p(d)), el('span', { class: 'arrow' }, '↗'))))));
 }
 
-// -- public pages (P01-P04) --
-function home() {
-  return [
-    el('section', { class: 'hero' }, el('div', { class: 'hero-copy' }, p('OPEN EMBEDDED PROBE', 'eyebrow'), el('h1', { tabindex: -1 }, t('Turn the board at hand', '手元のボードを、'), el('br'), t('into a common probe', '開発のための'), el('br'), t('for development.', '共通プローブに。')),
-      p(t('Open Embedded Probe is a specification for using debug, buses, signal control and measurement from a PC in a common way. A development board with the firmware becomes a tool for the job at hand.', 'Open Embedded Probeは、デバッグ・通信・信号制御・計測を、PCから共通の方法で使うための仕様です。対応ファームウェアを入れた開発ボードを、用途に応じた道具として使えます。')),
-      actions(link(t('Make a board a probe →', 'ボードをプローブにする →'), '/install/select', true), link(connected() ? t('Back to work', '作業に戻る') : t('Use an installed probe', '導入済みのプローブを使う'), connected() ? '/work' : '/connect')),
-      p(t('Install and set up in the browser, then work in the IDE, Python or WireSkein. Reading needs no device permission.', 'ブラウザで導入・設定し、作業はIDE・Python・WireSkeinで。読むだけなら機器の許可は要りません。'), 'hero-foot')), heroDiagram()),
-    el('section', { class: 'section' }, sectionTitle(t('From one connection to many tasks.', 'ひとつの接続から、いろいろな作業へ。'), t('What is available depends on the board and firmware. It is read from the probe after connecting.', '利用できる機能は、ボードとファームウェアで異なります。接続後にプローブから確かめます。'), 'WHAT YOU CAN DO'),
-      patternChoices('public'), actions(link(t('Automated tests and development tools', '自動テスト・開発ツールを知る'), '/learn'))),
-    el('section', { class: 'section' }, sectionTitle(t('Getting a board? Get an ESP32-P4.', 'これから用意するなら、ESP32-P4。'), t('The ESP32-P4 is recommended. You can also start with a supported board you have. An installed probe connects whatever its kind.', '推奨ボードはESP32-P4です。手元の対応ボードからも始められます。導入済みなら、種類を選ばず接続できます。'), 'BOARDS'),
-      el('div', { class: 'three-grid' }, ...BOARDS.slice(0, 3).map((b) => boardCard(b, false, true))), actions(link(t('All boards and their limits', 'すべてのボードと制約を見る'), '/boards'))),
-    el('section', { class: 'section' }, sectionTitle(t('Write it, then set it up straight away.', '書き込んだら、そのまま設定へ。'), t('You can register wiring before you have a target.', 'ターゲットがまだなくても、配線の登録はできます。'), 'GET STARTED'),
-      el('div', { class: 'steps-overview' }, ...[[t('Connect the board', 'ボードをつなぐ'), t('Choose the device to write once in the browser.', '書き込みに使う機器を、ブラウザから一度選択。')], [t('Install OEP', 'OEPを導入する'), t('Check the chip and the firmware image, then write and boot in one go.', 'チップとファームウェアイメージを確かめ、書き込みから起動まで続けます。')], [t('Set it up for your purpose', '用途に合わせて設定する'), t('Register the wiring and set the probe up for how you will use it: debug, log pass-through, capture.', 'デバッグ・ログの素通し・観測など、使い方に合わせて配線を登録し、本体を設定。')], [t('Hand it to the tool', '道具へ渡す'), t('Debug, logs, buses, signals and capture are done in the IDE, Python or WireSkein.', 'デバッグ・ログ・通信・信号・波形の取得は、IDE・Python・WireSkeinで行います。')]].map(([tk, d]) => el('div', {}, el('h3', {}, tk), p(d)))),
-      p(t('If the USB setup changes after boot, the same screen guides the permission and replugging needed.', '起動後にUSBの構成が変わる場合は、必要な使用許可やケーブルの抜き差しを、同じ画面で案内します。'), 'muted compact')),
-    el('section', { class: 'section' }, el('div', { class: 'tech-block' }, el('div', {}, p('HOW OEP WORKS', 'eyebrow'), el('h2', {}, t('Board differences,', 'ボードごとの違いを、'), el('br'), t('handled as common functions.', '共通の機能として扱う。')), p(t('The probe itself tells its functions and pin limits, and apps use the functions they understand. OEP is not a tool for one particular board.', 'プローブ自身が機能とピンの制約を伝え、アプリは理解できる機能を利用します。OEPは、特定のボードだけのための道具ではありません。')), el('a', { class: 'text-link', href: '#/learn' }, t('Technology overview and docs →', '技術の概要と資料へ →'))),
-      el('div', { class: 'tech-lines' }, ...[[t('Declare functions', '機能を宣言する'), t('Read what it offers, and the conditions, from the device.', '提供できる機能と、その条件を実機から取得。')], [t('Use them the same way', '共通の方法で使う'), t('Operations mean the same over USB or serial.', 'USBやシリアルの上で、同じ意味の操作を利用。')], [t('Extend for your needs', '用途に合わせて拡張する'), t('Combine standard interfaces with your own functions.', '標準interfaceと独自の機能を組み合わせる。')]].map(([tk, d]) => el('div', {}, el('strong', {}, tk), el('small', {}, d))))))];
-}
 function boardStatus(b) {
   const specs = b.ids.map((id) => SPECS.find((s) => s.id === id)).filter(Boolean);
   const released = specs.some((s) => s.tier === 'release');
@@ -67,57 +58,22 @@ function boardCard(b, select = false, compact = false) {
     el('ul', {}, ...b.features.map((f) => el('li', {}, f))),
     !compact ? el('ul', { class: 'muted' }, ...boardStatus(b).map((tk) => el('li', {}, tk))) : null, !compact ? p(b.note, 'compact') : null,
     actions(select ? button(state.install?.board === b.id ? t('Selected ✓', '選択中 ✓') : t('Choose this board', 'このボードを選ぶ'), () => { newInstall(b.id); render(); }, state.install?.board === b.id ? 'primary' : '', { disabled: !b.installable, 'data-board': b.id })
-      : button(b.installable ? t('Start with this board →', 'このボードで始める →') : t('Use an installed device', '導入済みの機器を使う'), () => { state.intent = ''; if (b.installable) { newInstall(b.id); go('/install/prepare'); } else { state.connectReturn = '/work'; go('/connect'); } }, '', { 'data-board': b.id })));
-}
-function boards() {
-  return el('div', { class: 'page' }, heading(t('Start from a board you have.', '手元のボードから、始められます。'), t('Released firmware, features and installation differ by board. Compare them and choose one that suits your purpose.', '配布ファームウェア、使える機能、導入方法はボードごとに異なります。違いを見ながら、目的に合うものを選んでください。'), 'SUPPORTED BOARDS'),
-    el('div', { class: 'two-grid' }, ...BOARDS.map((b) => boardCard(b))),
-    el('section', { class: 'section' }, sectionTitle(t('Features by board', 'ボードごとの機能'), t('What the released firmware offers. What you can actually use is read from the probe\'s declarations after connecting.', '配布firmwareの機能の一覧です。実際に使える機能は、接続後にプローブの宣言で確かめます。')),
-      el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, t('Feature', '機能')), ...SPECS.map((s) => el('th', {}, tr(s.name))))),
-        el('tbody', {}, ...FEATURES.flatMap((g) => g.items.map((/** @type {any} */ [key, label]) => el('tr', {}, el('td', {}, tr(label)), ...SPECS.map((s) => el('td', {}, s.features[key] === true ? t('yes', 'あり') : s.features[key] === false ? '—' : tr(s.features[key])))))))))),
-    note(t('The probe\'s pins run at the MCU\'s voltage. Check GND and the voltage before connecting a target. Provide level shifting separately where needed.', 'プローブのピンはMCUの電圧で動作します。相手と接続する前にGNDと電圧を確認してください。必要なレベル変換は、別途用意します。')),
-    external(t('Features, pins and checks by board', 'ボードごとの機能・ピン・検証範囲'), DOCS[1][2]));
-}
-function usecases() {
-  return el('div', { class: 'page' }, heading(t('What do you want to look into?', '何を確かめたいですか。'), t('Choose a purpose to see what to prepare, what this page does, and the steps after it. You can read this without a probe.', '目的を選ぶと、用意するもの、このページでできる範囲、その後の手順が分かります。まだプローブがなくても読めます。'), 'WHAT YOU CAN DO'),
-    patternChoices('public'),
-    el('div', { class: 'guide-path' }, el('h2', {}, t('Use it as a fixture or in automated tests', '治具・自動テストとして使う')), p(t('Prepare the wiring and idle states you use every time, and combine them with your development environment and scripts.', '毎回使う配線や待機状態を準備し、開発環境・スクリプトと組み合わせられます。')), external(t('All use-case guides', '用途別ガイドの全体を見る'), guide('use-cases')), link(t('Technology and development tools', '技術と開発ツールを見る'), '/learn')));
-}
-function usecase(id) {
-  const pattern = SETUP_PATTERNS.find((tk) => tk.id === id), detail = USE_CASE_DETAILS[id];
-  const go2 = actions(link(t('Make a probe for this →', 'この用途でプローブを作る →'), `/install/select?purpose=${id}`, true), button(connected() ? t('Prepare with the connected probe →', '接続中のプローブで準備する →') : t('Prepare with an installed probe →', '導入済みのプローブで準備する →'), () => choosePurpose(id), '', { 'data-purpose-connect': id }));
-  if (pattern && detail) return el('div', { class: 'page' }, heading(pattern.title, detail.example, `USE CASE / ${pattern.label}`),
-    el('div', { class: 'two-grid' }, panel(el('h2', {}, t('What you get', '得られるもの')), p(detail.result), el('h2', {}, t('This page and the tools to combine', 'このページと、組み合わせる道具')), p(detail.scope)),
-      panel(el('h2', {}, t('What to prepare', '用意するもの')), p(detail.needs), p(t('Wiring can be prepared without a target connected. Available features depend on the probe and firmware.', '配線の準備はターゲット未接続でもできます。使える機能はプローブとファームウェアにより異なります。'), 'muted'))),
-    el('section', { class: 'panel mt' }, el('h2', {}, t('How it goes', 'この用途の進め方')), el('ol', { class: 'checklist' }, ...detail.steps.map((text, i) => el('li', {}, el('span', { class: 'check' }, i + 1), text)))),
-    go2, external(t('Detailed steps and coverage', '詳しい手順・対応範囲'), guide(detail.guide)), ' ', textLink(t('Other uses', 'ほかの用途を見る'), '/usecases'));
-  return notFound();
-}
-function learn() {
-  return el('div', { class: 'page' }, heading(t('OEP is a common agreement between boards and software.', 'OEPは、ボードとソフトウェアの共通の約束です。'), t('A specification for offering and using the functions of probes for embedded development with a common meaning, not tied to one board and app pairing.', '組み込み開発に使うプローブの機能を、特定のボードやアプリの組み合わせに閉じず、共通の意味で公開・利用するための仕様です。'), 'TECHNOLOGY & DOCUMENTATION'),
-    el('div', { class: 'two-grid' }, heroDiagram(), el('div', {}, ...[[t('The probe tells its functions', 'プローブが機能を伝える'), t('Usable interfaces, pins, ranges and limits are read from the device. Operations are not decided from a fixed per-board table alone.', '使えるinterface、ピン、範囲や制約を実機から読みます。ボードごとの固定表だけで操作を決めません。')], [t('One device, many tools', 'ひとつの機器を、複数の道具で使う'), t('Use it from the browser, IDE, CLI and tests. Sessions and the right to change keep operations from clashing.', 'ブラウザ、IDE、CLI、テストから利用できます。操作が競合しないよう、セッションと変更権で調整します。')], [t('Combine standard and your own functions', '標準機能と独自機能を組み合わせる'), t('Besides the standard debug, bus and signal functions, you can add your own interfaces. Target-specific flash procedures belong to the host. Supporting OEP does not by itself mean writing every chip.', '標準のデバッグ・通信・信号機能に加え、独自interfaceを追加できます。ターゲット固有のflash手順はhost側が担います。OEP対応というだけで、全ICの書き込みに対応するわけではありません。')]].map(([tk, d]) => el('section', { class: 'mb' }, el('h2', {}, tk), p(d, 'muted'))))),
-    el('section', { class: 'section' }, sectionTitle(t('Learn more, build your own.', '詳しく知る・作ってみる。'), t('Details are in each spec and implementation repository.', '詳細は、それぞれの仕様・実装リポジトリへ。')), el('div', { class: 'link-list' }, ...DOCS.map(([tk, d, href]) => el('a', { href, target: '_blank', rel: 'noopener', class: 'link-row' }, el('div', {}, el('h3', {}, tk), p(d)), el('span', { class: 'arrow' }, '↗'))))));
+      : button(b.installable ? t('Start with this board →', 'このボードで始める →') : t('Use an installed device', '導入済みの機器を使う'), () => { if (b.installable) { newInstall(b.id); go('/make/prepare'); } else { state.connectReturn = '/probe'; go('/connect'); } }, '', { 'data-board': b.id })));
 }
 
 // -- probe creation (I01) --
 function newInstall(boardId) {
-  const keepIntent = state.install?.intent ?? state.intent;
-  state.install = { board: boardId, target: null, custom: null, phase: 'idle', progress: { done: 0, total: 1, text: '' }, log: [], written: '', reason: '', intent: keepIntent };
+  state.install = { board: boardId, target: null, custom: null, phase: 'idle', progress: { done: 0, total: 1, text: '' }, log: [], written: '', reason: '' };
 }
 function stepper(n) {
   return el('ol', { class: 'stepper', 'aria-label': t('Probe creation progress', 'プローブ作成の進行') }, ...[t('Choose a board', 'ボードを選ぶ'), t('Connect and review', '接続・内容確認'), t('Write and boot', '書き込み・起動'), t('First setup', '初期設定')].map((tk, i) => el('li', { class: i === n ? 'current' : i < n ? 'done' : '', 'aria-current': i === n ? 'step' : 'false' }, el('span', {}, i < n ? '✓' : String(i + 1)), tk)));
-}
-function installContext() {
-  const intent = state.install?.intent;
-  return intent ? panel(badge(t('Purpose to continue with after installing', '導入後に続ける用途')), el('h2', {}, purposeTitle(intent)), p(t('After writing and the boot check, you go on to setting up this purpose.', '書き込みと起動確認が終わると、この用途の設定に進みます。')),
-    button(t('Choose another purpose', '用途を選び直す'), () => { state.install.intent = ''; state.intent = ''; go('/usecases'); })) : null;
 }
 function installFrame(n, content) {
   const b = BOARDS.find((x) => x.id === state.install?.board);
   return el('div', { class: 'page' }, stepper(n), n === 0 ? content : el('div', { class: 'install-layout' }, el('div', {}, content),
     el('aside', { class: 'install-aside' }, el('span', { class: 'chip-mark' }, b?.code ?? 'OEP'), el('h3', {}, b?.name ?? ''), p(t('The board becoming a probe', '今回プローブにするボード')),
       state.install?.target ? p(t(`Detected: ${state.install.target.chip}${state.install.target.revision != null ? ` v${state.install.target.revision}.x` : ''}`, `検出: ${state.install.target.chip}${state.install.target.revision != null ? ` v${state.install.target.revision}.x` : ''}`)) : null,
-      p(t('No need to connect the target yet.', 'ターゲットはまだつながなくてかまいません。')), installContext())));
+      p(t('No need to connect the target yet.', 'ターゲットはまだつながなくてかまいません。')))));
 }
 function installModel(tk) {
   const b = BOARDS.find((x) => x.id === state.install.board);
@@ -130,13 +86,13 @@ function installModel(tk) {
 }
 function install(view, query) {
   if (view === 'select') {
-    const requested = query.get('purpose');
     if (!state.install || state.install.phase === 'done') newInstall('p4');
-    if (requested !== null) state.install.intent = SETUP_PATTERNS.some((tk) => tk.id === requested) ? requested : '';
-    else if (!query.has('keep')) { state.install.intent = ''; state.intent = ''; }
     return installFrame(0, [heading(t('Which board will be the probe?', 'どのボードをプローブにしますか。'), t('Choose by how it installs and what it offers. To use an installed probe, you do not need this.', '導入方法と特徴を見て選んでください。導入済みのプローブを使うときは、この選択は不要です。'), 'CREATE A PROBE'),
-      installContext(), note(t('If you are getting a board, the ESP32-P4 is recommended. It covers debug, UART pass-through, logic capture and more.', 'これから用意するならESP32-P4を推奨します。デバッグ・UARTの素通し・ロジック観測など、幅広い用途に使えます。')),
-      el('div', { class: 'two-grid' }, ...BOARDS.map((b) => boardCard(b, true))), actions(link(t('Next with this board →', '選んだボードで次へ →'), '/install/prepare', true), link(t('Use an installed probe', '導入済みのプローブを使う'), '/connect'))]);
+      note(t('If you are getting a board, the ESP32-P4 is recommended. It covers debug, UART pass-through, logic capture and more.', 'これから用意するならESP32-P4を推奨します。デバッグ・UARTの素通し・ロジック観測など、幅広い用途に使えます。')),
+      el('div', { class: 'two-grid' }, ...BOARDS.map((b) => boardCard(b, true))),
+      el('details', { class: 'panel mt' }, el('summary', {}, t('Features by board', 'ボードごとの機能')), p(t('What the released firmware offers. What a probe really offers is read from its declarations after connecting.', '配布ファームの機能です。実際に使える機能は、接続後にプローブの宣言で確かめます。'), 'muted'),
+        el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, t('Feature', '機能')), ...SPECS.map((x) => el('th', {}, tr(x.name))))),
+          el('tbody', {}, ...FEATURES.flatMap((g) => g.items.map((/** @type {any} */ [key, label]) => el('tr', {}, el('td', {}, tr(label)), ...SPECS.map((x) => el('td', {}, x.features[key] === true ? t('yes', 'あり') : x.features[key] === false ? '—' : tr(x.features[key])))))))))), actions(link(t('Next with this board →', '選んだボードで次へ →'), '/make/prepare', true), link(t('Use an installed probe', '導入済みのプローブを使う'), '/connect'))]);
   }
   if (!state.install) { newInstall('p4'); }
   const ins = state.install, b = BOARDS.find((x) => x.id === ins.board) ?? BOARDS[0];
@@ -150,17 +106,17 @@ function install(view, query) {
         tk ? el('div', { class: 'demo-device' }, el('span', { class: 'chip-mark' }, b.code), el('div', {}, el('strong', {}, t(`${tk.chip}${tk.revision != null ? ` v${tk.revision}.x` : ''} — chosen`, `${tk.chip}${tk.revision != null ? ` v${tk.revision}.x` : ''} — 選択済み`)), p(b.port))) : null,
         verdict && !verdict.ok ? note(verdict.why, 'amber') : null,
         actions(action(tk ? t('Choose the device again', '書き込み先を選び直す') : t('Choose the device to write', '書き込み先を選ぶ'), async () => { ins.target = await D.chooseInstallTarget(b.method); }, tk ? '' : 'primary', { id: 'choose-device', disabled: !b.method }),
-          tk && verdict?.ok && (!b.custom || ins.custom) ? link(t('Review →', '内容を確認する →'), '/install/review', true) : null)),
-      actions(link(t('Back to choosing a board', 'ボード選択に戻る'), '/install/select?keep=1'))]);
+          tk && verdict?.ok && (!b.custom || ins.custom) ? link(t('Review →', '内容を確認する →'), '/make/review', true) : null)),
+      actions(link(t('Back to choosing a board', 'ボード選択に戻る'), '/make'))]);
   }
-  if (!ins.target && ['review', 'writing', 'continue'].includes(view)) return installFrame(1, [heading(t('Choose the device to write', '書き込み先を選択してください'), t('Prepare this board first.', '先に、このボードの準備を行います。')), link(t('To choosing the device', '機器の選択へ'), '/install/prepare', true)]);
+  if (!ins.target && ['review', 'writing', 'continue'].includes(view)) return installFrame(1, [heading(t('Choose the device to write', '書き込み先を選択してください'), t('Prepare this board first.', '先に、このボードの準備を行います。')), link(t('To choosing the device', '機器の選択へ'), '/make/prepare', true)]);
   if (view === 'review') {
     const tk = ins.target, kind = tk.method === 'serial' ? 'merged' : 'uf2', entry = b.custom ? null : D.releaseEntry(tk.model, kind);
     return installFrame(1, [heading(t('Install OEP on this board.', 'このボードにOEPを導入します。'), t('Check the detected chip and what will be written, then run it.', '検出したチップと書き込む内容を確認してから実行します。'), 'CREATE A PROBE'),
       panel(el('h2', {}, t('What will be installed', '導入内容')), keyValues([[t('Detected device', '検出した機器'), `${tk.chip}${tk.revision != null ? ` v${tk.revision}.x` : ''}`], [t('Firmware', 'ファームウェア'), b.custom ? t(`Your image ${ins.custom?.name}`, `持ち込みイメージ ${ins.custom?.name}`) : t(`OepProbe ${D.release.manifest?.version ?? ''} (${entry?.file ?? '—'})`, `OepProbe ${D.release.manifest?.version ?? ''}（${entry?.file ?? '—'}）`)],
         [t('Written to', '書き込み先'), tk.method === 'serial' ? t('From the start of flash (only the image\'s range; no full erase)', 'flashの先頭から（イメージの範囲だけ。全消去はしません）') : t('To flash through the BOOTSEL boot ROM', 'BOOTSELのboot ROM経由でflashへ')], [t('Settings', '設定'), t('Settings outside the written range are not erased, but are not guaranteed to survive. For an update, back them up first in "Update and maintenance".', '書き込む範囲の外にある設定は消しませんが、残ることは保証しません。更新なら先に「更新・保守」で控えを取ります。')], [t('Next screen', '次の画面'), t('Check that it boots, then go on to the first setup', '起動を確認し、そのまま初期設定へ')]]),
         note(t('While writing, do not unplug the cable or close this tab.', '書き込み中はケーブルを抜かず、このタブを閉じないでください。')),
-        actions(action(t('Install OEP on this board', 'このボードにOEPを導入'), startInstall, 'primary', { id: 'start-install' }), link(t('Back', '戻る'), '/install/prepare')))]);
+        actions(action(t('Install OEP on this board', 'このボードにOEPを導入'), startInstall, 'primary', { id: 'start-install' }), link(t('Back', '戻る'), '/make/prepare')))]);
   }
   if (view === 'writing') {
     const pr = ins.progress;
@@ -179,14 +135,14 @@ function install(view, query) {
         actions(action(t('Retry with the same device', '同じ機器で再試行'), async () => { const r = await D.reconnectAfterInstall(ins.target, 2); if (r.ok) finishInstall(); else { ins.reason = r.reason; throw new Error(r.reason); } }, serial ? 'primary' : '', { id: 'retry-install' }),
           action(serial ? t('Choose the booted OEP\'s port', '起動したOEPのポートを選ぶ') : t('Allow the booted OEP and connect', '起動したOEPを許可して接続'), async () => { await D.grantAfterInstall(ins.target); finishInstall(); }, serial ? '' : 'primary', { id: 'grant-install' })),
         el('details', { class: 'mt' }, el('summary', {}, t('If the device is not listed', '一覧に機器が出ないとき')), p(t('Unplug the same board\'s USB cable and plug it in again (without BOOTSEL or BOOT). Wait a few seconds, then press the button above. Nothing is written again.', '同じボードのUSBケーブルを抜いて、挿し直してください（BOOTSELやBOOTは押さない）。数秒待ってから上のボタンを押します。書き込みはやり直しません。')))),
-      note(t('Your purpose and the write result are kept. No other board is opened automatically.', '用途と書き込み結果は保持しています。別のボードを自動で開くことはありません。'))]);
+      note(t('The write result is kept. No other board is opened automatically.', '書き込み結果は保持しています。別のボードを自動で開くことはありません。'))]);
   }
   return notFound();
 }
 async function startInstall() {
   const ins = state.install, b = BOARDS.find((x) => x.id === ins.board);
   ins.phase = 'writing'; ins.log = []; ins.reason = ''; ins.target.knownSerials = await D.knownSerials();
-  go('/install/writing');
+  go('/make/writing');
   const progress = (done, total, text) => {
     ins.progress = { done, total, text };
     const bar = /** @type {HTMLProgressElement} */ (document.getElementById('install-progress')); if (bar) { bar.max = total || 1; bar.value = done; }
@@ -195,76 +151,88 @@ async function startInstall() {
   const log = (line) => { ins.log.push(String(line)); if (ins.log.length > 200) ins.log.shift(); const l = document.getElementById('install-log'); if (l) l.textContent = ins.log.join('\n'); };
   try {
     ins.written = String(await D.writeInstall(ins.target, { custom: b.custom ? ins.custom : null, onProgress: progress, log }));
-  } catch (error) { ins.phase = 'idle'; go('/install/review'); throw new Error(t(`Could not write. The board may be unchanged or partly written. You can install again. (${D.errorText(error)})`, `書き込めませんでした。ボードの中身は変わっていないか、途中までの可能性があります。もう一度導入できます。（${D.errorText(error)}）`)); }
+  } catch (error) { ins.phase = 'idle'; go('/make/review'); throw new Error(t(`Could not write. The board may be unchanged or partly written. You can install again. (${D.errorText(error)})`, `書き込めませんでした。ボードの中身は変わっていないか、途中までの可能性があります。もう一度導入できます。（${D.errorText(error)}）`)); }
   ins.phase = 'connecting'; render();
   const r = await D.reconnectAfterInstall(ins.target);
   if (r.ok) finishInstall();
-  else { ins.phase = 'continue'; ins.reason = r.reason; go('/install/continue'); }
+  else { ins.phase = 'continue'; ins.reason = r.reason; go('/make/continue'); }
 }
 function finishInstall() {
   const ins = state.install;
   ins.phase = 'done';
-  const next = ins.intent ? purposeRoute(ins.intent) : '/setup';
-  if (ins.intent) D.rememberPurpose(ins.intent);
-  state.notice = t(`OEP is installed (${ins.written}). You can go on setting it up on the same connection.`, `OEPの導入が完了しました（${ins.written}）。同じ接続のまま、設定を続けられます。`);
-  state.intent = '';
-  go(next);
+  state.notice = t(`OEP is installed (${ins.written}). Go on below, on the same connection.`, `OEPを導入できました（${ins.written}）。同じ接続のまま、下から続けられます。`);
+  go('/probe');
 }
 
 // -- connecting (C01) --
 let granted = null;
 function connectScreen() {
-  if (connected()) return el('div', { class: 'page' }, heading(t('A probe is connected.', 'プローブは接続済みです。'), D.unit()), actions(link(t('Back to work →', '作業に戻る →'), state.connectReturn || '/work', true), action(t('Disconnect and use another device', '接続を終了して別の機器を使う'), D.disconnect)));
+  if (connected()) return el('div', { class: 'page' }, heading(t('A probe is connected.', 'プローブは接続済みです。'), D.unit()), actions(link(t('To the probe →', 'プローブへ →'), state.connectReturn || '/probe', true), action(t('Disconnect and use another device', '接続を終了して別の機器を使う'), D.disconnect)));
   if (granted === null && D.browser.usb) { granted = []; D.grantedUsbProbes().then((g) => { granted = g; render(); }).catch(() => {}); }
-  const done = async (open, expected) => { await D.connectWith(open, expected); const next = state.connectReturn || '/work'; if (state.intent) D.rememberPurpose(state.intent); state.connectReturn = '/work'; state.intent = ''; granted = null; go(next); };
+  const done = async (open, expected) => { await D.connectWith(open, expected); const next = state.connectReturn || '/probe'; state.connectReturn = '/probe'; granted = null; go(next); };
   const known = D.knownProbes(), usbKnown = (granted ?? []).map((d) => ({ d, k: known.find((k) => k.unitId.toLowerCase() === String(d.serialNumber).toLowerCase()) }));
   return el('div', { class: 'page' }, heading(t('Use your probe.', '手元のプローブを使う。'), t('Choose an installed device. Its board type and features are read after connecting.', '導入済みの機器を選びます。ボードの種類と使える機能は、接続してから確かめます。'), 'CONNECT YOUR PROBE'),
-    state.intent ? note(t(`After connecting you return to preparing "${purposeTitle(state.intent)}".`, `接続後に「${purposeTitle(state.intent)}」の準備へ戻ります。`)) : null,
     usbKnown.length ? panel(el('h2', {}, t('Probes allowed in this browser', 'このブラウザで許可済みのプローブ')), el('div', { class: 'stack' }, ...usbKnown.map(({ d, k }) => el('div', { class: 'connection-card' },
-      el('header', {}, el('div', {}, el('h3', {}, d.productName ?? 'OEP probe'), p(t(`Unit ID ${d.serialNumber ?? '—'}${k ? ` · ${k.model} · last ${k.purpose ? purposeTitle(k.purpose) : 'work home'}` : ''}`, `個体ID ${d.serialNumber ?? '—'}${k ? ` · ${k.model} · 前回 ${k.purpose ? purposeTitle(k.purpose) : '作業ホーム'}` : ''}`), 'muted mb0'))),
+      el('header', {}, el('div', {}, el('h3', {}, d.productName ?? 'OEP probe'), p(t(`Unit ID ${d.serialNumber ?? '—'}${k ? ` · ${k.model}` : ''}`, `個体ID ${d.serialNumber ?? '—'}${k ? ` · ${k.model}` : ''}`), 'muted mb0'))),
       actions(action(t('Connect to this unit', 'この個体に接続'), () => done(D.openUsb(d, d.serialNumber && !String(d.serialNumber).toLowerCase().startsWith('x-') ? d.serialNumber : undefined)), 'primary', { 'data-unit': d.serialNumber })))))) : null,
     el('div', { class: 'two-grid mt' }, panel(el('h2', {}, t('Choose a device in the browser', 'ブラウザから機器を選ぶ')), p(t('Connect the probe with a USB cable and choose the unit from the list. A classic ESP32 or P4 works on the serial port used for writing.', 'USBケーブルでプローブをつなぎ、一覧から使う個体を選びます。classic ESP32やP4は、書き込みに使ったシリアルポートのままで使えます。')),
       actions(action(t('Choose a device and connect', '機器を選んで接続'), () => done(D.openSerial()), 'primary', { id: 'connect-serial', disabled: !D.browser.serial }), action(t('Choose from OEP USB devices', 'OEPのUSB端子から選ぶ'), () => done(D.openUsb()), '', { id: 'connect-usb', disabled: !D.browser.usb }))),
-      panel(el('h2', {}, t('If OEP is not installed yet', 'まだOEPを導入していない場合')), p(t('First put the OEP firmware on the board. After writing, you can go straight on to the setup.', '先に、ボードへOEPのファームウェアを入れます。書き込みのあと、そのまま設定を続けられます。')), actions(link(t('Make a board a probe', 'ボードをプローブにする'), state.intent ? `/install/select?purpose=${state.intent}` : '/install/select')))),
+      panel(el('h2', {}, t('If OEP is not installed yet', 'まだOEPを導入していない場合')), p(t('First put the OEP firmware on the board. After writing, you can go straight on to the setup.', '先に、ボードへOEPのファームウェアを入れます。書き込みのあと、そのまま設定を続けられます。')), actions(link(t('Make a board a probe', 'ボードをプローブにする'), state.intent ? `/make/select?purpose=${state.intent}` : '/make')))),
     el('details', { class: 'panel mt' }, el('summary', {}, t('If the device is not in the list', '一覧に機器が見つからないとき')),
       p(t('Check that the cable carries data, that the device has booted, and that no other app holds the port. Probes not in the serial list (Pico, CH32, P4 native USB and so on) use "Choose from OEP USB devices". Try HID only when plain USB does not work.', 'データ通信できるケーブルか、機器が起動しているか、ほかのアプリがポートを使っていないかを確かめます。シリアルの一覧に出ないプローブ（Pico、CH32、P4のnative USBなど）は「OEPのUSB端子から選ぶ」を使います。通常のUSBが使えない場合だけHIDを試します。'), 'mt'),
       actions(action(t('Try connecting over HID', 'HIDで接続を試す'), () => done(D.openHid()), '', { disabled: !D.browser.hid }))));
 }
-function notFound() { return el('div', { class: 'page' }, heading(t('This screen does not exist.', 'この画面は見つかりません。'), t('Choose what you want to do from the start page.', '入口から、確認したい作業を選んでください。')), link(t('Back to the OEP start page', 'OEPの入口へ戻る'), '/home', true)); }
+function notFound() { return el('div', { class: 'page' }, heading(t('This screen does not exist.', 'この画面は見つかりません。'), t('Start again from the start page.', 'スタートからやり直してください。')), link(t('To the start', 'スタートへ'), '/', true)); }
 
-// -- router --
-const LEGACY = { home: '/home', help: '/learn', firmware: '/install/select', connect: '/connect', setup: '/setup', probe: '/work', targets: '/connections', 'target/new': '/connection/new', debug: '/setup/debug', settings: '/settings', storage: '/maintenance', diagnostics: '/maintenance', tools: '/handoff' };
-function legacy(hash) {
+// -- router (page.ja.md §2) --
+/** Addresses of earlier versions of this page, sent to the screen that does that now (page-acceptance.ja.md §4). */
+const OLD = { '/home': '/', '/usecases': '/', '/boards': '/make', '/learn': '/', '/install/select': '/make', '/setup': '/probe', '/work': '/probe', '/connections': '/probe/wiring',
+  '/connection/new': '/probe/wiring/new', '/passthrough': '/probe/settings', '/fixture': '/probe/settings', '/settings': '/probe/settings', '/maintenance': '/probe/maintenance', '/handoff': '/probe/tools',
+  home: '/', help: '/', firmware: '/make', connect: '/connect', setup: '/probe', probe: '/probe', targets: '/probe/wiring', 'target/new': '/probe/wiring/new', debug: '/probe/wiring',
+  settings: '/probe/settings', storage: '/probe/maintenance', diagnostics: '/probe/maintenance', tools: '/probe/tools', signals: '/probe/tools' };
+function moved(hash) {
   const raw = hash.replace(/^#/, '');
-  if (!raw || raw.startsWith('/')) return null;
-  if (raw === 'firmware' && connected()) return '/maintenance';
-  if (raw.startsWith('target/edit/')) return `/connection/${raw.slice(12)}`;
-  if (raw === 'signals' || raw.startsWith('signals/')) return '/handoff';
-  return LEGACY[raw] ?? '/home';
+  if (!raw) return null;
+  const path = raw.split('?')[0];
+  if (!raw.startsWith('/')) {
+    if (raw.startsWith('target/edit/')) return `/probe/wiring/${raw.slice(12)}`;
+    if (raw.startsWith('signals/')) return '/probe/tools';
+    return OLD[raw] ?? '/';
+  }
+  if (OLD[path]) return OLD[path];
+  if (path.startsWith('/install/')) return `/make/${path.slice(9)}`;
+  if (path.startsWith('/usecase/') || path.startsWith('/setup/')) return path.startsWith('/setup/') ? '/probe' : '/';
+  if (path.startsWith('/connection/')) return `/probe/wiring/${path.slice(12)}`;
+  return OLD[path] ?? null;
 }
-const WORKSPACE = ['setup', 'work', 'connections', 'connection', 'passthrough', 'fixture', 'settings', 'maintenance', 'handoff'];
 let currentRoute = '';
+function screen(path, query) {
+  const parts = path.split('/').filter(Boolean);
+  if (!parts.length) return start();
+  if (parts[0] === 'make') return install(parts[1] ?? 'select', query);
+  if (parts[0] === 'connect') return connectScreen();
+  if (parts[0] !== 'probe') return notFound();
+  if (!connected()) return needConnection(path + (query.toString() ? `?${query}` : ''));
+  const tab = parts[1] ?? '';
+  const content = tab === '' ? overview() : tab === 'wiring' ? (parts[2] ? editor(decodeURIComponent(parts.slice(2).join('/')), query) : wiringList())
+    : tab === 'settings' ? settings() : tab === 'tools' ? tools() : tab === 'maintenance' ? maintenance() : null;
+  return content ? probeFrame(content) : notFound();
+}
 function draw(focus = true) {
   resetFieldIds();
-  const old = legacy(location.hash);
-  if (old) { history.replaceState(null, '', `#${old}`); }
+  const old = moved(location.hash);
+  if (old !== null) history.replaceState(null, '', `#${old}`);
   const route = routeNow(); currentRoute = route;
   const [path, params] = route.split('?'), query = new URLSearchParams(params);
-  const [, view, id = ''] = path.split('/');
-  const rest = path.split('/').slice(2).join('/');
   let content;
-  try {
-    content = view === 'home' ? home() : view === 'boards' ? boards() : view === 'learn' ? learn() : view === 'usecases' ? usecases() : view === 'usecase' ? usecase(id)
-      : view === 'install' ? install(id, query) : view === 'connect' ? connectScreen()
-      : view === 'setup' ? setup(id, query) : view === 'work' ? work() : view === 'connections' ? connections() : view === 'connection' ? editor(decodeURIComponent(rest), query)
-      : view === 'passthrough' ? passthrough()
-      : view === 'fixture' ? fixture() : view === 'settings' ? settings(query) : view === 'maintenance' ? maintenance(query) : view === 'handoff' ? handoff() : notFound();
-  } catch (error) { console.error(error); content = el('div', { class: 'page' }, heading(t('This screen could not be shown.', 'この画面を表示できませんでした。'), D.errorText(error)), link(t('To the work home', '作業ホームへ'), '/work', true)); }
+  try { content = screen(path, query); }
+  catch (error) { console.error(error); content = el('div', { class: 'page' }, heading(t('This screen could not be shown.', 'この画面を表示できませんでした。'), D.errorText(error)), link(t('To the start', 'スタートへ'), '/', true)); }
   const app = document.getElementById('app');
   const keepScroll = !focus ? window.scrollY : 0;
   const active = /** @type {HTMLElement|null} */ (document.activeElement)?.id;
-  app.replaceChildren(...shell(content, WORKSPACE.includes(view)).filter(Boolean));
-  document.title = `${document.querySelector('h1')?.textContent ?? 'OEP'} — OEP`;
+  app.replaceChildren(...shell(content).filter(Boolean));
+  state.notice = focus ? '' : state.notice;
+  document.title = `${document.querySelector('h1')?.textContent ?? 'OEP'} — OEP Probe Tool`;
   if (focus) { window.scrollTo(0, 0); document.querySelector('h1')?.focus({ preventScroll: true }); }
   else { window.scrollTo(0, keepScroll); if (active) document.getElementById(active)?.focus({ preventScroll: true }); }
 }
@@ -282,9 +250,9 @@ document.addEventListener('click', (event) => {
 });
 window.addEventListener('hashchange', () => {
   const next = routeNow();
-  if (state.install?.phase === 'writing' && next !== '/install/writing') { history.replaceState(null, '', '#/install/writing'); return; }
+  if (state.install?.phase === 'writing' && next !== '/make/writing') { history.replaceState(null, '', '#/make/writing'); return; }
   if (state.dirty && next !== currentRoute) { history.replaceState(null, '', `#${currentRoute}`); discardThen(() => { location.hash = next; }); return; }
-  if (currentRoute.startsWith('/connection/') && !next.startsWith(currentRoute.split('?')[0])) state.draft = null;
+  if (currentRoute.startsWith('/probe/wiring/') && !next.startsWith(currentRoute.split('?')[0])) state.draft = null;
   if (next.startsWith('/connect') && currentRoute !== next) granted = null;
   draw(true);
 });

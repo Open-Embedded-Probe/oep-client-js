@@ -67,15 +67,15 @@ docs/           this document, the release steps
 
 ## 4. Browser workspace
 
-The page's purpose, scope and flows are in the [requirements and screen specification](page.ja.md), [connection handoff](page-connection.ja.md) and [acceptance criteria](page-acceptance.ja.md) (Japanese).
+The page's scope, screens and flows are in the [screen specification](page.ja.md), [connection handoff](page-connection.ja.md) and [acceptance criteria](page-acceptance.ja.md) (Japanese): a start page, making a probe, connecting, and one screen per probe with the tabs Overview, Wiring, Probe settings, Hand over to tools and Maintenance.
 
-`web/` is split into `app.js` (public pages, probe creation, connecting, routing), `work.js` (initial setup by purpose, home, wiring list and
-editor with the connection check), `passthrough.js` (the log pass-through setting), `manage.js` (probe settings, maintenance, the hand-over to
-tools) and `device.js` (everything done to the connected probe). Screens reach the probe only through `device.js`; saving, loading and moving
+`web/` is split into `app.js` (the start, making a probe, connecting, routing), `common.js` (the probe's band and tabs), `wiring.js` (the
+wiring list and its editor with the connection check), `probe.js` (the overview, probe settings with the pass-through, the hand-over to tools,
+maintenance) and `device.js` (everything done to the connected probe). Screens reach the probe only through `device.js`; saving, loading and moving
 between screens never attach, assign pins or drive outputs - the connection check attaches only when asked. `npm run test:browser` runs
 installation through handover against the Python virtual probe in Chromium.
 
-- `web/data.js`: the boards, the purposes (what the page prepares for each, and the tool that does the work) and the documents.
+- `web/data.js`: the boards, the uses (what the page prepares for each, and the tool that does the work) and the documents.
 - `web/model.js`: connection names and firmware versions. `web/boards.js`: board guidance.
 - `web/oep-client.js`: the source's public API entry, replaced by the site build with an entry that refers to `site/src/`.
 - `tsconfig.web.json` checks the browser code too, and `npm run test:browser` exercises it in Chromium with the Python

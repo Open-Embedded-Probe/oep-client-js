@@ -1,8 +1,8 @@
-// Pieces several screens share: the workspace frame and status, the "connect first" screen, purpose cards, wiring.
-import { el, p, badge, actions, link, panel, heading, note, textLink } from './ui.js';
+// Pieces several screens share: the probe's band and tabs (page.ja.md §6.1), the "connect first" screen, wiring.
+import { el, p, badge, actions, link, panel, heading, note } from './ui.js';
 import { state, go, routeNow, action, button } from './core.js';
-import { dev, unit, pinName, portLines, isConnector, recordOf, disconnect, browser } from './device.js';
-import { SETUP_PATTERNS, DEBUG_WIRES, GUIDE_BASE } from './data.js';
+import { dev, unit, pinName, portLines, isConnector, recordOf, disconnect, browser, saveSettings } from './device.js';
+import { DEBUG_WIRES, GUIDE_BASE } from './data.js';
 import { t, tr, onLanguage } from './i18n.js';
 import { BOARDS as BOARD_SPECS, boardOf } from './boards.js';
 
@@ -11,20 +11,6 @@ export const connected = () => !!dev.host;
 export const boardSpec = () => boardOf(dev.info?.model);
 export const probeTitle = () => dev.info ? `${boardSpec() ? tr(boardSpec().name) : dev.info.model} · ${unit()}` : t('No probe connected', 'プローブ未接続');
 
-/** A purpose's preparation on this page (I02): its wiring, then the tool that does the work. */
-export const purposeRoute = (id) => `/setup/${id}`;
-export const purposeById = (id) => SETUP_PATTERNS.find((x) => x.id === id) ?? null;
-export const purposeTitle = (id) => purposeById(id)?.title ?? id;
-/** From a public or setup card: go to the purpose, through C01 when no probe is connected (§4.2). */
-export function choosePurpose(id) {
-  const next = purposeRoute(id);
-  if (connected()) { go(next); return; }
-  state.intent = id; state.connectReturn = next; go('/connect');
-}
-export function patternChoices(from = 'setup') {
-  return el('div', { class: 'two-grid' }, ...SETUP_PATTERNS.map((x) => el('a', { class: 'pattern-card', href: '#' + (from === 'public' ? `/usecase/${x.id}` : purposeRoute(x.id)), 'data-pattern': x.id },
-    el('small', { class: 'eyebrow' }, x.label), el('strong', {}, x.title), el('span', {}, x.description), el('span', { class: 'pattern-next' }, x.next + ' →'))));
-}
 export function debugChoices(onChoose, selected = '', consoleOnly = false) {
   return el('div', { class: 'three-grid debug-choices' }, ...DEBUG_WIRES.filter((w) => !consoleOnly || w.id !== 'swd').map((w) => {
     const has = !connected() || dev.caps.offers.some((o) => o.entry.name === `oep.wire.${w.id}`);
@@ -65,26 +51,29 @@ export function wiringSummary(port) {
     ...Object.entries(g.pins).map(([line, ch]) => el('span', {}, `${line} → ${pinName(ch)}`))]));
 }
 
-export function needConnection(returnTo, title = t('Connect a probe to go on.', 'プローブに接続して、続きを開きます。')) {
-  return el('div', { class: 'page' }, heading(title, t('Your chosen task is kept. After connecting you come back to this screen.', '選んだ作業は保持されます。接続すると、この画面に戻ります。'), 'CONNECT'),
-    actions(button(t('Choose a probe →', 'プローブを選ぶ →'), () => { state.connectReturn = returnTo; go('/connect'); }, 'primary', { 'data-connect': 'go' }), link(t('Make a board a probe', 'ボードをプローブにする'), '/install/select')));
+export function needConnection(returnTo) {
+  return el('div', { class: 'page' }, heading(t('Connect a probe to go on.', 'プローブにつないで、続きを開きます。'), t('After connecting you come back to this screen.', 'つなぐと、この画面に戻ります。'), 'CONNECT'),
+    actions(button(t('Connect a probe →', 'プローブにつなぐ →'), () => { state.connectReturn = returnTo; go('/connect'); }, 'primary', { 'data-connect': 'go' }), link(t('Make a board a probe', 'ボードをプローブにする'), '/make')));
 }
 
-/** The workspace frame (§3.1): current unit, connection, change right, unsaved settings — always visible. */
-export function workspaceShell(content) {
-  const nav = [['/work', t('Home', 'ホーム')], ['/connections', t('Wiring and targets', '配線・接続先')], ['/settings', t('Probe settings', '本体設定')], ['/maintenance', t('Update and maintenance', '更新・保守')], ['/handoff', t('External tools', '外部ツールとの連携')]];
-  const active = routeNow().split('?')[0];
-  const isActive = (path) => active === path || (path === '/connections' && active.startsWith('/connection/')) || (path === '/settings' && active === '/passthrough');
+/** The probe's tabs (page.ja.md §6.1). */
+export const TABS = () => [['/probe', t('Overview', '概要')], ['/probe/wiring', t('Wiring', '配線')], ['/probe/settings', t('Probe settings', '本体設定')],
+  ['/probe/tools', t('Hand over to tools', '道具へ渡す')], ['/probe/maintenance', t('Maintenance', '保守')]];
+
+/** The probe's band (unit, firmware, path, change right, unsaved changes with Save, Disconnect) and tabs, around a tab's content. */
+export function probeFrame(content) {
   const h = dev.host;
-  return el('div', { class: 'workspace-layout' },
-    el('aside', { class: 'workspace-nav' }, el('h2', {}, 'YOUR WORKSPACE'), ...nav.map(([path, title]) => el('a', { href: `#${path}`, class: isActive(path) ? 'active' : '', 'aria-current': isActive(path) ? 'page' : 'false' }, title))),
-    el('main', { id: 'content', class: 'workspace-main', tabindex: -1 },
-      el('div', { class: 'device-status', id: 'device-status' },
-        el('div', {}, p(el('span', {}, el('span', { class: 'status-dot' }), h ? `${probeTitle()} · ${t('connected', '接続中')}` : t('No probe connected', 'プローブ未接続'))),
-          el('small', { class: 'muted' }, h ? [`firmware ${dev.info.firmware ?? '—'} · ${t('path', '経路')} ${h.link.transport.kind ?? '—'} · `, h.session ? t('may change it', '変更権あり') : t('read only', '読み取りのみ'), dev.unsaved ? t(' · settings applied but not saved', ' · 適用済み・未保存の設定あり') : ''] : t('Choosing a task leads you to connect', '作業を選ぶと接続へ案内します'))),
-        h ? action(t('Disconnect', '接続を終了'), async () => { await disconnect(); state.notice = t('Disconnected.', '接続を終了しました。'); }, '', { 'data-action': 'disconnect' })
-          : button(t('Connect', '接続する'), () => { state.connectReturn = routeNow(); go('/connect'); })),
-      dev.lost ? note(t(`The connection was lost: ${dev.lost}. The state is read again after reconnecting. Outputs and changes are not sent again automatically.`, `接続が切れました: ${dev.lost}。再接続後に状態を読み直します。出力や書き換えは自動で再送しません。`), 'error') : null,
-      content));
+  const active = routeNow().split('?')[0];
+  const isActive = (path) => path === '/probe' ? active === '/probe' : active === path || active.startsWith(`${path}/`);
+  return el('div', { class: 'probe-page' },
+    el('section', { class: 'probe-band', id: 'device-status' },
+      el('div', {}, el('strong', {}, probeTitle()),
+        el('small', { class: 'muted' }, `firmware ${dev.info.firmware ?? '—'} · ${t('path', '経路')} ${h.link.transport.kind ?? '—'} · `, h.session ? t('may change it', '変更権あり') : t('read only', '読み取りのみ'))),
+      el('div', { class: 'actions' }, action(t('Disconnect', '接続を終了'), async () => { await disconnect(); state.notice = t('Disconnected.', '接続を終了しました。'); go('/'); }, '', { 'data-action': 'disconnect' }))),
+    dev.unsaved ? el('div', { class: 'unsaved-bar', id: 'unsaved' }, p(t('Unsaved changes: they are lost on restart.', '未保存の変更があります（再起動すると消えます）。'), 'mb0'),
+      dev.saveable ? action(t('Save', '保存'), saveSettings, 'primary', { id: 'save-settings' }) : p(t('This probe cannot store settings.', 'このプローブは設定を保存できません。'), 'mb0 muted')) : null,
+    dev.lost ? note(t(`The connection was lost: ${dev.lost}. The state is read again after reconnecting. Changes are not sent again automatically.`, `接続が切れました: ${dev.lost}。再接続後に状態を読み直します。書き換えは自動で再送しません。`), 'error') : null,
+    el('nav', { class: 'probe-tabs', 'aria-label': t('Probe', 'プローブ') }, ...TABS().map(([path, title]) => el('a', { href: `#${path}`, class: isActive(path) ? 'active' : '', 'aria-current': isActive(path) ? 'page' : 'false' }, title))),
+    el('div', { class: 'probe-content' }, content));
 }
 export { browser, GUIDE_BASE, BOARD_SPECS, note, panel };

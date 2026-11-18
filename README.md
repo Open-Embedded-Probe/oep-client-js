@@ -98,8 +98,8 @@ npm run serve       # the page at http://localhost:4173/
 npm run test:browser # Chromium UI verification against the Python virtual probe
 ```
 
-The browser page follows the [requirements and screen specification](docs/page.ja.md), [connection handoff](docs/page-connection.ja.md) and [acceptance criteria](docs/page-acceptance.ja.md) (Japanese).
-It covers the OEP introduction, use cases and boards (readable without a device), probe creation (ESP32 / P4 / P4X over USB serial, Pico / Pico 2 over BOOTSEL) through initial setup, wiring and target records (fixed targets and connectors, several ports) with a debug wire's connection check, what each purpose needs prepared here and the tool that does its work, probe settings (pass-through, idle states, Wi-Fi, USB transports), update / backup / restore / diagnostics, and handover to IDEs, WireSkein and Python.
+The browser page follows the [screen specification](docs/page.ja.md), [connection handoff](docs/page-connection.ja.md) and [acceptance criteria](docs/page-acceptance.ja.md) (Japanese).
+It has a start page (what the page does, what OEP is used for and in which tool, the documents), making a probe (ESP32 / P4 / P4X over USB serial, Pico / Pico 2 over BOOTSEL), connecting, and one screen per probe with the tabs Overview, Wiring (fixed targets and connectors, with a debug wire's connection check), Probe settings (idle and disabled pins, log pass-through, Wi-Fi, USB transports; one Save for all), Hand over to tools (IDE, serial monitor, WireSkein, Python) and Maintenance (update, backup and restore, diagnostics).
 The page is in English and Japanese: the browser's languages choose by default (English for any other), and the selector in the header overrides it for this browser. S3 / C3 / C6 take a compatible merged image; CH32 initial installation is not offered. Hardware verification is listed in the acceptance criteria §3.2.
 The site bundles a pinned `esptool-js`; the npm library gains no runtime dependency.
 `npm run serve` fetches release images on first use and caches them in `.cache/firmware`. Refresh with `node scripts/fetch-firmware.js`.

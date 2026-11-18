@@ -1,82 +1,17 @@
-// Initial setup (I02: a purpose's preparation), the workspace home (W01), the connections (W02) and their editor (W03).
-// Saving writes labels and records only; it never attaches, assigns pins or drives outputs (§6.3, A13). The work itself
-// is the tools' the hand-over screen names (W07).
+// The probe's wiring (page.ja.md §6.3) and its editor (§6.4). Saving writes labels and records only; it never attaches,
+// assigns pins or drives outputs. The connection check attaches only when asked, and detaches at once.
 import { el, p, badge, actions, link, external, note, panel, heading, field, checkbox, keyValues, textLink } from './ui.js';
 import { state, render, go, action, button } from './core.js';
 import * as D from './device.js';
-import { guide } from './data.js';
 import { t, tr } from './i18n.js';
-import { connected, needConnection, patternChoices, debugChoices, wireById, groupsOf, wiringSummary, GROUP_TITLE, probeTitle, purposeById } from './common.js';
+import { debugChoices, wireById, groupsOf, wiringSummary, GROUP_TITLE } from './common.js';
 
 function frame(content) { return el('div', {}, ...content); }
-const installDone = () => state.install?.phase === 'done';
 
-// -- I02: what to set up first --
-export function setup(view, query) {
-  if (!connected()) return needConnection(`/setup${view ? '/' + view : ''}${query.toString() ? '?' + query : ''}`);
-  if (view === 'ready') return ready(query);
-  const purpose = purposeById(view);
-  if (purpose) return purposePage(purpose);
-  return frame([
-    heading(installDone() ? t('OEP is installed.', 'OEPの導入が完了しました。') : t('What will you use this probe for?', 'このプローブを、何に使いますか。'), t('Choose a usage pattern first. This page prepares the wiring and the probe for it; the work itself is done in the tool for it.', 'まず利用パターンを選びます。このページでは用途に合う配線と本体を整え、作業そのものは用途に合う道具で行います。'), 'READY TO CONFIGURE'),
-    el('div', { class: 'demo-device' }, el('span', { class: 'chip-mark' }, 'OEP'), el('div', {}, el('strong', {}, t(`${probeTitle()} · boot checked`, `${probeTitle()} · 起動確認済み`)),
-      p(t(`firmware ${D.dev.info.firmware ?? '—'} · ${D.dev.caps.offers.length} functions · ${D.dev.ports.length} wirings${D.dev.ports.length ? ' (set up; you can edit them)' : ''}`, `firmware ${D.dev.info.firmware ?? '—'} · 機能 ${D.dev.caps.offers.length} 個 · 配線 ${D.dev.ports.length} 件${D.dev.ports.length ? '（設定済み。編集できます）' : ''}`)))),
-    state.notice ? note(state.notice) : null,
-    el('h2', {}, t('How will you use it?', 'どのように使いますか？')), patternChoices(),
-    panel(el('h2', {}, t('Use as a fixture or elsewhere', '治具・ほかの環境で使う')), actions(link(t('Steps for a fixed fixture', '据え置き治具の設定順を確認'), '/fixture'), link(t('To the IDE and automated tests', 'IDE・自動テストへ'), '/handoff'), link(t('Probe settings such as network', 'ネットワークなど本体設定'), '/settings?from=setup')), external(t('Use-case guides', '用途別ガイド'), guide('use-cases'))),
-    p(t('A probe is not tied to one use. Add more later, and combine debug, UART and more on the same target.', '用途はひとつに固定されません。後から追加でき、同じ相手にデバッグとUARTなどを組み合わせられます。'), 'muted mt'),
-    el('details', { class: 'panel mt' }, el('summary', {}, t('Probe settings or restore', '本体設定・復元')), actions(link(t('Set up the probe', 'プローブ本体を設定する'), '/settings?from=setup'), link(t('Restore from a settings file', '設定ファイルから戻す'), '/maintenance?from=setup'))),
-    actions(link(t('Set up later, to the work home →', 'あとで設定する・作業ホームへ →'), '/work'))]);
-}
-/** What this page prepares for a purpose, and the tool that does the work (page.ja.md §2.3). @param {any} purpose */
-function purposePage(purpose) {
-  const wiringLink = (kind, title) => link(title, `/connection/new?purpose=${kind}&from=setup`, true);
-  const prepare = {
-    debug: [p(t('Register the target\'s debug pins. You can check that the target answers on them before saving.', '相手のデバッグ端子を登録します。保存の前に、そのピンで相手が応答するかを確かめられます。')), actions(wiringLink('debug', t('Register the debug wiring →', 'デバッグの配線を登録する →')))],
-    logs: [p(t('To read the log in an ordinary serial monitor, set up the probe\'s pass-through. For a script, register the UART wiring and use Python.', '普通のシリアルモニタで読むなら、本体の素通しを設定します。スクリプトで扱うなら、UARTの配線を登録してPythonを使います。')), actions(link(t('Set up the pass-through →', '素通しを設定する →'), '/passthrough', true), link(t('Register the UART wiring', 'UARTの配線を登録する'), '/connection/new?purpose=uart&from=setup'))],
-    logic: [p(t('Naming the signals you observe again and again is optional; a capture needs no registration.', '繰り返し観測する信号に名前を付けておけます（任意）。取得だけなら登録は要りません。')), actions(wiringLink('custom', t('Name the signals →', '信号に名前を付ける →')))],
-    bus: [p(t('Register the I2C or SPI wiring.', 'I2CかSPIの配線を登録します。')), actions(wiringLink('i2c', t('I2C wiring →', 'I2Cの配線 →')), link(t('SPI wiring', 'SPIの配線'), '/connection/new?purpose=spi&from=setup'))],
-    signal: [p(t('Name the pins, and decide their idle states and the pins nothing may use.', 'ピンに名前を付け、待機状態と使わせないピンを決めます。')), actions(wiringLink('custom', t('Name the pins →', 'ピンに名前を付ける →')), link(t('Idle states and pins kept off', '待機状態・使わせないピン'), '/settings?section=pins'))],
-    peer: [p(t('Register the I2C or SPI wiring your board talks on.', '基板が通信するI2CかSPIの配線を登録します。')), actions(wiringLink('i2c', t('I2C wiring →', 'I2Cの配線 →')), link(t('SPI wiring', 'SPIの配線'), '/connection/new?purpose=spi&from=setup'))],
-  }[purpose.id];
-  return frame([heading(purpose.title, purpose.description, `SETUP / ${purpose.label}`),
-    panel(el('h2', {}, t('01 / What this page prepares', '01 / このページで準備すること')), ...prepare),
-    panel(el('h2', {}, t('02 / Where the work is done', '02 / 作業をする場所')), p(purpose.next), actions(link(t('To the hand-over to tools →', '道具への引継ぎへ →'), '/handoff'))),
-    actions(link(t('Back to the usage patterns', '利用パターンに戻る'), '/setup')), external(t('Use-case guides', '用途別ガイド'), guide('use-cases'))]);
-}
-function ready(query) {
-  const port = D.portOf(query.get('port') ?? '');
-  if (!port) return frame([heading(t('The saved wiring was not found.', '保存した配線が見つかりません。'), t('Read the list again.', '一覧を読み直してください。')), link(t('To wiring and targets', '配線・接続先へ'), '/connections', true)]);
-  return frame([heading(t('Set up for your purpose.', '用途に合わせた設定ができました。'), t('All this can be set without a target. Saving never starts a connection or an output.', 'ターゲットが未接続でも、ここまで設定できます。保存によって接続・出力が始まることはありません。'), 'READY TO USE'),
-    state.notice ? note(state.notice) : null, panel(el('h2', {}, port.name), p(D.isConnector(port.name) ? t('Connector (targets are swapped)', 'コネクタ（相手を差し替える）') : D.recordOf(port.name).part || t('Target part number not given', '相手の型番は未記入')), wiringSummary(port)),
-    actions(link(t('Hand it over to the tool →', '道具へ引き継ぐ →'), '/handoff', true), link(t('Edit the wiring', '配線を編集する'), `/connection/${port.name}`), link(t('Set up another usage pattern', '別の利用パターンも設定する'), '/setup')), textLink(t('Later, to the work home', 'あとで使う・作業ホームへ'), '/work')]);
-}
-export function fixture() {
-  if (!connected()) return needConnection('/fixture');
-  return frame([heading(t('Make the probe a fixed fixture.', 'プローブを据え置きの治具にする。'), t('Probe settings for using the same wiring and idle states every time. They can be prepared without a target.', '毎回同じ配線・待機状態で使うための本体設定です。ターゲットが未接続でも準備できます。'), 'FIXTURE'),
-    el('div', { class: 'stack' }, ...[
-      ['1', t('Decide the pins to keep off', '触らせないピンを決める'), t('Name the pins nothing may use, such as LEDs, buttons and boot pins.', 'LED・ボタン・起動用の端子など、使わせないピンを指定します。'), '/settings?section=pins'],
-      ['2', t('Name the wiring', '配線に名前を付ける'), t('Give each target a connection name.', '相手ごとに接続名を付けます。'), '/connections'],
-      ['3', t('Decide the idle pin states', '空き時間のピン状態を決める'), t('Decide the idle state of BOOT0, reset, chip selects and so on.', 'BOOT0、リセット、チップセレクトなどの待機状態を決めます。'), '/settings?section=pins'],
-      ['4', t('Pass the log through if needed', '必要ならログを素通しする'), t('Send the log to an ordinary serial monitor while no session is open.', 'セッションがない間だけ、普通のシリアルモニタへログを流します。'), '/passthrough'],
-      ['5', t('Save and back up', '保存して控えを取る'), t('Save all current values in the probe and back up the settings and memo to a file. Secrets are not included.', '本体の現在値全体を保存し、設定とメモの控えをファイルに取ります。秘密値は控えに含めません。'), '/maintenance?from=fixture'],
-    ].map(([num, title, desc, route]) => el('a', { class: 'setup-choice', href: '#' + route }, el('span', { class: 'number' }, num), el('div', {}, el('h3', {}, title), p(desc)), el('span', { class: 'arrow' }, '→')))),
-    note(t('Opening a screen applies nothing. Applying takes effect at once; saving keeps it after a restart.', '画面を開いただけでは設定を適用しません。適用するとその場で効き、保存すると再起動後も残ります。')), external(t('Steps for a fixed fixture', '治具として据え置く手順'), guide('use-cases'))]);
-}
-
-// -- W01 / W02 --
-export function work() {
-  if (!connected()) return needConnection('/work');
-  return frame([heading(t('What will you do with this probe?', 'このプローブで、何をしますか。'), t('Keep the wiring and the probe\'s settings here; do the work in the tool for it.', '配線と本体の設定はここで整え、作業はそれに合う道具で行います。')),
-    state.notice ? note(state.notice) : null,
-    el('section', { class: 'form-group' }, el('div', { class: 'mini-heading' }, el('h2', {}, t('Wiring and targets', '配線・接続先')), el('a', { href: '#/connections', class: 'text-link' }, t('List, edit →', '一覧・編集 →'))),
-      D.dev.ports.length ? el('div', { class: 'stack' }, ...D.dev.ports.map(portCard)) : emptyConnections()),
-    el('section', {}, el('div', { class: 'mini-heading' }, el('h2', {}, t('Prepare for a purpose', '用途に合わせて準備する'))), patternChoices()),
-    actions(link(t('Open the setup guide', '初期設定の案内を開く'), '/setup'), link(t('To external tools', '外部ツールへ'), '/handoff'))]);
-}
+// -- P2: the wiring list --
 function emptyConnections() {
   return el('div', { class: 'empty' }, el('h3', {}, t('No wiring is registered yet.', 'まだ配線を登録していません。')), p(t('You can save the target\'s part number and which signal goes to which pin. No target needs to be connected.', '相手の型番や、どの信号をどのピンにつなぐかを保存できます。ターゲットは未接続でかまいません。'), 'muted'),
-    actions(link(t('Register wiring →', '配線を登録する →'), '/connection/new', true)));
+    actions(link(t('Register wiring →', '配線を登録する →'), '/probe/wiring/new', true, { 'data-new-wiring': '' })));
 }
 function portCard(port) {
   const rec = D.recordOf(port.name), groups = groupsOf(port), connector = D.isConnector(port.name);
@@ -84,15 +19,13 @@ function portCard(port) {
     el('header', {}, el('div', {}, el('h2', {}, port.name), p(connector ? t('Connector (the target is identified each time)', 'コネクタ（相手はつなぐたびに識別）') : rec.part || t('Target part number not given', '相手の型番は未記入'), 'muted mb0')),
       badge(D.dev.memo ? t('saved in the probe', 'プローブに保存') : t('part number and memo in this browser only', '型番・メモはこのブラウザだけ'), D.dev.memo ? '' : 'amber')),
     wiringSummary(port), rec.note ? p(rec.note, 'compact muted') : null, el('code', {}, `oep://${D.unit()}/${port.name}`),
-    actions(link(t('Edit wiring and target', '配線・相手の情報を編集'), `/connection/${encodeURIComponent(port.name)}`, true),
+    actions(link(t('Edit wiring and target', '配線・相手の情報を編集'), `/probe/wiring/${encodeURIComponent(port.name)}`, true),
       action(t('Delete…', '削除…'), async () => { if (!confirm(t(`Delete the connection name, wiring (pin names), part number and memo of ${port.name}.`, `${port.name}の接続名・配線（ピン名）・型番・メモを削除します。`))) return false; await D.deleteConnection(port); state.notice = t(`${port.name} was deleted.`, `${port.name}を削除しました。`); }, 'danger', { disabled: !D.dev.changeable })));
 }
-export function connections() {
-  if (!connected()) return needConnection('/connections');
-  return frame([heading(t('Record wiring and what it connects to.', '配線と、つなぐ相手を記録する。'), t('Register fixed wiring to reuse for the same work. You can edit and save it without the target connected.', '固定の配線を登録して、同じ作業に繰り返し使えます。相手が未接続でも編集・保存できます。')),
+export function wiringList() {
+  return frame([heading(t('Wiring', '配線'), t('Name the wiring from the probe\'s pins to a target, and keep the target\'s part number and a memo. No target needs to be connected; saving starts nothing.', 'プローブのピンから相手への配線に名前を付け、相手の型番とメモを残します。相手が未接続でも登録でき、保存しても何も動きません。'), 'WIRING'),
     state.notice ? note(state.notice) : null, !D.dev.changeable ? note(t('This probe\'s settings cannot be changed, so wiring cannot be registered (read only).', 'このプローブは設定を変更できないため、配線を登録できません（読み取りのみ）。'), 'amber') : null,
-    D.dev.unsaved ? note(t('Some settings are applied but not saved. To keep them after a restart, save them in "Probe settings".', '適用済みで永続保存していない設定があります。再起動後も残すには「本体設定」で保存します。'), 'amber') : null,
-    D.dev.ports.length ? [actions(link(t('Register new wiring', '新しい配線を登録'), '/connection/new', true), action(t('Read again', '読み直す'), D.refresh)), el('div', { class: 'stack mt' }, ...D.dev.ports.map(portCard))] : emptyConnections()]);
+    D.dev.ports.length ? [actions(link(t('Register new wiring', '新しい配線を登録'), '/probe/wiring/new', true), action(t('Read again', '読み直す'), D.refresh)), el('div', { class: 'stack mt' }, ...D.dev.ports.map(portCard))] : emptyConnections()]);
 }
 
 // -- W03: the editor --
@@ -118,17 +51,15 @@ function draftFrom(port) {
   return { editId: port.name, name: port.name, part: rec.part ?? '', note: rec.note ?? '', connector: D.isConnector(port.name), groups, purpose: groups[0]?.type ?? '', original: { name: port.name, lines: port.lines.map(([c, l]) => [c, l]) }, check: {} };
 }
 export function editor(id, query) {
-  if (!connected()) return needConnection(`/connection/${id}${query.toString() ? '?' + query : ''}`);
   const purpose = query.get('purpose');
-  const from = query.get('from');
   if (id === 'new' && !purpose && !state.draft) return frame([heading(t('What is the wiring for?', 'どの用途の配線を登録しますか。'), t('Start from the kind of signal. You can add other signals to the same target later. No target needs to be connected.', '信号の種類から始めます。あとで別の信号も同じ接続先に追加できます。ターゲットは未接続でかまいません。')),
     el('div', { class: 'two-grid' }, ...[['debug', t('Debug (SWD / RVSWD / 1-wire DIO)', 'デバッグ（SWD / RVSWD / 1線DIO）'), t('The target\'s debug pins. Swapping targets on a fixed connector also starts here.', '相手のデバッグ端子。決まったコネクタで相手を差し替える使い方もここから。')], ['uart', 'UART', t('Lines to read the target\'s log and send commands.', '相手のログを読む・コマンドを送る線。')], ['i2c', 'I2C', t('Lines to sensors and peripherals, or for answering as a stand-in.', 'センサや周辺IC、または代役で応答する線。')], ['spi', 'SPI', t('Lines to SPI devices, or for answering as a stand-in.', 'SPIの機器、または代役で応答する線。')], ['custom', t('Other signals', 'そのほかの信号'), t('GPIO control lines, signals to observe and so on. You name them.', 'GPIOの制御線、観測したい信号など。名前を自分で付けます。')]].map(([tk, title, d]) =>
-      el('a', { class: 'pattern-card', href: `#/connection/new?purpose=${tk}${from ? '&from=' + from : ''}`, 'data-new-purpose': tk }, el('strong', {}, title), el('span', {}, d)))),
-    actions(link(t('Back to the wiring list', '配線の一覧に戻る'), '/connections'))]);
+      el('a', { class: 'pattern-card', href: `#/probe/wiring/new?purpose=${tk}`, 'data-new-purpose': tk }, el('strong', {}, title), el('span', {}, d)))),
+    actions(link(t('Back to the wiring list', '配線の一覧に戻る'), '/probe/wiring'))]);
   if (!state.draft || state.draft.editId !== id) {
     const port = id === 'new' ? null : D.portOf(id);
-    if (id !== 'new' && !port) return frame([heading(t('This wiring was not found.', 'この配線は見つかりません。'), t('It may have been renamed or deleted.', '名前の変更か削除が行われた可能性があります。')), link(t('To the wiring list', '配線の一覧へ'), '/connections', true)]);
-    state.returnTo = from === 'setup' ? '/setup' : '/connections';
+    if (id !== 'new' && !port) return frame([heading(t('This wiring was not found.', 'この配線は見つかりません。'), t('It may have been renamed or deleted.', '名前の変更か削除が行われた可能性があります。')), link(t('To the wiring list', '配線の一覧へ'), '/probe/wiring', true)]);
+    state.returnTo = '/probe/wiring';
     state.draft = port ? draftFrom(port) : { editId: 'new', name: '', part: '', note: '', connector: false, purpose, groups: [newGroup(purpose === 'debug' ? 'debug' : purpose, '')], original: null, check: {} };
     state.dirty = false;
   }
@@ -201,7 +132,6 @@ async function saveDraft(id) {
   const out = await D.saveConnection({ original: d.original, name, desired, part: d.part.trim(), note: d.note, connector: d.connector, debug });
   state.dirty = false; state.draft = null;
   state.notice = t(`"${name}" ${out.persistent ? 'was saved' : 'was applied for now (this probe cannot store settings)'}. ${out.inProbe ? '' : 'The part number and memo were saved in this browser. '}Saving never starts a connection or an output.`, `「${name}」を${out.persistent ? '保存しました' : '今回だけ適用しました（このプローブは永続保存できません）'}。${out.inProbe ? '' : '型番・メモはこのブラウザに保存しました。'}保存によって接続・出力が始まることはありません。`);
-  if (id === 'new') go(`/setup/ready?port=${encodeURIComponent(name)}&purpose=${d.purpose ?? ''}`);
-  else go(state.returnTo);
+  go(state.returnTo);
 }
 export { checkbox };

@@ -65,7 +65,6 @@ function remember(extra = {}) {
     localStorage.setItem('oep-known-probes', JSON.stringify(all));
   } catch { /* private mode */ }
 }
-export function rememberPurpose(purpose) { if (dev.info) remember({ purpose }); }
 
 // -- connecting --
 /** Open a probe and read what it is (no board question: model, unit id and functions come from the probe, R05).
@@ -251,6 +250,15 @@ export function categoriesWith(item) {
 }
 export const routes = () => [...(dev.catalog?.route.values() ?? [])].filter((r) => !r.startsWith('tcp'));
 export function currentValue(category, flat) { return dev.settingsRows.find((r) => r.category === category && r.name === flat)?.value; }
+/** The pass-throughs set now: [route, category, a line saying what goes there] (page.ja.md §6.5, §6.6). */
+export function currentPassthroughs() {
+  const cats = [...categoriesWith('passthrough.{}.rx'), ...categoriesWith('passthrough.{}.wire')];
+  return routes().flatMap((r) => cats.flatMap((cat) => {
+    const rx = currentValue(cat, `passthrough.${r}.rx`), wire = currentValue(cat, `passthrough.${r}.wire`);
+    return rx !== undefined ? [[r, cat, `UART RX ${rx} · ${currentValue(cat, `passthrough.${r}.baud`) ?? 115200} baud · ${currentValue(cat, `passthrough.${r}.format`) ?? '8n1'}`]]
+      : wire !== undefined ? [[r, cat, `${wire} · ${currentValue(cat, `passthrough.${r}.mechanism`) ?? ''}`]] : [];
+  }));
+}
 export async function applySettings(category, values, unsets = []) {
   await ensureSession();
   const s = st();
