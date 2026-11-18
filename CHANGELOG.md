@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The site build's firmware fetch takes the newest Release that already has its firmware-<version>.json, with a warning when the latest has none yet: a Release is published before its files are all uploaded, and a deploy that ran in between failed (oep-probe-arduino v0.0.57).
+- (JA) サイトのビルドのファーム取得は、firmware-<version>.json がすでにある一番新しい Release を使い、最新にまだ無ければ警告する。Release はファイルを上げ終える前に公開されるため、その間に走った deploy が失敗していた（oep-probe-arduino v0.0.57）。
+
 - (EN) `scripts/check-hid.mjs /dev/hidrawN` drives the page's WebHID transport through a real probe's Linux hidraw node. Checked on a P4X (e8f60ae84dd7, 511-byte reports with ID 6) and an RP2040 (53032847491a571c, 64-byte reports, no ID), both 0.0.56+0726efd: confirm, list and every describe, settings, 160 pipelined describes, no report missing or broken, no resync.
 - (JA) `scripts/check-hid.mjs /dev/hidrawN` は、ページの WebHID の経路を実機の Linux hidraw 越しに動かす。P4X（e8f60ae84dd7、ID 6 の 511 byte の report）と RP2040（53032847491a571c、ID なしの 64 byte の report）、どちらも 0.0.56+0726efd で確かめた: confirm、list と全 describe、設定、160 個のパイプラインの describe。欠けた・壊れた report も立て直しも無し。
 

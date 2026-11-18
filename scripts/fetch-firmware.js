@@ -20,10 +20,16 @@ async function get(url) {
   return r;
 }
 
-const release = await (await get(`https://api.github.com/repos/${REPO}/releases/latest`)).json();
+// The newest published Release that already has its firmware-<version>.json: a Release is published before its files are
+// all uploaded, so the latest one may still lack it for a while; the one before it is used meanwhile.
+const releases = (await (await get(`https://api.github.com/repos/${REPO}/releases?per_page=10`)).json())
+  .filter((/** @type {any} */ r) => !r.draft && !r.prerelease);
+const hasListing = (/** @type {any} */ r) => r.assets.some((/** @type {any} */ a) => /^firmware-.+\.json$/.test(a.name));
+const release = releases.find(hasListing);
+if (!release) throw new Error(`${REPO}: no Release with a firmware-<version>.json among the latest ${releases.length}`);
+if (release !== releases[0]) console.warn(`${REPO} ${releases[0].tag_name} has no firmware-<version>.json yet (still uploading?): using ${release.tag_name}`);
 const assets = new Map(release.assets.map((/** @type {any} */ a) => [a.name, a]));
-const listing = [...assets.keys()].find((n) => /^firmware-.+\.json$/.test(n));
-if (!listing) throw new Error(`${REPO} ${release.tag_name}: no firmware-<version>.json`);
+const listing = /** @type {string} */ ([...assets.keys()].find((n) => /^firmware-.+\.json$/.test(n)));
 // the files by their download URL (github.com, not the API: one API request in all, whatever the rate limit)
 const download = async (/** @type {string} */ name) => {
   const r = await fetch(assets.get(name).browser_download_url);
