@@ -298,12 +298,22 @@ try {
   await send('Page.reload'); await delay(300); await until('document.querySelector("h1")');
   assert.equal(await evaluate('document.documentElement.lang'), 'en', 'the chosen language is remembered');
   // Every screen in English carries no Japanese.
-  const english = async (r) => { await go(r); await until('document.querySelector("h1")'); assert.equal(await japanese(), null, `Japanese left on ${r}`); };
+  // ... and every link a screen shows leads to a screen that exists (not the "does not exist" page).
+  const links = new Map();
+  const english = async (r) => {
+    await go(r); await until('document.querySelector("h1")'); assert.equal(await japanese(), null, `Japanese left on ${r}`);
+    if (r !== '/nowhere') for (const href of await evaluate('[...document.querySelectorAll(\'#app a[href^="#/"]\')].map((a) => a.getAttribute("href").slice(1))')) if (!links.has(href)) links.set(href, r);
+  };
   for (const r of ['/home', '/usecases', ...['debug', 'logs', 'logic', 'bus', 'signal', 'peer'].map((x) => `/usecase/${x}`), '/boards', '/learn', '/install/select', '/install/prepare', '/install/review', '/connect', '/work', '/nowhere']) await english(r);
   await go('/connect'); await press('Choose a device and connect');
   for (const r of ['/setup', ...['debug', 'logs', 'logic', 'bus', 'signal', 'peer'].map((x) => `/setup/${x}`), '/setup/ready?port=dut', '/work', '/connections', '/connection/new',
     ...['debug', 'uart', 'i2c', 'spi', 'custom'].map((x) => `/connection/new?purpose=${x}`), '/connection/x035', '/connection/dut',
     '/passthrough', '/fixture', '/settings', '/maintenance', '/handoff']) await english(r);
+  for (const [href, from] of links) {
+    if (href.startsWith('/install/')) continue;              // the install steps need a board chosen; reached in the install flow above
+    await go(href); await until('document.querySelector("h1")');
+    assert.notEqual(await h1(), 'This screen does not exist.', `a link on ${from} leads nowhere: ${href}`);
+  }
   await go('/connection/x035'); await press('Check the connection on these pins'); assert.equal(await japanese(), null, 'Japanese left on the connection check');
   await click('Cancel'); await delay(100);
   await go('/settings'); await snapshot('05-english');

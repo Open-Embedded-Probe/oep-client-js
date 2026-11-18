@@ -25,7 +25,7 @@ export function setup(view, query) {
     el('h2', {}, t('How will you use it?', 'どのように使いますか？')), patternChoices(),
     panel(el('h2', {}, t('Use as a fixture or elsewhere', '治具・ほかの環境で使う')), actions(link(t('Steps for a fixed fixture', '据え置き治具の設定順を確認'), '/fixture'), link(t('To the IDE and automated tests', 'IDE・自動テストへ'), '/handoff'), link(t('Probe settings such as network', 'ネットワークなど本体設定'), '/settings?from=setup')), external(t('Use-case guides', '用途別ガイド'), guide('use-cases'))),
     p(t('A probe is not tied to one use. Add more later, and combine debug, UART and more on the same target.', '用途はひとつに固定されません。後から追加でき、同じ相手にデバッグとUARTなどを組み合わせられます。'), 'muted mt'),
-    el('details', { class: 'panel mt' }, el('summary', {}, t('Probe settings, restore, or try without saving wiring', '本体設定・復元・配線を保存せず試す')), actions(link(t('Set up the probe', 'プローブ本体を設定する'), '/settings?from=setup'), link(t('Restore from a settings file', '設定ファイルから戻す'), '/maintenance?from=setup'), link(t('Try without saving wiring', '配線を保存せず試す'), '/operations'))),
+    el('details', { class: 'panel mt' }, el('summary', {}, t('Probe settings or restore', '本体設定・復元')), actions(link(t('Set up the probe', 'プローブ本体を設定する'), '/settings?from=setup'), link(t('Restore from a settings file', '設定ファイルから戻す'), '/maintenance?from=setup'))),
     actions(link(t('Set up later, to the work home →', 'あとで設定する・作業ホームへ →'), '/work'))]);
 }
 /** What this page prepares for a purpose, and the tool that does the work (page.ja.md §2.3). @param {any} purpose */
@@ -171,7 +171,7 @@ function groupEditor(g, index, d, touch) {
     lines.length || g.type === 'custom' ? el('details', { class: 'mt', open: Object.values(g.target ?? {}).some(Boolean) }, el('summary', {}, t('Target pin name (optional)', '相手側のピン名（任意）')),
       p(t('If known, record the target\'s pin name (PA13 and so on). You can register without it.', '分かれば、相手の端子名（PA13 など）を記録します。分からなくても登録できます。'), 'compact muted'),
       el('div', { class: 'wire-pins' }, ...(g.type === 'custom' ? Object.keys(g.pins) : lines).map((line) => field(line, g.target?.[line] ?? '', (v) => { g.target[line] = v; touch(); }, '', null, 'text', { 'data-target-pin': `${index}-${line}` })))) : null,
-    p(t('Share GND with the target. Speed, address and the like are set where the operation starts, not saved with the wiring.', 'GNDは相手と共通にします。速度・アドレスなどは操作を始める画面で指定し、配線には保存しません。'), 'compact muted mt'),
+    p(t('Share GND with the target. Speed, address and the like are set in the tool that does the work, not saved with the wiring.', 'GNDは相手と共通にします。速度・アドレスなどは作業をする道具で指定し、配線には保存しません。'), 'compact muted mt'),
     g.type === 'debug' && g.wire ? debugCheck(g, index, d) : null);
 }
 function labelOf(ch, d) {
