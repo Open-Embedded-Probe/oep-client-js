@@ -4,9 +4,8 @@
 import { connect } from 'node:net';
 
 /**
- * `baudRate` (tests only): a TCP that stands for a serial port this host opened (the virtual bench's --framing cobs) gets
- * a `setBaudRate` that only records the rate, so port_speed can be exercised against the virtual bench (whose line model,
- * --broken-rate, follows the probe's rate alone).
+ * `baudRate` (tests only): the line rate a TCP that stands for a serial port (the virtual bench's --framing cobs) says
+ * it runs at - the transfer time of core §4.4 counts it.
  * @param {{ host?: string, port: number, framing?: 'length' | 'cobs', connectTimeoutMs?: number, baudRate?: number }} opts
  * @returns {Promise<import('../link.js').Transport>}
  */
@@ -51,10 +50,7 @@ export function tcpTransport({ host = '127.0.0.1', port, framing = 'length', con
         await end(old);
       },
     };
-    if (baudRate !== undefined) {
-      transport.baudRate = baudRate;
-      transport.setBaudRate = async (rate) => { transport.baudRate = rate; };
-    }
+    if (baudRate !== undefined) transport.baudRate = baudRate;
     return transport;
   });
 }

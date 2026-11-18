@@ -1,8 +1,7 @@
 // @ts-check
 // The host side of oep-spec's 2026-10-06 structure (2e5dc4c, 0bce222, c475dad and the clock op that follows them),
 // without the virtual bench: fn 0's clock read against this host's clock (Host.clock), fn 0 sends no notifications (an fn 0
-// event is only kept), a completed restart on oep.probe.restart's fn takes a raised link back to the boot speed (and
-// one on another fn does not), plan / restart found by name on a ScriptedHost, dump's core block and an invalid ops.
+// event is only kept), plan / restart found by name on a ScriptedHost, dump's core block and an invalid ops.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as reg from '../src/registry.js';
@@ -58,42 +57,6 @@ test('fn 0 sends no notifications: an fn 0 event is kept like any event, nothing
   assert.ok(!('heartbeats' in link.stats) && !('onHeartbeat' in link));
   assert.deepEqual(reg.CORE.event, {});
   assert.ok(!('heartbeat_default_ms' in reg.TIMING));
-  await link.close();
-});
-
-/** A serial link raised to 1500000 whose scripted probe answers completed success to everything. */
-async function raisedLink() {
-  /** @type {(c: Uint8Array) => void} */ let deliver = () => {};
-  /** @type {import('../src/link.js').Transport} */
-  const transport = {
-    framing: 'cobs', kind: 'serial', baudRate: 115200,
-    async setBaudRate(rate) { transport.baudRate = rate; },
-    async write(data) {
-      const req = m.Request.unpack(cobs.unframe(data.subarray(1, data.length - 1)));
-      setTimeout(() => deliver(cobs.frame(new m.Result(req.corr, m.COMPLETED, m.SUCCESS, new Uint8Array()).pack())), 1);
-    },
-    start(onData) { deliver = onData; },
-    async close() {},
-  };
-  const link = new Link(transport, { timeoutMs: 200 });
-  await link.start();
-  await link.setBaud(1500000);
-  return link;
-}
-
-test('a completed restart on oep.probe.restart\'s fn takes a raised link back to the boot speed; op 0x01 elsewhere does not', async () => {
-  let link = await raisedLink();
-  link.restartFn = 11;
-  await link.send(new m.Request(1, 12, reg.PROBE_RESTART.op.restart, new Uint8Array(), 7).pack());   // op 0x01 of another fn
-  assert.equal(link.baud, 1500000);
-  await link.send(new m.Request(2, 11, reg.PROBE_RESTART.op.restart, new Uint8Array(), 7).pack());
-  assert.equal(link.baud, 115200);                             // oep-if-link §3 host obligation 6
-  await link.close();
-  link = await raisedLink();                                   // a link that was never told the restart fn: only end
-  await link.send(new m.Request(1, 11, reg.PROBE_RESTART.op.restart, new Uint8Array(), 7).pack());
-  assert.equal(link.baud, 1500000);
-  await link.send(new m.Request(2, 0, m.OP.end, new Uint8Array(), 7).pack());
-  assert.equal(link.baud, 115200);
   await link.close();
 });
 

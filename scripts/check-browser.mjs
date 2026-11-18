@@ -81,8 +81,8 @@ try {
             async updatePortRecord(name,fields){const record={...(await this.readPortRecord(name)??{})};for(const [k,v] of Object.entries(fields)){if(v===null||v==='')delete record[k];else record[k]=v;}await this.write(lib.memo.portRecordName(name),new TextEncoder().encode(JSON.stringify(record)));return record;},
           };
           export const memo={...lib.memo,Memo:class extends lib.memo.Memo{static async open(h){return globalThis.__withMemo?fakeMemo:lib.memo.Memo.open(h);}}};
-          export const dump={...lib.dump,async collect(h){const caps=await lib.dump.collect(h);if(globalThis.__withMemo)caps.offers.push({...caps.offers[0],entry:{...caps.offers[0].entry,name:'oep.probe.memo',revision:1,fn:99}});if(globalThis.__withoutScan)for(const o of caps.offers)if(o.entry.name.startsWith('oep.wire.'))o.description.ops=new Set([lib.riscv.WireBase.ATTACH]);return caps;}};
-          for(const [Class,method] of [[lib.riscv.WireBase,'scan'],[lib.riscv.Wire,'attach'],[lib.arm.SwdWire,'attach']]){const original=Class.prototype[method];Class.prototype[method]=function(...args){if(globalThis.__forbidTargetIO)throw Error('Unexpected '+method+' while registering');return original.apply(this,args);};}
+          export const dump={...lib.dump,async collect(h){const caps=await lib.dump.collect(h);if(globalThis.__withMemo)caps.offers.push({...caps.offers[0],entry:{...caps.offers[0].entry,name:'oep.probe.memo',revision:1,fn:99}});return caps;}};
+          {const original=lib.wire.Wire.prototype.attach;lib.wire.Wire.prototype.attach=function(...args){if(globalThis.__forbidTargetIO)throw Error('Unexpected attach while registering');return original.apply(this,args);};}
 
           export async function requestRp2Boot(){return {serialNumber:'boot-rom-only'};}
           export async function rp2Write(device,image,{onProgress}){globalThis.__rpWritten=true;onProgress({done:image.length,total:image.length});}
@@ -237,44 +237,12 @@ try {
   // One connection check from the editor, results not saved (A43).
   await go('/connection/x035'); await press('指定したピンで接続確認'); assert.match(await evaluate('document.getElementById("debug-check-0").textContent'), /応答あり: dmstatus/);
   await click('キャンセル'); await delay(100);
-  // A scan fills the same editor and saves nothing by itself (A42).
-  await go('/setup/debug-scan'); await tap('[data-wire=rvswd]'); await tap('[data-scan-pin="2"]');
-  assert.match(await text(), /選択したピンをスキャン/);
-  // W04 debug: attach to the saved wiring, halt, read memory, detach (A21).
-  await go('/operate/debug?port=x035'); await press('ターゲットに接続'); assert.match(await text(), /接続中 · dmstatus/);
-  assert.equal(await evaluate('[...document.querySelectorAll(".active-work")].length'), 1, 'the running debug shows in the status bar');
-  await press('停止'); await press('メモリを読む'); await press('ターゲットを切り離す'); assert.match(await text(), /未接続/);
-  // Debug and UART at once on their own pins: both stay, both in the status bar, each stopped by itself (A22).
-  await go('/operate/debug?port=x035'); await press('ターゲットに接続');
-  await go('/operate/uart?port=dut'); await press('受信を開始');
-  assert.equal(await evaluate('document.querySelectorAll(".active-work").length'), 2, 'debug and UART run together');
-  await tap('[data-stop=uart]'); await ok('stop uart from the bar');
-  assert.equal(await evaluate('document.querySelectorAll(".active-work").length'), 1, 'the debug connection stays');
-  await go('/operate/debug?port=x035'); await press('ターゲットを切り離す');
-  // W04 UART on the saved RX; GPIO with pins chosen on the spot.
-  await go('/operate/uart?port=dut'); await press('受信を開始'); await delay(1200); await press('受信を停止');
-  await go('/operate/gpio'); await pick('[data-role="1"]', 5); await press('ピンを割り当てて開始'); await press('レベルを読む'); await press('停止してピンを解放');
-  // W04 the other fixture functions: pins chosen on the spot, started, every operation it offers, stopped (A22).
-  const fixtureRun = async (id) => {
-    await go(`/operate/${id}`);
-    const roles = await evaluate('[...document.querySelectorAll("[data-role]")].map(e=>e.dataset.role)');
-    for (const [k, r] of roles.entries()) await choose(`[data-role="${r}"]`, k + 1);
-    await tap('#start-operation'); await ok(`${id} start`);
-    assert.equal(await evaluate('document.querySelector(".status-bar-ops")?.textContent.includes("使用中")'), true, `${id} shows in the status bar`);
-    const ops = await evaluate('[...document.querySelectorAll("[data-op]")].map(e=>e.dataset.op)');
-    assert.ok(ops.length, `${id} offers operations`);
-    for (const op of ops) { await tap(`[data-op="${op}"]`); await ok(`${id} ${op}`); }
-    await tap('#stop-operation'); await ok(`${id} stop`);
-    assert.equal(await evaluate('!!document.querySelector(".status-bar-ops")'), false, `${id} left the status bar`);
-  };
-  for (const id of ['i2c', 'spi', 'pwm', 'counter', 'i2c-target', 'spi-target']) await fixtureRun(id);
+  // A purpose's page: what this page prepares, and the hand-over to the tool (§2.3).
+  await go('/setup/debug'); assert.match(await text(), /デバッグの配線を登録する/); await follow('道具への引継ぎへ →'); assert.equal(await evaluate('location.hash'), '#/handoff');
   // W05 passthrough: apply, then save (A36).
   await go('/passthrough'); await pick('#pt-rx', 7); await press('素通し設定を適用'); assert.match(await text(), /適用済み・未保存/);
   await press('本体の現在値全体を保存'); assert.match(await text(), /今の素通し/);
   await go('/settings'); assert.match(await text(), /保存されている値と同じです/);
-  // W04 the debug wire's console (dmseq) on the saved wiring, started and stopped.
-  await go('/operate/console?port=x035'); await tap('#start-operation'); await ok('console start');
-  assert.match(await text(), /受信中 · dmseq/); await tap('#stop-operation'); await ok('console stop');
   // W05 idle and disable per pin: applied, then saved; the raw table shows them.
   await go('/settings'); await pick('[data-idle="GPIO20"]', 'pull-up'); await press('ピンの設定を適用');
   assert.match(await text(), /適用済み・永続保存はまだ/); await press('次回起動用に保存'); assert.match(await text(), /channel\.GPIO20\.idle/);
@@ -296,17 +264,14 @@ try {
   assert.match(await text(), /無い/); await press('この記録を書き戻す');
   await go('/connections'); assert.match(await text(), /swap connector/, 'the restored record is read back');
   await go('/maintenance'); await press('宣言を読み直す'); assert.match(await text(), /oep\.fixture\.i2c-controller/);
-  // Capture preparation hands a command to WireSkein; the page acquires nothing (A26).
-  await go('/capture?mode=standalone'); await choose('#capture-pin-0', 3); await press('引継ぎ内容を確認'); assert.match(await text(), /wireskein capture --source oep:oep:\/\/fafe00000035/);
   // W07 hand over.
   await go('/handoff'); assert.match(await text(), /oep:\/\/fafe00000035\/x035/); await press('このページでの利用を終了して渡す');
   assert.match(await text(), /プローブ未接続/);
-  // A classic ESP32 probe (another virtual bench): DAC and the Wi-Fi settings.
+  // A classic ESP32 probe (another virtual bench): the Wi-Fi settings.
   const p4Port = benchPort;
   benchPort = Number(await start(python, ['-m', 'oep_client.virtual_bench_serve', '--tcp', '0', '--profile', 'esp32-v003'], /PORT (\d+)/));
   await evaluate('globalThis.__withMemo=false');
   await go('/connect'); await press('機器を選んで接続');
-  await fixtureRun('dac');
   await go('/settings'); await set('wifi-ssid', 'bench'); await set('wifi-pass', 'bench-passphrase'); await press('ネットワーク設定を適用');
   assert.match(await text(), /wifi\.0\.ssid/); assert.doesNotMatch(await text(), /bench-passphrase/, 'a secret is never shown');
   await press('接続を終了');
@@ -315,7 +280,7 @@ try {
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   for (const r of ['/home', '/usecases', '/boards', '/install/select', '/connect', '/work', '/handoff']) { await go(r); await noOverflow(r); }
   await go('/connect'); await press('機器を選んで接続');
-  for (const r of ['/setup', '/work', '/connections', '/connection/x035', '/operate/debug', '/operate/uart', '/passthrough', '/settings', '/maintenance', '/handoff']) { await go(r); assert.ok(await h1(), r); await noOverflow(r); }
+  for (const r of ['/setup', '/setup/debug', '/work', '/connections', '/connection/x035', '/passthrough', '/settings', '/maintenance', '/handoff']) { await go(r); assert.ok(await h1(), r); await noOverflow(r); }
   await snapshot('04-mobile');
   // Changing the language keeps the inputs, the route and the probe (A15), and is remembered over a reload.
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
@@ -334,16 +299,13 @@ try {
   assert.equal(await evaluate('document.documentElement.lang'), 'en', 'the chosen language is remembered');
   // Every screen in English carries no Japanese.
   const english = async (r) => { await go(r); await until('document.querySelector("h1")'); assert.equal(await japanese(), null, `Japanese left on ${r}`); };
-  for (const r of ['/home', '/usecases', ...['debug', 'logs', 'logic', 'bus', 'signal', 'peer', 'uart', 'i2c'].map((x) => `/usecase/${x}`), '/boards', '/learn', '/install/select', '/install/prepare', '/install/review', '/connect', '/work', '/nowhere']) await english(r);
+  for (const r of ['/home', '/usecases', ...['debug', 'logs', 'logic', 'bus', 'signal', 'peer'].map((x) => `/usecase/${x}`), '/boards', '/learn', '/install/select', '/install/prepare', '/install/review', '/connect', '/work', '/nowhere']) await english(r);
   await go('/connect'); await press('Choose a device and connect');
-  for (const r of ['/setup', ...['debug', 'debug-scan', 'logs', 'logic'].map((x) => `/setup/${x}`), '/setup/ready?port=dut', '/work', '/connections', '/connection/new',
-    ...['debug', 'uart', 'i2c', 'spi', 'custom'].map((x) => `/connection/new?purpose=${x}`), '/connection/x035', '/connection/dut', '/operations',
-    ...['debug', 'console', 'uart', 'i2c', 'spi', 'gpio', 'pwm', 'counter', 'dac', 'i2c-target', 'spi-target'].map((x) => `/operate/${x}`),
-    ...['standalone', 'named', 'during', 'test', 'analog'].map((x) => `/capture?mode=${x}`), '/passthrough', '/fixture', '/settings', '/maintenance', '/handoff']) await english(r);
-  await go('/operate/debug?port=x035'); await press('Connect to the target'); assert.equal(await japanese(), null, 'Japanese left on the attached debug screen');
-  await press('Detach the target');
-  await go('/capture?mode=standalone'); await choose('#capture-pin-0', 3); await press('Review the hand-over'); assert.equal(await japanese(), null, 'Japanese left on the capture review');
-  await go('/handoff'); assert.equal(await japanese(), null, 'Japanese left on the hand-over with a capture');
+  for (const r of ['/setup', ...['debug', 'logs', 'logic', 'bus', 'signal', 'peer'].map((x) => `/setup/${x}`), '/setup/ready?port=dut', '/work', '/connections', '/connection/new',
+    ...['debug', 'uart', 'i2c', 'spi', 'custom'].map((x) => `/connection/new?purpose=${x}`), '/connection/x035', '/connection/dut',
+    '/passthrough', '/fixture', '/settings', '/maintenance', '/handoff']) await english(r);
+  await go('/connection/x035'); await press('Check the connection on these pins'); assert.equal(await japanese(), null, 'Japanese left on the connection check');
+  await click('Cancel'); await delay(100);
   await go('/settings'); await snapshot('05-english');
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   for (const r of ['/home', '/boards', '/work', '/settings', '/maintenance']) { await go(r); await noOverflow(`${r} in English`); }
@@ -352,7 +314,7 @@ try {
   await pick('#language', 'ja'); await delay(120); assert.match(await h1(), /[\u3040-\u30ff\u4e00-\u9fff]/, 'back to Japanese');
   await press('接続を終了');
   assert.deepEqual(exceptions, []);
-  console.log('Browser page: public pages, ESP install with the port reused and a retry without rewriting, Pico install by BOOTSEL and the new device taken, Pico and P4 (DFU) updates, purpose kept through connecting, wiring saved without target I/O (memo records), edit, connection check, debug attach / halt / memory / detach, UART, GPIO, I2C, SPI, PWM, counter, I2C / SPI peers, debug and UART at once, the debug-wire console, passthrough apply and save, idle pins, settings and memo backup and restore, declarations, capture preparation, DAC and Wi-Fi (classic ESP32), hand-over, narrow screens, the language from the browser and from the selector (inputs kept, remembered) and every screen in English passed.');
+  console.log('Browser page: public pages, ESP install with the port reused and a retry without rewriting, Pico install by BOOTSEL and the new device taken, Pico and P4 (DFU) updates, purpose kept through connecting, wiring saved without target I/O (memo records), edit, connection check, a purpose page to the hand-over, passthrough apply and save, idle pins, settings and memo backup and restore, declarations, Wi-Fi (classic ESP32), hand-over, narrow screens, the language from the browser and from the selector (inputs kept, remembered) and every screen in English passed.');
 } finally {
   browserSocket?.close(); socket?.destroy(); if (waiting) waiting.end(); server?.closeAllConnections(); server?.close();
   for (const child of children) { child.stdin?.end(); child.kill(); }

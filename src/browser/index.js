@@ -21,9 +21,7 @@ export { connect } from '../open.js';
 /**
  * A Host on a serial port (the chooser when `port` is not given), confirmed and ready.
  * @param {import('./webserial.js').SerialPortLike} [port]
- * portSpeed: the candidates to try once connected (port_speed, oep-if-link §3; true = the default 500000; the lock is
- * taken and kept, see connect), `flows` / `verify` for the full form, `record` (localStorage, by unit_id).
- * @param {import('../open.js').SpeedOptions & { baudRate?: number, filters?: import('./webserial.js').SerialPortFilter[], timeoutMs?: number, leaseMs?: number, owner?: string, keepSession?: boolean | import('../keptsession.js').KeptStore }} [opts]
+ * @param {{ baudRate?: number, filters?: import('./webserial.js').SerialPortFilter[], timeoutMs?: number, keepSession?: boolean | import('../keptsession.js').KeptStore }} [opts]
  */
 export async function openWebSerial(port, opts = {}) {
   const p = port ?? await requestSerialPort({ filters: opts.filters });

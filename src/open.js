@@ -5,7 +5,6 @@ import { Host } from './host.js';
 import * as core from './core.js';
 import * as reg from './registry.js';
 import { NotOepProbe, UnitIdMismatch } from './errors.js';
-import { DEFAULT_CANDIDATES, leaseFor, raiseSpeed } from './speed.js';
 import { KeptSession } from './keptsession.js';
 
 /** The probing rule's wait for confirm's answer (transports §3, core §4.4): a quick op's bound and the host's own addition. */
@@ -66,16 +65,10 @@ export async function checkUnitId(host, unitId) {
 }
 
 /**
- * portSpeed: the candidates to try, in order (opt-in, oep-if-link §3, speed.js; true = raiseSpeed's default, 500000):
- * the lock is taken (core.take, `leaseMs`, `owner`) and left open for the caller - who goes on in that session, never
- * opening another (a new session would end this one, and the rate with it) - and `raiseSpeed(host, candidates, {
- * flows, verify, record })` runs (the minimal form unless `verify` / `flows` ask for the full one; `record` off by
- * default); its report is `host.link.speed`. The transport is probed first (transports §3, `probe` above): a confirm only,
- * and no valid answer closes it (NotOepProbe); on a serial port (COBS) the first confirm is retried for about 4 s
- * (Link.waitBootSpeed): a raised rate a host that died left over goes back by then. `unitId`: the unit the device was
- * opened as (by its USB serial): fn 0's describe must say the same unit_id, else the link is closed (UnitIdMismatch).
- * A candidate above 500000 is the user's choice only (host guide §17) and gets raiseSpeed's 1 s verify;
- * the session is then taken with at least `leaseFor(candidates)` ms.
+ * The transport is probed first (transports §3, `probe` above): a confirm only, and no valid answer closes it
+ * (NotOepProbe); on a serial port (COBS) the first confirm is retried for about 4 s (Link.waitBootSpeed): a raised rate
+ * a host that died left over goes back by then. `unitId`: the unit the device was opened as (by its USB serial): fn
+ * 0's describe must say the same unit_id, else the link is closed (UnitIdMismatch).
  *
  * `keepSession` (default true): the host keeps the id of the session it opens per probe (keptsession.js, keyed by
  * unit_id; Node: a file under the user's cache directory or $OEP_SESSION_DIR, a browser: localStorage), and its first
@@ -83,28 +76,15 @@ export async function checkUnitId(host, unitId) {
  * transports §3) - so a host run again after a crash, a kill or a reload does not meet its own old lock. A
  * keptsession.KeptStore: that place; false: nothing is read or written.
  * @param {import('./link.js').Transport} transport
- * @param {SpeedOptions & { timeoutMs?: number, leaseMs?: number, owner?: string, unitId?: string,
- *   keepSession?: boolean | import('./keptsession.js').KeptStore }} [opts]
+ * @param {{ timeoutMs?: number, unitId?: string, keepSession?: boolean | import('./keptsession.js').KeptStore }} [opts]
  */
-export async function connect(transport, { timeoutMs = 3000, portSpeed, flows, verify, record, leaseMs = 3000, owner, unitId,
-  keepSession = true } = {}) {
+export async function connect(transport, { timeoutMs = 3000, unitId, keepSession = true } = {}) {
   const link = new Link(transport, { timeoutMs });
   await link.start();
   const host = new Host(link);
   await probe(link, host, transport);
   if (unitId) await checkUnitId(host, unitId);
   if (keepSession) host.kept = new KeptSession(keepSession === true ? null : keepSession);
-  if (portSpeed === true || (Array.isArray(portSpeed) && portSpeed.length)) {
-    const candidates = portSpeed === true ? DEFAULT_CANDIDATES : portSpeed;
-    await core.take(host, Math.max(leaseMs, leaseFor(candidates, { flows, verify })), { owner, exclusive: transport.kind === 'serial' });
-    await raiseSpeed(host, candidates, { flows, verify, record });
-  }
   return host;
 }
 
-/**
- * connect's port_speed options: `portSpeed` (true = the default candidate, or candidates in order), `flows` / `verify`
- * (the full form, speed.js raiseSpeed), `record` (the record of passed / failed rates, speedrecord.js).
- * @typedef {{ portSpeed?: boolean | number[], flows?: import('./speed.js').FlowSpec[] | null, verify?: boolean | null,
- *   record?: boolean | string | import('./speedrecord.js').SpeedRecord }} SpeedOptions
- */

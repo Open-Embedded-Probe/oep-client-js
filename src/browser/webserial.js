@@ -48,10 +48,6 @@ export function getSerialPorts() { return serialApi().getPorts(); }
 
 /**
  * A serial port as a transport, opened 8N1 without flow control with DTR and RTS asserted (transports §4, C-09).
- * `setBaudRate` changes the rate the way esptool-js does over WebSerial: the same SerialPort closed and opened again at
- * the new baudRate (the page keeps its permission), DTR and RTS then asserted together at once (a UART bridge's
- * auto-reset circuit resets the board when they differ), and the reader started again - what arrived meanwhile is
- * gone, which port_speed expects (oep-if-link §3).
  * @param {SerialPortLike} port
  * @param {{ baudRate?: number, bufferSize?: number }} [opts]  baudRate matters only on a UART bridge
  * @returns {Promise<import('../link.js').Transport>}
@@ -61,10 +57,10 @@ export async function webSerialTransport(port, { baudRate = 115200, bufferSize =
   await assertSignals(port);
   if (!port.writable || !port.readable) throw new Error('the serial port did not open');
   /** @type {WritableStreamDefaultWriter<Uint8Array>} */
-  let writer = port.writable.getWriter();
+  const writer = port.writable.getWriter();
   /** @type {ReadableStreamDefaultReader<Uint8Array> | null} */
   let reader = null;
-  let closing = false, reopening = false;
+  let closing = false;
   /** @type {((chunk: Uint8Array) => void) | null} */ let deliver = null;
   /** @type {((error?: unknown) => void) | null} */ let closed = null;
   const read = () => {
@@ -79,9 +75,9 @@ export async function webSerialTransport(port, { baudRate = 115200, bufferSize =
           if (done) break;
           if (value && value.length) onData(value);
         }
-        if (!reopening) onClose();
+        onClose();
       } catch (e) {
-        if (!reopening) onClose(closing ? undefined : e);
+        onClose(closing ? undefined : e);
       }
     })();
   };
@@ -94,23 +90,6 @@ export async function webSerialTransport(port, { baudRate = 115200, bufferSize =
     start(onData, onClose) {
       deliver = onData;
       closed = onClose;
-      read();
-    },
-    async setBaudRate(rate) {
-      reopening = true;
-      try {
-        try { await reader?.cancel(); } catch { /* gone */ }
-        try { reader?.releaseLock(); } catch { /* gone */ }
-        try { writer.releaseLock(); } catch { /* gone */ }
-        await port.close();
-        await port.open({ baudRate: rate, bufferSize, ...SERIAL_LINE });
-        await assertSignals(port);
-        if (!port.writable || !port.readable) throw new Error('the serial port did not open again');
-        writer = port.writable.getWriter();
-        transport.baudRate = rate;
-      } finally {
-        reopening = false;
-      }
       read();
     },
     async close() {

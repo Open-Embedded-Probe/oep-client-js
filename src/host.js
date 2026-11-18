@@ -142,17 +142,8 @@ export class Host {
    * and restartProbe's for a link opened again. @param {import('./link.js').Link} link */
   useLink(link) {
     this.link = link;
-    if (link && 'corrSource' in link) link.corrSource = () => this.nextCorr();   // the link's own confirms (port_speed)
+    if (link && 'corrSource' in link) link.corrSource = () => this.nextCorr();   // the link's own confirms
     if (link && 'held' in link) link.held = () => this.session !== null;   // a held serial port: a broken frame is resent at once
-    if (link && 'keepaliveFrame' in link) {   // raised (port_speed): the link keeps the line alive in this session
-      link.keepaliveFrame = () => new m.Request(this.nextCorr(), m.CORE_FN, m.OP.keepalive, new Uint8Array(), this.session).pack();
-    }
-    if (link && 'sessionFrame' in link) {   // raised: the step down's revert in this session (on oep.probe.link's fn)
-      link.sessionFrame = (/** @type {number} */ op, /** @type {Uint8Array} */ payload, /** @type {number} */ fn = m.CORE_FN) =>
-        new m.Request(this.nextCorr(), fn, op, payload, this.session).pack();
-    }
-    if (link && 'lease' in link) link.lease = () => (this.session !== null ? this.leaseMs : null);   // raised: bounds each wait
-    if (link && 'sessionId' in link) link.sessionId = () => this.session;
     if (link && 'onReopen' in link) link.onReopen = () => this.transportReopened();   // subscribe again on the new transport (core §10.3)
     if (link && 'confirmBody' in link) link.confirmBody = () => this.confirmBody();   // the link's own confirms: the revision in use (C-15)
     if (link && 'onBootId' in link) link.onBootId = (/** @type {number} */ bootId) => this.bootIdSeen(bootId);   // the link's own confirms (resync, recovery)
@@ -207,12 +198,6 @@ export class Host {
     await core.describe(this, m.CORE_FN);
   }
 
-  /** Before a request takes its corr: the link's keepalive at a raised port_speed rate, so what goes first carries the
-   * lower corr (or the probe takes the request for an old one, core §4.1). */
-  async beforeRequest() {
-    if (this.link && typeof this.link.keepRaised === 'function') await this.link.keepRaised();
-  }
-
   /** The header's session_id (core §4.1): this session's id for a request sent `locked` while one is open, else 0 (a
    * lock-free request outside the session: no session check, the lease untouched). @param {boolean} locked */
   async sessionFor(locked) {
@@ -225,8 +210,7 @@ export class Host {
    * One request. locked: send the session id once a session is open. Rejections throw; any other answer comes back.
    * expectMs: the time its arguments set on the probe (a run's timeoutMs, a dmi list's waits, an attach's or a scan's
    * budget, a save; core §4.4, §6.1: the probe does not count the lease meanwhile): the link waits at least that +
-   * host_wait_add_ms (1000 ms) + a serial port's transfer time for its answer (core §4.4's floor, C-06), also at a
-   * raised port_speed rate (where an ordinary request waits a quarter of the lease, never under the floor).
+   * host_wait_add_ms (1000 ms) + a serial port's transfer time for its answer (core §4.4's floor, C-06).
    * session: the id to send instead (open: the id it opens).
    * @param {number} fn @param {number} op @param {Uint8Array} payload
    * @param {{ locked?: boolean, expectMs?: number, session?: number }} [opts]
@@ -236,7 +220,6 @@ export class Host {
     await this.subscribeAgain();
     await this.knowMaxOpMs([[fn, op]]);
     const session = sid ?? await this.sessionFor(locked);
-    await this.beforeRequest();
     if (!session) await this.sessionRoom(1);
     const req = new m.Request(this.nextCorr(session), fn, op, payload, session);
     const result = m.Result.unpack(await this.link.send(req.pack(), { expectMs: Math.max(expectMs, this.opBoundMs(fn, op)) }));
@@ -280,7 +263,6 @@ export class Host {
     this.revisions.clear();
     this.describes.clear();
     this.unusableFns.clear();
-    if (this.link && 'restartFn' in this.link) this.link.restartFn = null;
   }
 
   /** A boot_id from confirm, an open result or the link's own confirm: a change means the probe restarted
@@ -324,7 +306,6 @@ export class Host {
     await this.subscribeAgain();
     await this.knowMaxOpMs(requests.map(([fn, op]) => [fn, op]));
     const session = await this.sessionFor(locked);
-    await this.beforeRequest();
     if (!session) await this.sessionRoom(requests.length);
     const reqs = requests.map(([fn, op, payload]) => new m.Request(this.nextCorr(session), fn, op, payload, session));
     const limits = await this.confirmed();
@@ -406,7 +387,6 @@ export class Host {
    */
   async clock() {
     await this.requireV1();
-    await this.beforeRequest();             // a raised link's keepalive first: it would land inside the round trip
     await this.sessionRoom(1);
     this.requireUsable(m.CORE_FN);
     const req = new m.Request(this.nextCorr(), m.CORE_FN, m.OP.clock, new Uint8Array(), m.NO_SESSION_ID);
@@ -552,13 +532,8 @@ export class Host {
 
   // ---- restart (oep.probe.restart, oep-if-restart) ---------------------------------------------------------
 
-  /** The fn of the probe's oep.probe.restart (OepError when it lists none: the interface is optional), told to the link
-   * too: a completed restart puts a raised port_speed back at the boot speed (oep-if-link §3 host 2). */
-  async restartTarget() {
-    const fn = await restartFn(this);
-    if (this.link && 'restartFn' in this.link) this.link.restartFn = fn;
-    return fn;
-  }
+  /** The fn of the probe's oep.probe.restart (OepError when it lists none: the interface is optional). */
+  async restartTarget() { return restartFn(this); }
 
   /** oep.probe.restart's restart, the request alone (oep-if-restart §2): sent in this session (the op needs the lock:
    * without a session it goes with session_id 0 and is refused session_required); completed success = the probe

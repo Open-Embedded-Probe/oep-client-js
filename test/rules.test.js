@@ -1,8 +1,8 @@
 // @ts-check
 // The host side of oep-spec docs/v1-rule-change-proposal-2026-10-02.md (applied 09622ef..e9cd891): the wait's floor
-// (C-06, P2-★4), the serial line (C-09), the revision in use (C-15), confirm's transport (C-05), x- unit_ids (C-24),
-// TCP and the resync wait (C-07, transports §5), the line search (PC-1, PC-2, PC-5), text shown and sent (C-22, C-18),
-// ignored's marker (C-04), what a probe must give (C-10), capture (P2-○8, P2-○9) and the new answer TLVs in the API.
+// (C-06, P2-★4), the revision in use (C-15), confirm's transport (C-05), x- unit_ids (C-24), TCP and the resync wait
+// (C-07, transports §5), the line search (PC-1, PC-2, PC-5), text shown and sent (C-22, C-18), ignored's marker (C-04),
+// what a probe must give (C-10) and describe as dump shows it.
 // Mirrors oep-client-python's tests/test_host_rules_2026_10_02.py.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -11,7 +11,6 @@ import * as cobs from '../src/cobs.js';
 import * as m from '../src/message.js';
 import * as settings from '../src/settings.js';
 import * as dump from '../src/dump.js';
-import * as capture from '../src/capture.js';
 import { Writer, utf8 } from '../src/bytes.js';
 import { Locked, Rejected, Unsupported } from '../src/errors.js';
 import { Host, ownerText } from '../src/host.js';
@@ -19,17 +18,12 @@ import { Link, RESYNC_WAIT_MS } from '../src/link.js';
 import { connect } from '../src/open.js';
 import { planApply, take } from '../src/core.js';
 import { decodeDescription, packOps } from '../src/catalog.js';
-import { Wire, RiscvDm, StepError, TargetError } from '../src/riscv.js';
-import { I2cTarget } from '../src/fixture.js';
-import { SpeedRecord, memoryStore } from '../src/speedrecord.js';
-import { raiseSpeed, speedPort } from '../src/speed.js';
 import { requireUnitName } from '../src/usbvendor.js';
-import { SERIAL_LINE, assertLines } from '../src/node/serial.js';
+import { Wire, WIRES } from '../src/wire.js';
+import { listEntries } from '../src/core.js';
 import { openTcp } from '../src/node/index.js';
 import { tcpTransport } from '../src/node/tcp.js';
-import { usbTransport } from '../src/node/usb.js';
 import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
-import { ScriptedHost, handlers, ok } from './scripted.js';
 import { KNOWN } from '../src/interfaces.js';
 
 /** confirm's answer: magic revision max_frame window max_inflight boot_id (core §7.1) */
@@ -99,8 +93,8 @@ function recording(hst) {
 
 // ---- C-06: the wait's floor -------------------------------------------------------------------------------------
 
-test('C-06: the floor is argument time + 1000 ms + the transfer time; the link\'s own waits keep theirs', () => {
-  const t = { framing: /** @type {'cobs'} */ ('cobs'), kind: 'serial', baudRate: 115200, async setBaudRate() {}, async write() {}, start() {}, async close() {} };
+test('C-06: the floor is argument time + 1000 ms + the transfer time', () => {
+  const t = { framing: /** @type {'cobs'} */ ('cobs'), kind: 'serial', baudRate: 115200, async write() {}, start() {}, async close() {} };
   const link = new Link(t, { timeoutMs: 200 });
   link.probeMaxFrame = 1024;
   const req = new m.Request(1, 0, m.OP.keepalive).pack();
@@ -109,7 +103,6 @@ test('C-06: the floor is argument time + 1000 ms + the transfer time; the link\'
   assert.ok(Math.abs(link.transferMs(req) - transfer) < 1e-9 && transfer > 260);
   assert.ok(Math.abs(link.waitMs(0, req) - (1000 + transfer)) < 1e-9);   // over the link's own 200 ms
   assert.ok(Math.abs(link.waitMs(2500, req) - (2500 + 1000 + transfer)) < 1e-9);   // run's timeout_ms, dmi's waits ...
-  assert.equal(link.baseWaitMs(), 200);                             // the link's own short requests keep theirs
   const length = new Link(scripted().t, { timeoutMs: 300 });
   assert.equal(length.transferMs(req), 0);                          // no line speed on length frames
   assert.equal(length.waitMs(), 1000);
@@ -131,29 +124,16 @@ test('C-06: each outstanding request\'s wait starts again from the answer before
   await link.close();
 });
 
-test('C-06: attach, scan and reset wait max_op_ms (debug §1, §4.3)', { skip: !haveVirtualBench }, () => withBench(['--profile', 'p4-bench'], async (hst) => {
+test('C-06: attach waits max_op_ms (debug §1)', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
   await hst.open(3000);
+  const entry = /** @type {import('../src/catalog.js').ListEntry} */ ((await listEntries(hst)).find((e) => e.name === WIRES.rvswd || e.name === WIRES.swio));
   const log = recording(hst);
-  const w = await Wire.open(hst);
-  const [pair] = await w.candidatePairs();
-  await w.scan();
-  await w.attach({ pins: pair });
-  const budgets = Object.fromEntries(log.filter((r) => r.fn === w.fn).map((r) => [r.op, r.expectMs]));
-  assert.deepEqual(budgets, { [Wire.SCAN]: 10000, [Wire.ATTACH]: 10000 });   // the probe's max_op_ms (core §4.4)
-  assert.equal(await w.attachMs([7, 20]), 10000);                  // the reset TLV's hold within it too
-  assert.equal(await (await RiscvDm.on(hst, 1)).resetMs(), 10000);
+  const w = await Wire.open(hst, { fn: entry.fn, name: entry.name });
+  await w.check({ pins: [0, 1] }).catch(() => {});
+  const att = log.find((r) => r.fn === w.fn && r.op === Wire.ATTACH);
+  assert.equal(att?.expectMs, 10000);                              // the probe's max_op_ms (core §4.4)
   await hst.end();
 }));
-
-// ---- C-09: the serial line ----------------------------------------------------------------------------------------
-
-test('C-09: a node serial port opens 8N1 without flow control, DTR and RTS asserted after the open', async () => {
-  assert.deepEqual({ ...SERIAL_LINE }, { dataBits: 8, parity: 'none', stopBits: 1, rtscts: false, xon: false, xoff: false, xany: false });
-  /** @type {any[]} */ const set = [];
-  await assertLines({ set: (/** @type {any} */ o, /** @type {() => void} */ cb) => { set.push(o); cb(); } });
-  assert.deepEqual(set, [{ dtr: true, rts: true }]);
-  await assertLines({ set() { throw new Error('a pty has no modem lines'); } });   // kept what the open gave
-});
 
 // ---- C-15 / C-05: confirm -----------------------------------------------------------------------------------------
 
@@ -190,69 +170,11 @@ test('C-05: the confirm names the transport this host came on', { skip: !haveVir
   assert.equal(transports.find((x) => x.index === where)?.kind, reg.CORE.enum.transport_kind.tcp);   // virtual_bench_serve's TCP listener
 }));
 
-/** A Host that knows a describe, oep.probe.link as fn 10 with `link` ops (null: no oep.probe.link) and a confirm answer, and sends
- * nothing. @param {[number, Uint8Array][]} core @param {number | null} transport @param {number[] | null} link */
-function knowing(core, transport, link = Object.values(reg.PROBE_LINK.op)) {
-  const hst = new Host(/** @type {any} */ ({ framing: 'cobs', async send() { throw new Error('nothing is sent'); } }));
-  hst.describes.set(0, core);
-  if (link) {
-    hst.fns.set('oep.probe.link', 10);
-    hst.describes.set(10, [[reg.DESCRIBE_COMMON.ops, packOps(link)]]);
-  }
-  hst.limits = { revision: 1, maxFrame: 1024, window: 4096, maxInflight: 4, bootId: 1, transport, tail: new m.Tail() };
-  hst.revision = 1;
-  return hst;
-}
-
-test('C-05: port_speed raises the transport this host came on; a relaying broker\'s 0xFF and a confirm without the TLV', async () => {
-  const D = reg.CORE.tlv.describe, K = reg.CORE.enum.transport_kind;
-  const bridges = /** @type {[number, Uint8Array][]} */ ([[D.transport, Uint8Array.of(0, K.uart_bridge, 0xff)], [D.transport, Uint8Array.of(1, K.uart_bridge, 0xff)],
-    [D.transport, Uint8Array.of(2, K.vendor_bulk, 0)]]);
-  assert.deepEqual(await speedPort(knowing(bridges, 1)), [10, 1, '']);   // oep.probe.link's fn, the second bridge, not the first
-  assert.match((await speedPort(knowing(bridges, 2)))[2], /index 2\) is not a UART bridge/);
-  assert.match((await speedPort(knowing(bridges, 0xff)))[2], /broker/);
-  assert.match((await speedPort(knowing(bridges, null)))[2], /names no transport/);
-  const L = reg.PROBE_LINK.op;
-  assert.match((await speedPort(knowing(bridges, 0, [L.source, L.sink])))[2], /does not offer port_speed/);   // its ops (oep-if-link §1)
-});
-
 // ---- C-24: an x- unit_id names no unit ------------------------------------------------------------------------------
-
-test('C-24: the speed record keeps nothing under an x- unit_id', () => {
-  const rec = new SpeedRecord(memoryStore());
-  rec.note('/dev/ttyUSB0', 'x-esp32', 921600, true, 'verify');
-  assert.deepEqual(rec.lookup('/dev/ttyUSB0', 'x-esp32'), { passed: [], failed: [] });
-  assert.deepEqual(rec.data, {});
-  assert.equal(rec.results('/dev/ttyUSB0', 'x-esp32').size, 0);
-  rec.note('/dev/ttyUSB0', 'fafe00000003', 921600, true, 'verify');
-  assert.deepEqual(rec.lookup('/dev/ttyUSB0', 'fafe00000003'), { passed: [921600], failed: [] });
-});
-
-test('C-24: raiseSpeed records nothing for an x- unit_id', { skip: !haveVirtualBench }, async () => {
-  const bench = await startVirtualBench(['--profile', 'esp32-v003'], 'cobs');
-  const hst = await openTcp({ port: bench.port, framing: 'cobs', baudRate: 115200, timeoutMs: 1000 });
-  try {
-    const D = reg.CORE.tlv.describe;
-    const core = await (await import('../src/core.js')).describe(hst, 0);   // cached: the unit_id swapped for an x- one
-    hst.describes.set(0, core.map(([tag, v]) => ((tag & 0x7f) === D.unit_id ? [tag, utf8('x-esp32')] : [tag, v])));
-    await take(hst, 10000);
-    const rec = new SpeedRecord(memoryStore());
-    const report = await raiseSpeed(hst, [500000], { record: rec, verifyMs: 900 });
-    assert.equal(report.chosen, 500000);
-    assert.match(report.why, /names no unit/);
-    assert.deepEqual(rec.data, {});
-    assert.equal(hst.link.record, null);
-    await hst.end();
-  } finally {
-    await hst.link.close();
-    bench.stop();
-  }
-});
 
 test('C-24: no USB device is looked up by an x- unit_id', async () => {
   assert.throws(() => requireUnitName('x-esp32'), RangeError);
   assert.equal(requireUnitName('fafe00000035'), 'fafe00000035');
-  await assert.rejects(usbTransport({ unitId: 'X-esp32' }), RangeError);   // before the usb package is even loaded
 });
 
 // ---- C-07 / transports §5: TCP and the resync wait ------------------------------------------------------------------------
@@ -399,33 +321,7 @@ test('C-10: dump says what a probe must give and did not', async () => {
   assert.deepEqual(JSON.parse(dump.toJson({ revision: 1, maxFrame: 256, core, offers: [], requests: { confirm: 1, list: 1, describe: 1 }, missing: ['x'] })).missingRequired, ['x']);
 });
 
-// ---- the new answer TLVs in the API -------------------------------------------------------------------------------
-
-test('API: StepError.stepLeft, internalPullups', async () => {
-  let stepTail = m.tlv(RiscvDm.TAG_STEP_LEFT, new Uint8Array());          // length 0 (§4.2)
-  let stepStatus = /** @type {number} */ (reg.STATUS.state);
-  const hst = new ScriptedHost(handlers([
-    [2, RiscvDm.STEP, () => [m.COMPLETED, m.FAILED, Uint8Array.from([...new Writer().u8(stepStatus).u8(0).u32(0x100).u32(0x104).done(), ...stepTail])]],
-  ]));
-  const dm = await RiscvDm.on(hst, 1);
-  await assert.rejects(dm.step(), (e) => e instanceof StepError && e instanceof TargetError && e.stepLeft && e.before === null);   // not read unless ok (§4.2)
-  stepTail = m.tlv(RiscvDm.TAG_STEP_LEFT, Uint8Array.of(1));               // another length: broken, not used (core §2.3)
-  await assert.rejects(dm.step(), (e) => e instanceof StepError && !e.stepLeft);
-  stepTail = new Uint8Array();
-  await assert.rejects(dm.step(), (e) => e instanceof StepError && !e.stepLeft && e.after === null);
-  stepStatus = reg.STATUS.ok;
-  await assert.rejects(dm.step(), StepError);                      // outcome failed: not a step that worked
-
-  const I2C = 9;
-  const i2c = new ScriptedHost(handlers([]));
-  i2c.fns.set('oep.fixture.i2c-target', I2C); i2c.revisions.set(I2C, 1);
-  const PULLUPS = reg.FIXTURE_I2C_TARGET.enum.features.internal_pullups;
-  i2c.describes.set(I2C, [[reg.DESCRIBE_COMMON.features, new Writer().u32(PULLUPS).done()]]);
-  const t = await I2cTarget.open(i2c);
-  assert.equal(await t.internalPullups(), true);
-  i2c.describes.set(I2C, [[reg.DESCRIBE_COMMON.features, new Writer().u32(0).done()]]);
-  assert.equal(await t.internalPullups(), false);                  // the bit clear: it enables none
-});
+// ---- the API -------------------------------------------------------------------------------------------------------
 
 test('API: describe shows the capture mode, channels and trigger, oep.probe.link\'s port_speed; no attach_writes_unbounded', { skip: !haveVirtualBench }, async () => {
   await withBench(['--profile', 'p4-x035'], async (hst) => {
@@ -440,17 +336,3 @@ test('API: describe shows the capture mode, channels and trigger, oep.probe.link
   });
   for (const w of ['oep.wire.rvswd', 'oep.wire.swio', 'oep.wire.swd']) assert.equal(KNOWN[w].features[0], undefined);
 });
-
-// ---- P2-○8 / P2-○9: capture ------------------------------------------------------------------------------------------
-
-test('P2-○8: capture configure sends the table\'s TLVs without the critical bit (oep-spec c6ab5d9); the answer\'s samples hold', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
-  await hst.open(3000);
-  const cap = await capture.LogicCapture.open(hst);
-  await planApply(hst, [[cap.fn, 0, 4]]);
-  const log = recording(hst);
-  const c = await cap.configure({ rate: 1_000_000, samples: 1 << 20, trigger: [capture.LEVEL, 0, 1], pretrigger: 4 });
-  const tags = new Set(m.splitTlvs(log[log.length - 1].payload).map(([t]) => t));
-  assert.deepEqual([...tags].sort(), [capture.MODE, capture.RATE, capture.SAMPLES, capture.TRIGGER, capture.PRETRIGGER].sort());
-  assert.equal(c.samples, 65536);                                   // rounded down: the answer holds
-  await hst.end();
-}));

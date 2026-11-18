@@ -1,14 +1,14 @@
 // OEP Web: the public entrance (P01-P04), probe creation (I01), connecting (C01) and the router. Screens follow
-// docs/page.ja.md; the work screens are in work.js, operate.js and manage.js.
+// docs/page.ja.md; the work screens are in work.js, passthrough.js and manage.js.
 import { el, p, badge, actions, link, external, note, panel, heading, keyValues, sectionTitle, field, resetFieldIds, textLink } from './ui.js';
 import { state, setRenderer, render, go, routeNow, discardThen, action, button, setErrorText, announce } from './core.js';
 import * as D from './device.js';
-import { BOARDS, TASKS, SETUP_PATTERNS, USE_CASE_DETAILS, DOCS, guide, CONSOLE_TASK, ANALOG_TASK } from './data.js';
+import { BOARDS, SETUP_PATTERNS, USE_CASE_DETAILS, DOCS, guide } from './data.js';
 import { t, tr, lang, setLang, LANGUAGES, onLanguage, applyDocument } from './i18n.js';
 import { BOARDS as SPECS, FEATURES } from './boards.js';
-import { connected, purposeRoute, purposeTitle, choosePurpose, patternChoices, workspaceShell, taskById } from './common.js';
+import { connected, purposeRoute, purposeTitle, choosePurpose, patternChoices, workspaceShell } from './common.js';
 import { setup, work, connections, editor, fixture } from './work.js';
-import { operations, operate, capture, passthrough } from './operate.js';
+import { passthrough } from './passthrough.js';
 import { settings, maintenance, handoff } from './manage.js';
 
 setErrorText(D.errorText);
@@ -91,11 +91,7 @@ function usecase(id) {
       panel(el('h2', {}, t('What to prepare', '用意するもの')), p(detail.needs), p(t('Wiring can be prepared without a target connected. Available features depend on the probe and firmware.', '配線の準備はターゲット未接続でもできます。使える機能はプローブとファームウェアにより異なります。'), 'muted'))),
     el('section', { class: 'panel mt' }, el('h2', {}, t('How it goes', 'この用途の進め方')), el('ol', { class: 'checklist' }, ...detail.steps.map((text, i) => el('li', {}, el('span', { class: 'check' }, i + 1), text)))),
     go2, external(t('Detailed steps and coverage', '詳しい手順・対応範囲'), guide(detail.guide)), ' ', textLink(t('Other uses', 'ほかの用途を見る'), '/usecases'));
-  const tk = taskById(id);
-  if (!tk) return notFound();
-  return el('div', { class: 'page' }, heading(tk.title, tk.description, `USE CASE / ${tk.short}`),
-    panel(el('h2', {}, t('What to prepare', '用意するもの')), el('ul', {}, el('li', {}, t('An OEP probe offering this function', 'この機能を提供するOEPプローブ')), el('li', {}, tk.roles?.length ? t(`Wiring for ${tk.roles.join(' / ')} and GND`, `${tk.roles.join(' / ')}とGNDの配線`) : t('Signal lines for the target\'s debug method, and GND', '相手のデバッグ方式に合う信号線とGND')), el('li', {}, t('The target chip or board, its voltage and connection checked', '電圧と接続条件を確認した相手のIC・基板')))),
-    go2, textLink(t('Back to the uses', '用途の一覧に戻る'), '/usecases'));
+  return notFound();
 }
 function learn() {
   return el('div', { class: 'page' }, heading(t('OEP is a common agreement between boards and software.', 'OEPは、ボードとソフトウェアの共通の約束です。'), t('A specification for offering and using the functions of probes for embedded development with a common meaning, not tied to one board and app pairing.', '組み込み開発に使うプローブの機能を、特定のボードやアプリの組み合わせに閉じず、共通の意味で公開・利用するための仕様です。'), 'TECHNOLOGY & DOCUMENTATION'),
@@ -136,7 +132,7 @@ function install(view, query) {
   if (view === 'select') {
     const requested = query.get('purpose');
     if (!state.install || state.install.phase === 'done') newInstall('p4');
-    if (requested !== null) state.install.intent = [...SETUP_PATTERNS, CONSOLE_TASK, ANALOG_TASK, ...TASKS].some((tk) => tk.id === requested) ? requested : '';
+    if (requested !== null) state.install.intent = SETUP_PATTERNS.some((tk) => tk.id === requested) ? requested : '';
     else if (!query.has('keep')) { state.install.intent = ''; state.intent = ''; }
     return installFrame(0, [heading(t('Which board will be the probe?', 'どのボードをプローブにしますか。'), t('Choose by how it installs and what it offers. To use an installed probe, you do not need this.', '導入方法と特徴を見て選んでください。導入済みのプローブを使うときは、この選択は不要です。'), 'CREATE A PROBE'),
       installContext(), note(t('If you are getting a board, the ESP32-P4 is recommended. It covers debug, UART pass-through, logic capture and more.', 'これから用意するならESP32-P4を推奨します。デバッグ・UARTの素通し・ロジック観測など、幅広い用途に使えます。')),
@@ -237,18 +233,16 @@ function connectScreen() {
 function notFound() { return el('div', { class: 'page' }, heading(t('This screen does not exist.', 'この画面は見つかりません。'), t('Choose what you want to do from the start page.', '入口から、確認したい作業を選んでください。')), link(t('Back to the OEP start page', 'OEPの入口へ戻る'), '/home', true)); }
 
 // -- router --
-const LEGACY = { home: '/home', help: '/learn', firmware: '/install/select', connect: '/connect', setup: '/setup', probe: '/work', targets: '/connections', 'target/new': '/connection/new', debug: '/operate/debug', settings: '/settings', storage: '/maintenance', diagnostics: '/maintenance', tools: '/handoff' };
-const SIGNAL_ROUTE = { gpio: 'gpio', uart: 'uart', 'i2c-controller': 'i2c', 'spi-controller': 'spi', 'i2c-target': 'i2c-target', 'spi-target': 'spi-target', pwm: 'pwm', counter: 'counter', dac: 'dac' };
+const LEGACY = { home: '/home', help: '/learn', firmware: '/install/select', connect: '/connect', setup: '/setup', probe: '/work', targets: '/connections', 'target/new': '/connection/new', debug: '/setup/debug', settings: '/settings', storage: '/maintenance', diagnostics: '/maintenance', tools: '/handoff' };
 function legacy(hash) {
   const raw = hash.replace(/^#/, '');
   if (!raw || raw.startsWith('/')) return null;
   if (raw === 'firmware' && connected()) return '/maintenance';
   if (raw.startsWith('target/edit/')) return `/connection/${raw.slice(12)}`;
-  if (raw.startsWith('signals/')) return `/operate/${SIGNAL_ROUTE[raw.slice(8)] ?? 'gpio'}`;
-  if (raw === 'signals') return '/operations';
+  if (raw === 'signals' || raw.startsWith('signals/')) return '/handoff';
   return LEGACY[raw] ?? '/home';
 }
-const WORKSPACE = ['setup', 'work', 'connections', 'connection', 'operations', 'operate', 'capture', 'passthrough', 'fixture', 'settings', 'maintenance', 'handoff'];
+const WORKSPACE = ['setup', 'work', 'connections', 'connection', 'passthrough', 'fixture', 'settings', 'maintenance', 'handoff'];
 let currentRoute = '';
 function draw(focus = true) {
   resetFieldIds();
@@ -263,7 +257,7 @@ function draw(focus = true) {
     content = view === 'home' ? home() : view === 'boards' ? boards() : view === 'learn' ? learn() : view === 'usecases' ? usecases() : view === 'usecase' ? usecase(id)
       : view === 'install' ? install(id, query) : view === 'connect' ? connectScreen()
       : view === 'setup' ? setup(id, query) : view === 'work' ? work() : view === 'connections' ? connections() : view === 'connection' ? editor(decodeURIComponent(rest), query)
-      : view === 'operations' ? operations() : view === 'operate' ? operate(id, query) : view === 'capture' ? capture(query) : view === 'passthrough' ? passthrough()
+      : view === 'passthrough' ? passthrough()
       : view === 'fixture' ? fixture() : view === 'settings' ? settings(query) : view === 'maintenance' ? maintenance(query) : view === 'handoff' ? handoff() : notFound();
   } catch (error) { console.error(error); content = el('div', { class: 'page' }, heading(t('This screen could not be shown.', 'この画面を表示できませんでした。'), D.errorText(error)), link(t('To the work home', '作業ホームへ'), '/work', true)); }
   const app = document.getElementById('app');
@@ -294,6 +288,6 @@ window.addEventListener('hashchange', () => {
   if (next.startsWith('/connect') && currentRoute !== next) granted = null;
   draw(true);
 });
-window.addEventListener('beforeunload', (e) => { if (state.dirty || state.install?.phase === 'writing' || D.dev.active.size) { e.preventDefault(); e.returnValue = ''; } });
+window.addEventListener('beforeunload', (e) => { if (state.dirty || state.install?.phase === 'writing') { e.preventDefault(); e.returnValue = ''; } });
 draw(false);
 D.loadRelease();

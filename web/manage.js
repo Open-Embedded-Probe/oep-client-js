@@ -128,8 +128,6 @@ export function maintenance(query) {
       keyValues([[t('Connection path', '接続経路'), D.dev.host.link.transport.kind ?? '—'], [t('Unit ID', '個体ID'), D.unit()], [t('Functions', '機能の数'), String(D.dev.caps.offers.length)], [t('Storage state', '保存の状態'), D.dev.settingsState ? JSON.stringify(D.dev.settingsState) : '—']]),
       actions(action(t('Read the declarations again', '宣言を読み直す'), D.rereadDeclarations), button(t('Save the declarations as JSON', '宣言をJSONで保存'), () => download(`oep-${D.unit()}.json`, D.declarationsJson(), 'application/json'))),
       el('pre', { class: 'terminal' }, D.declarationsText()),
-      D.serialLink() ? [el('h3', {}, t('Serial speed test', 'シリアルの速度の検査')), p(t('On probes that negotiate speed, both directions are tested and a speed that passed is used. Other operations stop during the test.', '速度の交渉に対応するプローブで、両方向を検査して通った速度を使います。検査中は他の操作を止めます。'), 'muted'),
-        field(t('Candidate baud rates (comma separated)', '候補のbaud（カンマ区切り）'), m.rates ?? '500000', (v) => { m.rates = v; }), action(t('Test the speed', '速度を検査'), async () => { m.speed = await D.speedTest((m.rates ?? '500000').split(',').map((x) => Number(x.trim()))); }), m.speed ? terminal(m.speed) : null] : null,
       D.dev.memo ? [el('h3', { class: 'mt' }, t('Memo area records', 'メモ領域の記録')), table([t('Name', '名前'), t('Size', '大きさ')], D.dev.memos.map((x) => [new TextDecoder().decode(x.name), `${x.size} B`])),
         p(t('A broken record never removes wiring labels. Write it back from a backup, or delete just that record.', '壊れた記録があっても、配線のラベルは消しません。控えから書き戻すか、その記録だけを消します。'), 'muted')] : null),
     actions(link(t('To the fixed-fixture steps', '据え置き治具の手順へ'), '/fixture'), link(from === 'setup' ? t('Continue the setup', '初期設定の続きへ') : t('Back to the work home', '作業ホームへ戻る'), from === 'setup' ? '/setup' : '/work'))];
@@ -145,7 +143,6 @@ export function handoff() {
   const broker = t(`python -m oep_client.ota_broker oep://${id}/${swd?.name ?? '<port>'}=${board} --gdb-port 3333`, `python -m oep_client.ota_broker oep://${id}/${swd?.name ?? '<口>'}=${board} --gdb-port 3333`);
   const debugJson = JSON.stringify([{ configId: `rp2040:rp2040:${board}`, servertype: 'external', gdbTarget: 'localhost:3333' }], null, 2);
   return [heading(t('Connect to the tool for the job.', '目的に合う道具へ、つなぐ。'), t('The probe and wiring prepared here also serve capture, development and automation.', 'このページで整えたプローブと配線を、観測や開発・自動化にも使えます。'), 'CONNECTED TOOLS'),
-    state.captureSummary ? panel(el('h2', {}, t('The capture conditions prepared', '今回の取得条件の控え')), keyValues(state.captureSummary.slice(0, -1)), copyLine(state.captureSummary.at(-1)[1]), p(t('What to give WireSkein. The browser does not pass settings or the connection automatically.', 'WireSkeinで指定する内容です。ブラウザから設定や接続を自動で渡すものではありません。'))) : null,
     el('div', { class: 'two-grid' }, panel(badge(t('Viewing files / browser', 'ファイル表示 / ブラウザ')), el('h2', { class: 'mt' }, t('View captured waveforms in WireSkein', '取得した波形をWireSkeinで見る')), p(t('Show captured .wireskein / .sr files in the public viewer. Just opening files needs no disconnecting here.', '取得済みの .wireskein / .sr ファイルを、公開Viewerで表示します。ファイルを開くだけなら、このページの接続を終了する必要はありません。')), external(t('Open the WireSkein viewer', 'WireSkein Viewerを開く'), 'https://open-embedded-probe.github.io/wireskein-web/')),
       panel(badge(t('Capture and analysis / external setup', '取得・解析 / 外部環境')), el('h2', { class: 'mt' }, t('Capture waveforms from the probe', 'プローブから波形を取得する')), p(t('Capture and analysis use WireSkein in Python. The public viewer alone cannot capture from a device.', '取得と解析はPython側のWireSkeinを使います。公開Viewerだけで機器から取得することはできません。')), external(t('Installing and using WireSkein', 'WireSkeinの導入・使い方'), 'https://github.com/Open-Embedded-Probe/wireskein'))),
     el('section', { class: 'panel mt' }, el('h2', {}, t('Write and debug from the IDE', 'IDEから書く・デバッグする')),
@@ -160,8 +157,8 @@ export function handoff() {
       copyLine(`oep dump --port oep://${id}`), ...(connected() ? D.dev.ports.map((x) => copyLine(`oep://${id}/${x.name}`)) : []),
       actions(external(t('Using Python and the CLI', 'Python・CLIの使い方'), DOCS[5][2]), external(t('Automated test steps', '自動テストの手順'), guide('use-cases')))),
     el('section', { class: 'panel mt' }, el('h2', {}, t('Finish using this page', 'このページでの利用を終える')),
-      p(t('When another tool uses the same probe, end this page\'s operations and connection to hand it over. Reading the docs needs no ending.', 'ほかの道具が同じプローブを使うときは、このページの操作と接続を終えて渡します。資料を読むだけなら終える必要はありません。')),
-      connected() ? action(t('End here and hand it over', 'このページでの利用を終了して渡す'), async () => { const n = D.dev.active.size; await D.handOver(); state.transferred = true; state.notice = t(`Stopped ${n} operations and released the right to change and the connection.`, `操作 ${n} 件を止め、変更権と通信を解放しました。`); }, 'primary', { id: 'hand-over' }) : null,
-      state.transferred ? note(t('This page\'s operations and connection are ended. Other tools can connect now.', 'このページでの操作と接続を終えました。ほかの道具から接続できます。')) : null)];
+      p(t('When another tool uses the same probe, end this page\'s connection to hand it over. Reading the docs needs no ending.', 'ほかの道具が同じプローブを使うときは、このページの接続を終えて渡します。資料を読むだけなら終える必要はありません。')),
+      connected() ? action(t('End here and hand it over', 'このページでの利用を終了して渡す'), async () => { await D.handOver(); state.transferred = true; state.notice = t('Released the right to change and the connection.', '変更権と通信を解放しました。'); }, 'primary', { id: 'hand-over' }) : null,
+      state.transferred ? note(t('This page\'s connection is ended. Other tools can connect now.', 'このページでの接続を終えました。ほかの道具から接続できます。')) : null)];
 }
 export { wireById };

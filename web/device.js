@@ -3,7 +3,6 @@
 // only the functions named for that do, and only when a button asks.
 import * as oep from './oep-client.js';
 import { connectionChange } from './connections.js';
-import { validateBindings } from './model.js';
 import { t } from './i18n.js';
 import { flashEsp, detectEsp } from './esp-flash.js';
 
@@ -25,10 +24,6 @@ export const dev = {
   changeable: false, saveable: false, /** @type {any[]} */ settingsRows: [], /** @type {any} */ settingsState: null, /** @type {any} */ network: null,
   /** settings applied but not saved by this page */ unsaved: false,
   epoch: 0, /** @type {any} */ keepalive: null, lost: '',
-  /** running operations: id -> { title, route, stop } (shown in the status bar, stoppable from any screen) */
-  /** @type {Map<string, {title:string, route:string, stop:()=>Promise<void>}>} */ active: new Map(),
-  /** @type {Map<number, any>} */ clients: new Map(), /** @type {Map<number, [number,number,number][]>} */ plans: new Map(),
-  /** @type {any} */ debug: null, /** @type {any} */ console: null,
 };
 const listeners = new Set();
 export function onChange(fn) { listeners.add(fn); }
@@ -103,10 +98,9 @@ export async function grantedUsbProbes() { return browser.usb ? await oep.getUsb
 /** Stop every running operation and close the link (the session ends first, so the lock is free for other tools). */
 export async function disconnect() {
   const h = dev.host;
-  await stopAll().catch(() => {});
   clearInterval(dev.keepalive); dev.keepalive = null;
-  Object.assign(dev, { host: null, info: null, caps: null, catalog: null, labels: [], ports: [], memo: null, memos: [], debug: null, console: null, settingsRows: [], settingsState: null, network: null });
-  dev.records.clear(); dev.connectors.clear(); dev.webRecords.clear(); dev.clients.clear(); dev.plans.clear(); dev.active.clear();
+  Object.assign(dev, { host: null, info: null, caps: null, catalog: null, labels: [], ports: [], memo: null, memos: [], settingsRows: [], settingsState: null, network: null });
+  dev.records.clear(); dev.connectors.clear(); dev.webRecords.clear();
   if (h) { try { if (h.session) await h.end(); } finally { await h.link.close().catch(() => {}); } }
   changed();
 }
@@ -125,20 +119,10 @@ export async function ensureSession() {
   }, 3000);
 }
 export async function releaseSession() {
-  await stopAll();
   clearInterval(dev.keepalive); dev.keepalive = null;
   if (dev.host?.session) await dev.host.end();
-  dev.clients.clear(); dev.plans.clear(); dev.debug = null; dev.console = null;
   changed();
 }
-/** The probe restarted or the session was lost since the operation began: its temporary state is gone. */
-export function checkEpoch() {
-  if (dev.host && dev.host.epoch !== dev.epoch) {
-    dev.clients.clear(); dev.plans.clear(); dev.debug = null; dev.console = null; dev.active.clear(); dev.epoch = dev.host.epoch;
-    throw new Error(t('The probe\'s state changed (a restart or lost right to change). Temporary assignments and connections have ended. Read it again, then start again.', 'プローブの状態が変わりました（再起動か変更権の喪失）。一時的な割当と接続は終わっています。読み直してから、もう一度開始してください。'));
-  }
-}
-
 // -- reading what the probe keeps --
 export async function refresh() {
   const st = new oep.settings.Settings(dev.host);
@@ -237,130 +221,26 @@ export async function deleteConnection(port) {
   } finally { await refresh(); changed(); }
 }
 
-// -- debug wires: one connection check (I02/W03) and the debug operation (W04) --
+// -- debug wires: the connection check (I02/W03) --
 export const wireOffer = (wire) => offered(WIRES[wire])[0] ?? null;
-function wireClient(offer) {
-  return offer.entry.name === WIRES.swd ? new oep.arm.SwdWire(dev.host, offer.entry.fn, offer.entry.name) : new oep.riscv.Wire(dev.host, offer.entry.fn, offer.entry.name);
-}
-/** RP2040's multi-drop SWD: core 0 (TARGETSEL, ADIv5.2). Tried when a plain SWD attach gets no answer. */
-const RP2040_CORE0 = 0x01002927;
-async function attachWire(offer, { dio, clk, nrst = null, maxSpeed = null, halt = false, reset = false }) {
-  const client = wireClient(offer);
-  /** @type {[number, number]} */
-  const pins = [+dio, offer.entry.name === WIRES.swio ? 65535 : +clk];
-  const opts = { pins, maxSpeed: maxSpeed ? +maxSpeed : null, ...(reset && nrst !== null && nrst !== '' ? { reset: /** @type {[number, number]} */ ([+nrst, 20]) } : {}) };
-  if (offer.entry.name === WIRES.swd) {
-    try { const r = await client.attach(opts); return { client, conn: r.conn, id: `DPIDR 0x${(r.dpidr >>> 0).toString(16).padStart(8, '0')}`, arm: true, pins }; }
-    catch (first) {
-      try { const r = await client.attach({ ...opts, targetsel: RP2040_CORE0 }); return { client, conn: r.conn, id: t(`DPIDR 0x${(r.dpidr >>> 0).toString(16).padStart(8, '0')} (RP2040 core 0, multi-drop)`, `DPIDR 0x${(r.dpidr >>> 0).toString(16).padStart(8, '0')}（RP2040 コア0、multi-drop）`), arm: true, pins, targetsel: RP2040_CORE0 }; }
-      catch { throw first; }
-    }
-  }
-  const r = await client.attach({ ...opts, halt });
-  return { client, conn: r.conn, id: `dmstatus 0x${(r.dmstatus >>> 0).toString(16).padStart(8, '0')}`, arm: false, pins };
-}
-/** Attach once, report what answered, detach (§5.2): the result is shown, never saved as wiring. */
-export async function checkDebug(wire, pins) {
+/** Attach once on the pins, show what answered, detach (§5.2): the result is shown, never saved as wiring. An SWD
+ * attach that gets no answer is tried once more as RP2040's multidrop core 0. */
+export async function checkDebug(wire, { dio, clk }) {
   const offer = wireOffer(wire);
   if (!offer) throw new Error(t('This probe does not have this debug method.', 'このプローブはこのデバッグ方式を持っていません。'));
-  if (dev.debug) throw new Error(t('A debug operation is connected to the target. Detach it first.', 'デバッグ操作でターゲットに接続中です。先に切り離してください。'));
   await ensureSession();
   try {
-    const a = await attachWire(offer, pins);
-    await a.client.detach(a.conn).catch(() => {});
-    return { ok: true, id: a.id };
+    const w = new oep.wire.Wire(dev.host, offer.entry.fn, offer.entry.name);
+    /** @type {[number, number]} */
+    const pins = [+dio, wire === 'swio' ? 0xffff : +clk];
+    const r = await w.check({ pins });
+    const id = `${wire === 'swd' ? 'DPIDR' : 'dmstatus'} 0x${(r.id >>> 0).toString(16).padStart(8, '0')}`;
+    return { ok: true, id: r.rp2040Core0 ? t(`${id} (RP2040 core 0, multi-drop)`, `${id}（RP2040 core 0、multi-drop）`) : id };
   } catch (error) {
     if (error instanceof oep.TransportFailed || error instanceof oep.Locked || error instanceof oep.NoSession) throw error;
     return { ok: false, id: '', reason: errorText(error) };
   }
 }
-/** Scan declared candidate pairs among `pins` (A42): results are candidates for the editor, not saved. */
-export async function scanDebug(wire, pins) {
-  const offer = wireOffer(wire);
-  if (!offer || !supports(offer, oep.riscv.WireBase.SCAN)) throw new Error(t('This probe cannot search for this method. Name the pins and register them.', 'このプローブは、この方式の自動検索を持っていません。ピンを明示して登録してください。'));
-  await ensureSession();
-  const client = wireClient(offer);
-  const chosen = new Set(pins.map(Number));
-  const pairs = (await client.candidatePairs()).filter(([a, b]) => chosen.has(a) && (b === 65535 || chosen.has(b)));
-  if (!pairs.length) throw new Error(t('The chosen pins are not declared as candidates for this method.', '選んだピンの組は、この方式の候補として宣言されていません。'));
-  const found = await client.scan(pairs);
-  return { tried: pairs.length, found: found.map((f) => ({ dio: f.pins[0], clk: f.pins[1] === 65535 ? '' : f.pins[1], id: `dmstatus 0x${(f.dmstatus >>> 0).toString(16).padStart(8, '0')}` })) };
-}
-export const scanOffered = (wire) => { const o = wireOffer(wire); return !!o && supports(o, oep.riscv.WireBase.SCAN); };
-export async function attachDebug(wire, pins) {
-  const offer = wireOffer(wire);
-  if (!offer) throw new Error(t('This probe does not have this debug method.', 'このプローブはこのデバッグ方式を持っていません。'));
-  if (dev.debug) throw new Error(t('Already connected to the target.', 'すでにターゲットに接続しています。'));
-  await ensureSession();
-  const a = await attachWire(offer, pins);
-  dev.debug = { ...a, wire, offer, target: null, mem: null, cpu: null, mechanisms: [] };
-  if (!a.arm && offered('oep.target.console').length) {
-    try { dev.debug.mechanisms = await (await oep.targetConsole.Console.open(dev.host)).mechanisms(); } catch { dev.debug.mechanisms = []; }
-  }
-  dev.active.set('debug', { title: t(`Debug (${wire.toUpperCase()})`, `デバッグ（${wire.toUpperCase()}）`), route: '/operate/debug', stop: detachDebug });
-  changed();
-  return a.id;
-}
-export async function detachDebug() {
-  const d = dev.debug;
-  if (!d) return;
-  try { if (dev.console) await closeConsole().catch(() => {}); await d.client.detach(d.conn); }
-  finally { dev.debug = null; dev.active.delete('debug'); changed(); }
-}
-async function debugTarget() {
-  const d = dev.debug;
-  if (!d) throw new Error(t('Connect to the target first.', '先にターゲットに接続してください。'));
-  checkEpoch();
-  if (!d.target) {
-    if (d.arm) { d.target = await oep.arm.ArmAdi.on(dev.host, d.conn, {}); await d.target.powerUp(); d.mem = await oep.arm.MemAp.open(d.target, 0); d.cpu = new oep.arm.CortexM(d.mem, 0, 0); }
-    else d.target = await oep.riscv.RiscvDm.on(dev.host, d.conn);
-  }
-  return d;
-}
-export const debugTargetOffered = () => !!dev.debug && offered(dev.debug.arm ? 'oep.target.arm-adi' : 'oep.target.riscv-dm').length > 0;
-export async function debugControl(method) {
-  const d = await debugTarget();
-  const m = d.arm ? { halt: 'halt', resume: 'resume', reset: 'sysReset', step: 'step' }[method] : method;
-  const out = await (d.arm ? d.cpu : d.target)[m]();
-  return out ?? 'OK';
-}
-export async function debugRead(address, words) { const d = await debugTarget(); return (d.arm ? d.mem : d.target).readBlock(address, words); }
-export async function debugWrite(address, value) { const d = await debugTarget(); await (d.arm ? d.mem : d.target).write32(address, value); }
-export async function debugRegister(n) { const d = await debugTarget(); return d.arm ? d.cpu.reg(n) : d.target.readRegister(n); }
-export async function openConsole(mechanism) {
-  if (!dev.debug) throw new Error(t('Connect to the target first.', '先にターゲットに接続してください。'));
-  const c = await oep.targetConsole.Console.open(dev.host); await c.open(dev.debug.conn, mechanism);
-  dev.console = { source: c, io: new oep.targetConsole.ConsoleIO(c), mechanism };
-  dev.active.set('console', { title: t(`Debug-wire log (${mechanism})`, `デバッグ線のログ（${mechanism}）`), route: '/operate/console', stop: closeConsole });
-  changed();
-}
-export async function closeConsole() { try { if (dev.console) await dev.console.source.close(); } finally { dev.console = null; dev.active.delete('console'); changed(); } }
-export async function consoleRead() { return dev.console.io.readAll(65536); }
-export async function consoleWrite(text) { await dev.console.io.write(new TextEncoder().encode(text)); }
-
-// -- fixture functions (W04) --
-/** Assign pins for one function and keep it until stopped (§7.1: start = lock, pins, conditions, in that order). */
-export async function startFunction(id, tool, offer, bindings, title) {
-  await ensureSession();
-  validateBindings(offer.description.roles, offer.description.groups, bindings);
-  /** @type {[number, number, number][]} */
-  const assignments = bindings.map(([role, ch]) => [offer.entry.fn, role, ch]);
-  await oep.core.planApply(dev.host, assignments);
-  dev.plans.set(offer.entry.fn, assignments);
-  dev.active.set(id, { title, route: `/operate/${id}`, stop: () => stopFunction(id, offer) });
-  changed();
-}
-export async function functionClient(tool, offer) {
-  checkEpoch();
-  if (!dev.clients.has(offer.entry.fn)) dev.clients.set(offer.entry.fn, await tool.Class.open(dev.host, { fn: offer.entry.fn }));
-  return dev.clients.get(offer.entry.fn);
-}
-export async function stopFunction(id, offer) {
-  try { if (dev.host?.session && dev.plans.has(offer.entry.fn)) await oep.core.planRelease(dev.host, [offer.entry.fn]); }
-  finally { dev.plans.delete(offer.entry.fn); dev.clients.delete(offer.entry.fn); dev.active.delete(id); changed(); }
-}
-export async function stopActive(id) { const a = dev.active.get(id); if (a) await a.stop(); }
-export async function stopAll() { for (const id of [...dev.active.keys()].reverse()) await stopActive(id).catch(() => dev.active.delete(id)); }
 
 // -- settings (W05) --
 const st = () => new oep.settings.Settings(dev.host);
@@ -390,7 +270,6 @@ export async function saveAndRestart() {
   await st().save();
   dev.unsaved = false;
   const h = dev.host;
-  await stopAll().catch(() => {});
   await h.requestRestart();
   await disconnect().catch(() => {});
 }
@@ -430,8 +309,6 @@ export async function memoDelete(name) { await ensureSession(); await deleteMemo
 export async function rereadDeclarations() { dev.caps = await oep.dump.collect(dev.host); changed(); }
 export const declarationsText = () => oep.dump.toText(dev.caps);
 export const declarationsJson = () => oep.dump.toJson(dev.caps);
-export async function speedTest(rates) { await ensureSession(); return oep.speedText(await oep.raiseSpeed(dev.host, rates)); }
-export const serialLink = () => ['serial', 'webserial'].includes(dev.host?.link.transport.kind);
 
 /** End this page's use and leave the probe free for another tool (§7.4). */
 export async function handOver() { await disconnect(); }

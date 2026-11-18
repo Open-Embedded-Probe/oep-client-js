@@ -2,8 +2,7 @@
 // The host side of the rules added since the 2026-10-02 rule changes (oep-spec b4b08f1, 40291a4, 2e70f40, 73a0c37):
 // confirm's bounds (C-20), max_op_ms's ceiling (C-47), the transfer time before the first confirm answer (N-1),
 // the boot_id under no resume (C-19), short answers and wrong-direction roles (C-36),
-// an unanswered resend fails the transport (C-38), the last page's storage (PC-9), the optional ops (C-21),
-// cs_setup_ns and i2c-target's reserved addresses. Mirrors oep-client-python's tests/test_host_rules_2026_10_06.py.
+// an unanswered resend fails the transport (C-38), the last page's storage (PC-9) and cs_setup_ns in dump. Mirrors oep-client-python's tests/test_host_rules_2026_10_06.py.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as reg from '../src/registry.js';
@@ -17,8 +16,6 @@ import { Host, MAX_OP_MS_MAX, checkConfirm, checkMaxOpMs } from '../src/host.js'
 import { Link } from '../src/link.js';
 import { connect } from '../src/open.js';
 import * as core from '../src/core.js';
-import { RiscvDm, Wire } from '../src/riscv.js';
-import { I2cTarget, SpiTarget } from '../src/fixture.js';
 import { openTcp } from '../src/node/index.js';
 import { haveVirtualBench, startVirtualBench } from './virtual-bench.js';
 
@@ -308,40 +305,8 @@ test('settings state: storage_state saved_generation reason, one answer (core §
   assert.equal(i, 2);
 });
 
-// ---- C-21: the optional ops are used when declared -------------------------------------------------------------------
+// ---- dump: cs_setup_ns shown ----------------------------------------------------------------------------------------
 
-test('C-21: riscv-dm says which optional ops the probe offers (its ops tag)', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
-  await hst.open(10000);
-  const wire = await Wire.open(hst, { name: 'oep.wire.swio' });
-  const { conn } = await wire.attach({ halt: true });
-  const dm = await RiscvDm.on(hst, conn);
-  assert.deepEqual([...(await dm.declared())].sort(), ['block', 'halt', 'reset', 'resume', 'run']);   // halt / resume optional too (debug §4)
-  await assert.rejects(dm.step(), (e) => e instanceof Rejected && e.reason === m.REJECT.unknown_operation);
-  assert.equal(await dm.offers(RiscvDm.STEP), false);
-  await assert.rejects(core.require(hst, dm.fn, RiscvDm.STEP),   // the same Rejected, nothing sent
-    (e) => e instanceof Rejected && e.constructor === Rejected && e.reason === m.REJECT.unknown_operation);
-  await hst.end();
-}));
-
-// ---- fixture: cs_setup_ns shown; i2c-target's reserved addresses ------------------------------------------------------
-
-test('cs_setup_ns is read and shown', { skip: !haveVirtualBench }, async () => {
-  await withBench(['--profile', 'esp32-v003'], async (hst) => {
-    const spi = await SpiTarget.open(hst);
-    assert.equal(await spi.csSetupNs(), 4000);
-    assert.equal((await spi.declarations()).csSetupNs, 4000);
-    assert.ok(dump.toText(await dump.collect(hst)).includes('CS setup ns: 4000'));
-  });
-  await withBench(['--profile', 'p4-x035'], async (hst) => {
-    assert.equal(await (await SpiTarget.open(hst)).csSetupNs(), 0);
-  });
-});
-
-test('i2c-target refuses a reserved address before sending', { skip: !haveVirtualBench }, () => withBench(['--profile', 'p4-x035'], async (hst) => {
-  const i2c = await I2cTarget.open(hst);
-  let sent = 0;
-  const send = hst.link.send.bind(hst.link);
-  hst.link.send = (b, o) => { sent++; return send(b, o); };
-  for (const address of [0x00, 0x07, 0x78, 0x7f]) await assert.rejects(i2c.configure(address), RangeError);
-  assert.equal(sent, 0);
+test('dump shows spi-target\'s cs_setup_ns', { skip: !haveVirtualBench }, () => withBench(['--profile', 'esp32-v003'], async (hst) => {
+  assert.ok(dump.toText(await dump.collect(hst)).includes('CS setup ns: 4000'));
 }));

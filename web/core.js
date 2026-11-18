@@ -11,11 +11,7 @@ export const state = {
   install: null,
   /** the wiring editor's draft (W03) */
   draft: null, dirty: false, returnTo: '/connections',
-  /** inputs of the operation screens, by operation id (kept, never re-run) */
-  operations: {},
-  /** debug scan inputs and the result chosen for the editor */
-  debugScan: null, scanSelection: null,
-  capture: null, passthrough: null, settingsDraft: {}, maintenance: {},
+  passthrough: null, settingsDraft: {}, maintenance: {},
   notice: '', busy: false, transferred: false,
 };
 
