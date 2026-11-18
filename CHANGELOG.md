@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Making a probe: the whole board card is the choice and goes straight on to preparing that board; the separate "Next" button at the bottom is gone.
+- (JA) プローブを作る: ボードのカード全体が選択で、そのままそのボードの準備へ進む。下にあった別の「次へ」のボタンは無くした。
+
 - (EN) Installing on an ESP32 now resets the chip into its new firmware: esptool-js 0.7.1's after('hard_reset') only releases RTS and never asserts it, so the chip stayed in the flasher stub and the probe did not answer until the board was replugged. The page pulses RTS itself (esptool's hard reset: IO0 released, EN low for 100 ms), after the write and after reading the chip. The wiring editor puts the name and the target first, always shows the target pin names, and brings a signal just added into view.
 - (JA) ESP32 への導入で、書き込みの後にチップを新しいファームで起動し直すようにした。esptool-js 0.7.1 の after('hard_reset') は RTS を放すだけで立てないため、チップは書き込み用のスタブのまま残り、ボードを挿し直すまでプローブが応答しなかった。ページが自分で RTS を立てて放す（esptool の hard reset: IO0 は放し、EN を 100 ms Low）。書き込みの後とチップを読んだ後の両方で。配線の編集は名前と相手の情報を先頭にし、相手側のピン名を常に見せ、追加した信号を見える位置へ動かす。
 

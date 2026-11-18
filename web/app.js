@@ -51,14 +51,18 @@ function boardStatus(b) {
   const verified = specs.map((s) => s.verified === true ? t('checked on hardware', '実機で確認') : s.verified === false ? t('not checked on hardware', '実機は未確認') : tr(s.verified));
   return [released ? t('Released firmware', '配布firmwareあり') : t('No released firmware (build it yourself)', '配布firmwareなし（自分でビルド）'), b.installable ? (b.custom ? t('Install here (bring an image)', 'このページで導入（イメージを持ち込む）') : t('Install here', 'このページで新規導入')) : t('Not installed from this page', 'このページでの新規導入は対象外'), t(`Checked: ${[...new Set(verified)].join(' / ')}`, `検証: ${[...new Set(verified)].join(' / ')}`)];
 }
-function boardCard(b, select = false, compact = false) {
-  return el('section', { class: `board-card${b.recommended ? ' recommended' : ''}${select && state.install?.board === b.id ? ' selected' : ''}` },
+/** A board's card on the make screen: the whole card chooses the board and goes on to preparing it (page.ja.md §4). */
+function boardCard(b) {
+  const choose = () => { if (b.installable) { newInstall(b.id); go('/make/prepare'); } else { state.connectReturn = '/probe'; go('/connect'); } };
+  return el('section', { class: `board-card pickable${b.recommended ? ' recommended' : ''}`, role: 'button', tabindex: 0, 'data-board': b.id,
+    'aria-label': b.installable ? t(`Make a probe from ${b.name}`, `${b.name}をプローブにする`) : t(`${b.name}: connect an installed probe`, `${b.name}: 導入済みのプローブにつなぐ`),
+    onclick: (/** @type {MouseEvent} */ e) => { if (!(/** @type {Element} */ (e.target)).closest('a')) choose(); },
+    onkeydown: (/** @type {KeyboardEvent} */ e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); } } },
     el('div', { class: 'board-meta' }, el('span', { class: 'chip-mark' }, b.code), badge(b.tag, b.installable ? '' : 'amber')),
-    el('h3', {}, b.name), p(b.title), !compact ? p(b.description) : null,
+    el('h3', {}, b.name), p(b.title), p(b.description),
     el('ul', {}, ...b.features.map((f) => el('li', {}, f))),
-    !compact ? el('ul', { class: 'muted' }, ...boardStatus(b).map((tk) => el('li', {}, tk))) : null, !compact ? p(b.note, 'compact') : null,
-    actions(select ? button(state.install?.board === b.id ? t('Selected ✓', '選択中 ✓') : t('Choose this board', 'このボードを選ぶ'), () => { newInstall(b.id); render(); }, state.install?.board === b.id ? 'primary' : '', { disabled: !b.installable, 'data-board': b.id })
-      : button(b.installable ? t('Start with this board →', 'このボードで始める →') : t('Use an installed device', '導入済みの機器を使う'), () => { if (b.installable) { newInstall(b.id); go('/make/prepare'); } else { state.connectReturn = '/probe'; go('/connect'); } }, '', { 'data-board': b.id })));
+    el('ul', { class: 'muted' }, ...boardStatus(b).map((tk) => el('li', {}, tk))), p(b.note, 'compact'),
+    el('span', { class: 'card-go' }, b.installable ? t('Make a probe from this board →', 'このボードでプローブを作る →') : t('Installed already: connect →', '導入済み: つなぐ →')));
 }
 
 // -- probe creation (I01) --
@@ -87,12 +91,12 @@ function installModel(tk) {
 function install(view, query) {
   if (view === 'select') {
     if (!state.install || state.install.phase === 'done') newInstall('p4');
-    return installFrame(0, [heading(t('Which board will be the probe?', 'どのボードをプローブにしますか。'), t('Choose by how it installs and what it offers. To use an installed probe, you do not need this.', '導入方法と特徴を見て選んでください。導入済みのプローブを使うときは、この選択は不要です。'), 'CREATE A PROBE'),
+    return installFrame(0, [heading(t('Which board will be the probe?', 'どのボードをプローブにしますか。'), t('Click the board you have. To use an installed probe, connect it instead.', '手元のボードをクリックしてください。導入済みのプローブなら、つなぐだけで使えます。'), 'CREATE A PROBE'),
       note(t('If you are getting a board, the ESP32-P4 is recommended. It covers debug, UART pass-through, logic capture and more.', 'これから用意するならESP32-P4を推奨します。デバッグ・UARTの素通し・ロジック観測など、幅広い用途に使えます。')),
-      el('div', { class: 'two-grid' }, ...BOARDS.map((b) => boardCard(b, true))),
+      el('div', { class: 'two-grid' }, ...BOARDS.map((b) => boardCard(b))),
       el('details', { class: 'panel mt' }, el('summary', {}, t('Features by board', 'ボードごとの機能')), p(t('What the released firmware offers. What a probe really offers is read from its declarations after connecting.', '配布ファームの機能です。実際に使える機能は、接続後にプローブの宣言で確かめます。'), 'muted'),
         el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, t('Feature', '機能')), ...SPECS.map((x) => el('th', {}, tr(x.name))))),
-          el('tbody', {}, ...FEATURES.flatMap((g) => g.items.map((/** @type {any} */ [key, label]) => el('tr', {}, el('td', {}, tr(label)), ...SPECS.map((x) => el('td', {}, x.features[key] === true ? t('yes', 'あり') : x.features[key] === false ? '—' : tr(x.features[key])))))))))), actions(link(t('Next with this board →', '選んだボードで次へ →'), '/make/prepare', true), link(t('Use an installed probe', '導入済みのプローブを使う'), '/connect'))]);
+          el('tbody', {}, ...FEATURES.flatMap((g) => g.items.map((/** @type {any} */ [key, label]) => el('tr', {}, el('td', {}, tr(label)), ...SPECS.map((x) => el('td', {}, x.features[key] === true ? t('yes', 'あり') : x.features[key] === false ? '—' : tr(x.features[key])))))))))), actions(link(t('Use an installed probe', '導入済みのプローブを使う'), '/connect'))]);
   }
   if (!state.install) { newInstall('p4'); }
   const ins = state.install, b = BOARDS.find((x) => x.id === ins.board) ?? BOARDS[0];

@@ -81,6 +81,9 @@ li{margin:6px 0}
 .task-card .card-end{margin-top:auto;color:var(--green);font-size:.85rem;font-weight:650}
 .arrow{margin-left:auto}
 .board-card{display:flex;flex-direction:column;align-items:flex-start;padding:27px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;text-align:left;width:100%;position:relative}
+.board-card.pickable{cursor:pointer;transition:border-color .15s,transform .15s}
+.board-card.pickable:hover,.board-card.pickable:focus-visible{border-color:var(--green);transform:translateY(-2px)}
+.card-go{margin-top:auto;color:var(--green);font-weight:650;font-size:.9rem}
 .board-card.selected{border:2px solid var(--green);padding:26px;background:#f0f8f4}
 .board-card h3{font-size:1.25rem;margin:16px 0 8px}
 .board-card p,.board-card li{color:var(--muted);font-size:.88rem}

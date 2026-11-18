@@ -181,7 +181,7 @@ try {
   }
   // I01: install a classic ESP32 over serial; detection, write, the same port reopened, then I02 (A04).
   await evaluate('Object.defineProperty(navigator.serial,"requestPort",{configurable:true,value:async()=>({testPort:true})})');
-  await go('/make'); await tap('[data-board=esp32]'); await follow('選んだボードで次へ →');
+  await go('/make'); await tap('[data-board=esp32]'); assert.equal(await evaluate('location.hash'), '#/make/prepare', 'the whole card goes on');
   assert.match(await h1(), /ESP32を用意する/);
   await press('書き込み先を選ぶ'); assert.match(await text(), /ESP32 — 選択済み/);
   await follow('内容を確認する →'); assert.match(await text(), /test-esp32\.merged\.bin/);
@@ -203,7 +203,7 @@ try {
   // may open taken without another chooser (A07).
   await evaluate(`{const boot={vendorId:0x2e8a,productId:0x0003,serialNumber:'boot'};Object.defineProperty(navigator.usb,'requestDevice',{configurable:true,value:async()=>boot});Object.defineProperty(navigator.usb,'getDevices',{configurable:true,value:async()=>globalThis.__resetToBoot?[boot]:[]});}`);
   await evaluate('globalThis.__model="rp2040"');
-  await go('/make'); await tap('[data-board=pico]'); await follow('選んだボードで次へ →');
+  await go('/make'); await tap('[data-board=pico]');
   await press('書き込み先を選ぶ'); assert.match(await text(), /RP2040 — 選択済み/);
   await follow('内容を確認する →'); assert.match(await text(), /test-pico\.uf2/);
   await click('このボードにOEPを導入'); await until('location.hash==="#/probe"', 20000); await ok('pico install');
