@@ -23,7 +23,7 @@ export const dev = {
   /** @type {any} */ memo: null, /** @type {any[]} */ memos: [],
   changeable: false, saveable: false, /** @type {any[]} */ settingsRows: [], /** @type {any} */ settingsState: null, /** @type {any} */ network: null,
   /** settings applied but not saved by this page */ unsaved: false,
-  epoch: 0, /** @type {any} */ keepalive: null, lost: '',
+  epoch: 0, /** @type {any} */ keepalive: null, lost: '', /** @type {{ unit: string, sid: number, corr: number } | null} the session a closed transport left on the probe */ lostSession: null,
 };
 const listeners = new Set();
 export function onChange(fn) { listeners.add(fn); }
@@ -77,8 +77,14 @@ export async function connectWith(open, expected = null) {
     const [info, caps] = await Promise.all([oep.core.probeInfo(h), oep.dump.collect(h)]);
     if (!info.unitId) throw new Error(t('This probe does not declare a unit ID.', 'このプローブは個体IDを宣言していません。'));
     if (expected?.unitId && info.unitId.toLowerCase() !== expected.unitId.toLowerCase()) throw new Error(t('This is not the unit that was written. Choose the board you wrote.', '書き込んだ個体とは別のプローブです。書き込んだボードを選んでください。'));
+    const left = dev.lostSession;
+    if (left && left.unit.toLowerCase() === info.unitId.toLowerCase()) {
+      dev.lostSession = null;
+      try { await h.endPrevious(left.sid, OWNER, { corr: left.corr }); } catch { /* gone with the lease anyway */ }
+    }
     if (expected?.models?.length && !expected.models.includes(info.model)) throw new Error(t(`The written board (${expected.models.join(' / ')}) and the connected device (${info.model}) do not match.`, `書き込んだボード（${expected.models.join(' / ')}）と、接続した機器（${info.model}）が一致しません。`));
     Object.assign(dev, { host: h, info, caps, epoch: h.epoch, lost: '', unsaved: false });
+    h.link.closeListeners.add((/** @type {unknown} */ e) => { if (dev.host === h) lostConnection(h, e); });
     await refresh();
     remember();
     changed();
@@ -93,6 +99,22 @@ export const openUsb = (device, unitId) => () => oep.openWebUsb(device, { unitId
 export const openSerial = (port) => () => oep.openWebSerial(port, { keepSession: false });
 export const openHid = () => () => oep.openWebHid(undefined, { keepSession: false });
 export async function grantedUsbProbes() { return browser.usb ? await oep.getUsbProbes() : []; }
+
+/** The transport ended by itself (the cable pulled, the probe reset or gone): the page forgets the probe and says why;
+ * nothing is sent again. Connecting again reads everything afresh (page.ja.md §6.1). @param {unknown} error */
+function lostConnection(h, error) {
+  const unit = dev.info?.unitId ?? '';
+  // the probe keeps a session whose transport closed until its lease runs out (transports §3): the next connection to
+  // this unit ends it first, so the page is not locked out by itself
+  dev.lostSession = h.session !== null ? { unit, sid: h.session, corr: h.corr } : null;
+  clearInterval(dev.keepalive); dev.keepalive = null;
+  Object.assign(dev, { host: null, info: null, caps: null, catalog: null, labels: [], ports: [], memo: null, memos: [], settingsRows: [], settingsState: null, network: null, unsaved: false });
+  dev.records.clear(); dev.connectors.clear(); dev.webRecords.clear();
+  const why = error instanceof Error && error.message ? error.message : t('the transport closed', '経路が閉じました');
+  dev.lost = t(`The connection to ${unit} ended (${why}). Was the cable pulled or the probe reset? Connect again: everything is read afresh, and nothing is sent again by itself. Settings applied but not saved are gone if the probe lost power.`,
+    `${unit} との接続が切れました（${why}）。ケーブルが抜けたか、プローブがリセットされた可能性があります。もう一度つなぐと、すべて読み直します。自動で送り直すものはありません。保存していない設定は、プローブの電源が切れていれば消えています。`);
+  changed();
+}
 
 /** Stop every running operation and close the link (the session ends first, so the lock is free for other tools). */
 export async function disconnect() {
@@ -114,7 +136,7 @@ export async function ensureSession() {
   clearInterval(dev.keepalive);
   dev.keepalive = setInterval(async () => {
     if (dev.host !== h || !h.session) return;
-    try { await h.keepalive(); } catch (e) { dev.lost = errorText(e); await disconnect().catch(() => {}); }
+    try { await h.keepalive(); } catch (e) { if (dev.host !== h) return; lostConnection(h, e); await h.link.close().catch(() => {}); }
   }, 3000);
 }
 export async function releaseSession() {

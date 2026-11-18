@@ -175,12 +175,18 @@ function connectScreen() {
     usbKnown.length ? panel(el('h2', {}, t('Probes allowed in this browser', 'このブラウザで許可済みのプローブ')), el('div', { class: 'stack' }, ...usbKnown.map(({ d, k }) => el('div', { class: 'connection-card' },
       el('header', {}, el('div', {}, el('h3', {}, d.productName ?? 'OEP probe'), p(t(`Unit ID ${d.serialNumber ?? '—'}${k ? ` · ${k.model}` : ''}`, `個体ID ${d.serialNumber ?? '—'}${k ? ` · ${k.model}` : ''}`), 'muted mb0'))),
       actions(action(t('Connect to this unit', 'この個体に接続'), () => done(D.openUsb(d, d.serialNumber && !String(d.serialNumber).toLowerCase().startsWith('x-') ? d.serialNumber : undefined)), 'primary', { 'data-unit': d.serialNumber })))))) : null,
-    el('div', { class: 'two-grid mt' }, panel(el('h2', {}, t('Choose a device in the browser', 'ブラウザから機器を選ぶ')), p(t('Connect the probe with a USB cable and choose the unit from the list. A classic ESP32 or P4 works on the serial port used for writing.', 'USBケーブルでプローブをつなぎ、一覧から使う個体を選びます。classic ESP32やP4は、書き込みに使ったシリアルポートのままで使えます。')),
-      actions(action(t('Choose a device and connect', '機器を選んで接続'), () => done(D.openSerial()), 'primary', { id: 'connect-serial', disabled: !D.browser.serial }), action(t('Choose from OEP USB devices', 'OEPのUSB端子から選ぶ'), () => done(D.openUsb()), '', { id: 'connect-usb', disabled: !D.browser.usb }))),
-      panel(el('h2', {}, t('If OEP is not installed yet', 'まだOEPを導入していない場合')), p(t('First put the OEP firmware on the board. After writing, you can go straight on to the setup.', '先に、ボードへOEPのファームウェアを入れます。書き込みのあと、そのまま設定を続けられます。')), actions(link(t('Make a board a probe', 'ボードをプローブにする'), state.intent ? `/make/select?purpose=${state.intent}` : '/make')))),
+    el('section', { class: 'mt' }, el('h2', {}, t('Choose how the probe is plugged in', 'プローブの口を選んで、ブラウザの一覧から選ぶ')),
+      p(t('A probe can offer OEP on several USB paths; any one of them reaches the same unit. Use the one your board has.', 'プローブは複数のUSBの口でOEPを出せます。どの口からでも同じ個体につながります。ボードにある口を使ってください。'), 'muted'),
+      el('div', { class: 'three-grid' },
+        panel(el('h3', {}, t('USB serial', 'USBシリアル')), p(t('A serial port: a USB-UART bridge or the chip\'s own USB serial (CDC). The classic ESP32, and the P4\'s port used for writing.', 'シリアルポート。USB-UART変換か、チップ自身のUSBシリアル（CDC）。classic ESP32と、P4の書き込みに使った口。'), 'muted'),
+          action(t('Choose a serial port', 'シリアルポートを選ぶ'), () => done(D.openSerial()), 'primary', { id: 'connect-serial', disabled: !D.browser.serial })),
+        panel(el('h3', {}, t('USB (OEP device)', 'USB（OEPの機器）')), p(t('The probe\'s own USB device (WebUSB, vendor bulk). The Pico, a P4\'s native USB, CH32 and others not in the serial list.', 'プローブ自身のUSB機器（WebUSB、vendor bulk）。Pico、P4のnative USB、CH32など、シリアルの一覧に出ないもの。'), 'muted'),
+          action(t('Choose an OEP USB device', 'OEPのUSB機器を選ぶ'), () => done(D.openUsb()), '', { id: 'connect-usb', disabled: !D.browser.usb })),
+        panel(el('h3', {}, t('USB HID', 'USB HID')), p(t('The same OEP USB device through the OS\'s HID driver (WebHID). For when the USB device above cannot be opened, as on Windows without a driver for it.', '同じOEPのUSB機器を、OSのHIDドライバ越しに使います（WebHID）。上のUSB機器を開けないとき（ドライバの無いWindowsなど）に。'), 'muted'),
+          action(t('Choose an OEP HID device', 'OEPのHID機器を選ぶ'), () => done(D.openHid()), '', { id: 'connect-hid', disabled: !D.browser.hid })))),
     el('details', { class: 'panel mt' }, el('summary', {}, t('If the device is not in the list', '一覧に機器が見つからないとき')),
-      p(t('Check that the cable carries data, that the device has booted, and that no other app holds the port. Probes not in the serial list (Pico, CH32, P4 native USB and so on) use "Choose from OEP USB devices". Try HID only when plain USB does not work.', 'データ通信できるケーブルか、機器が起動しているか、ほかのアプリがポートを使っていないかを確かめます。シリアルの一覧に出ないプローブ（Pico、CH32、P4のnative USBなど）は「OEPのUSB端子から選ぶ」を使います。通常のUSBが使えない場合だけHIDを試します。'), 'mt'),
-      actions(action(t('Try connecting over HID', 'HIDで接続を試す'), () => done(D.openHid()), '', { disabled: !D.browser.hid }))));
+      p(t('Check that the cable carries data, that the device has booted, and that no other app holds the port. A probe without OEP yet needs it installed first.', 'データ通信できるケーブルか、機器が起動しているか、ほかのアプリがその口を使っていないかを確かめます。まだOEPを入れていないボードは、先に導入します。'), 'mt'),
+      actions(link(t('Make a board a probe', 'ボードをプローブにする'), '/make'))));
 }
 function notFound() { return el('div', { class: 'page' }, heading(t('This screen does not exist.', 'この画面は見つかりません。'), t('Start again from the start page.', 'スタートからやり直してください。')), link(t('To the start', 'スタートへ'), '/', true)); }
 

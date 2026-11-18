@@ -168,6 +168,8 @@ export class Link {
     this.confirmBody = () => OWN_CONFIRM;
     /** @type {() => Promise<void> | void} run as the link closes (bound by Host: the kept session's place goes back) */
     this.beforeClose = () => {};
+    /** @type {Set<(error?: unknown) => void>} told when the transport ends by itself (unplugged, a read error), not by close() */
+    this.closeListeners = new Set();
   }
 
   /** Begin reading (once). */
@@ -200,8 +202,10 @@ export class Link {
 
   /** @param {unknown} error */
   onClose(error) {
+    const byItself = !this.closed;
     this.closed = true;
     this.closeError = error;
+    if (byItself) for (const l of this.closeListeners) { try { l(error); } catch { /* a listener's own trouble */ } }
     for (const [corr, p] of this.pending) {
       clearTimeout(p.timer);
       p.reject(error instanceof Error ? error : new Error('the transport closed'));

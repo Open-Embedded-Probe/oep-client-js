@@ -88,7 +88,7 @@ export function editor(id, query) {
 function groupEditor(g, index, d, touch) {
   const pinField = (line, label, optional) => {
     const choices = candidatesFor(g, line).map(([ch, name]) => [String(ch), `${name}${labelOf(ch, d) ? ` · ${labelOf(ch, d)}` : ''}`]);
-    return field(label, g.pins[line] ?? '', (v) => { g.pins[line] = v; touch(); }, '', [['', optional ? t('Not connected', '接続しない') : t('Choose a pin', 'ピンを選ぶ')], ...choices], 'text', { 'data-line': `${index}-${line}` });
+    return field(label, g.pins[line] ?? '', (v) => { g.pins[line] = v; touch(); if (g.type === 'debug') render(); }, '', [['', optional ? t('Not connected', '接続しない') : t('Choose a pin', 'ピンを選ぶ')], ...choices], 'text', { 'data-line': `${index}-${line}` });
   };
   const lines = linesOf(g);
   return el('section', { class: 'wire-group', 'data-group': g.type },

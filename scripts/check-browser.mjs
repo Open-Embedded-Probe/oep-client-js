@@ -97,7 +97,7 @@ try {
             globalThis.__selectedProbe=device?.serialNumber??null;
             await fetch('/_test/open'); let active=true;
             return connect({kind:'usb',framing:'length',keepsBoundaries:true,
-              start(onData,onClose){(async()=>{while(active){try{const r=await fetch('/_test/read');const b=new Uint8Array(await r.arrayBuffer());if(!active)return;if(!b.length){onClose();return;}onData(b);}catch(e){if(active)onClose(e);return;}}})();},
+              start(onData,onClose){globalThis.__unplug=()=>{active=false;onClose(new Error('The device has been lost.'));};(async()=>{while(active){try{const r=await fetch('/_test/read');const b=new Uint8Array(await r.arrayBuffer());if(!active)return;if(!b.length){onClose();return;}onData(b);}catch(e){if(active)onClose(e);return;}}})();},
               async write(b){await fetch('/_test/write',{method:'POST',body:b});},
               async close(){active=false;await fetch('/_test/close');}
             },{keepSession:false});
@@ -213,7 +213,7 @@ try {
   assert.equal(await evaluate('globalThis.__resetToBoot && globalThis.__rpWritten'), true);
   await evaluate('globalThis.__model=null'); if (await evaluate('!!document.querySelector("[data-action=disconnect]")')) await press('接続を終了');
   // W06 update of a P4 through its USB DFU: the DFU device must be the same unit (its serial is the unit id).
-  await evaluate('globalThis.__model="esp32p4"'); await go('/connect'); await press('機器を選んで接続');
+  await evaluate('globalThis.__model="esp32p4"'); await go('/connect'); await press('シリアルポートを選ぶ');
   await go('/probe/maintenance'); await press('このプローブを更新'); assert.equal(await evaluate('globalThis.__dfuWritten'), p4Image.length);
   await evaluate('globalThis.__model=null'); if (await evaluate('!!document.querySelector("[data-action=disconnect]")')) await press('接続を終了');
   // From here the probe has a memo area (oep.probe.memo, a stand-in kept in the page): records go there, not to the browser.
@@ -221,7 +221,7 @@ try {
   // A probe tab opened before connecting comes back after connecting (A02).
   await go('/probe/settings'); await tap('[data-connect=go]');
   assert.equal(await evaluate('location.hash'), '#/connect');
-  await press('機器を選んで接続'); assert.equal(await evaluate('location.hash'), '#/probe/settings');
+  await press('シリアルポートを選ぶ'); assert.equal(await evaluate('location.hash'), '#/probe/settings');
   // W03: debug + UART wiring saved with the target absent: no scan, attach or pin assignment (A13).
   await evaluate('globalThis.__forbidTargetIO=true');
   await go('/probe/wiring/new?purpose=uart'); await tap('[data-kind=connector]');
@@ -239,6 +239,22 @@ try {
   // One connection check from the editor, results not saved (A43).
   await go('/probe/wiring/x035'); await press('指定したピンで接続確認'); assert.match(await evaluate('document.getElementById("debug-check-0").textContent'), /応答あり: dmstatus/);
   await click('キャンセル'); await delay(100);
+  // A new debug wiring: choosing the pins enables the connection check at once (no other redraw needed).
+  await go('/probe/wiring/new?purpose=debug'); await tap('[data-wire=rvswd]');
+  assert.equal(await evaluate('document.querySelector("[data-check=\'0\']").disabled'), true, 'no pins yet: the check waits');
+  await choose('[data-line="0-swdio"]', 1);
+  await choose('[data-line="0-swclk"]', await evaluate('document.querySelector(\'[data-line="0-swclk"]\').options.length - 1'));
+  assert.ok(await evaluate('document.querySelector(\'[data-line="0-swdio"]\').value && document.querySelector(\'[data-line="0-swclk"]\').value'), 'both pins chosen');
+  assert.equal(await evaluate('document.querySelector("[data-check=\'0\']").disabled'), false, 'the pins chosen: the check can run');
+  await click('キャンセル'); await delay(100);
+  // The cable pulled while a probe tab is open: the page says so at once, keeps no connected look, and connecting again
+  // comes back to the same tab (A27).
+  await go('/probe/settings'); await evaluate('globalThis.__unplug()');
+  await until('document.body.textContent.includes("接続が切れました")');
+  assert.equal(await evaluate('!!document.querySelector("[data-action=disconnect]")'), false, 'no connected look left');
+  assert.match(await text(), /fafe00000035 との接続が切れました/);
+  await tap('[data-connect=go]'); await press('シリアルポートを選ぶ');
+  assert.equal(await evaluate('location.hash'), '#/probe/settings'); assert.doesNotMatch(await text(), /接続が切れました/);
   // P4 pass-through: applied, the unsaved bar, saved there (A36); the tools tab then names the port.
   await go('/probe/settings'); await pick('#pt-rx', 7); await press('素通し設定を適用');
   assert.equal(await evaluate('!!document.getElementById("unsaved")'), true, 'the unsaved bar shows');
@@ -272,7 +288,7 @@ try {
   const p4Port = benchPort;
   benchPort = Number(await start(python, ['-m', 'oep_client.virtual_bench_serve', '--tcp', '0', '--profile', 'esp32-v003'], /PORT (\d+)/));
   await evaluate('globalThis.__withMemo=false');
-  await go('/connect'); await press('機器を選んで接続');
+  await go('/connect'); await press('シリアルポートを選ぶ');
   await go('/probe/settings'); await set('wifi-ssid', 'bench'); await set('wifi-pass', 'bench-passphrase'); await press('ネットワーク設定を適用');
   assert.match(await text(), /wifi\.0\.ssid/); assert.doesNotMatch(await text(), /bench-passphrase/, 'a secret is never shown');
   await press('接続を終了');
@@ -280,7 +296,7 @@ try {
   // Narrow screens (A29).
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   for (const r of ['/', '/make', '/connect']) { await go(r); await noOverflow(r); }
-  await go('/connect'); await press('機器を選んで接続');
+  await go('/connect'); await press('シリアルポートを選ぶ');
   for (const r of ['/probe', '/probe/wiring', '/probe/wiring/x035', '/probe/settings', '/probe/tools', '/probe/maintenance']) { await go(r); assert.ok(await h1(), r); await noOverflow(r); }
   await snapshot('04-mobile');
   // Changing the language keeps the inputs, the route and the probe (A15), and is remembered over a reload.
@@ -306,7 +322,7 @@ try {
     if (r !== '/nowhere') for (const href of await evaluate('[...document.querySelectorAll(\'#app a[href^="#/"]\')].map((a) => a.getAttribute("href").slice(1))')) if (!links.has(href)) links.set(href, r);
   };
   for (const r of ['/', '/make', '/make/prepare', '/make/review', '/connect', '/probe', '/nowhere']) await english(r);
-  await go('/connect'); await press('Choose a device and connect');
+  await go('/connect'); await press('Choose a serial port');
   for (const r of ['/probe', '/probe/wiring', '/probe/wiring/new', ...['debug', 'uart', 'i2c', 'spi', 'custom'].map((x) => `/probe/wiring/new?purpose=${x}`),
     '/probe/wiring/x035', '/probe/wiring/dut', '/probe/settings', '/probe/tools', '/probe/maintenance']) await english(r);
   for (const [href, from] of links) {
@@ -324,7 +340,7 @@ try {
   await pick('#language', 'ja'); await delay(120); assert.match(await h1(), /[\u3040-\u30ff\u4e00-\u9fff]/, 'back to Japanese');
   await press('接続を終了');
   assert.deepEqual(exceptions, []);
-  console.log('Browser page: public pages, ESP install with the port reused and a retry without rewriting, Pico install by BOOTSEL and the new device taken, Pico and P4 (DFU) updates, a tab opened before connecting kept through it, wiring saved without target I/O (memo records), edit, connection check, passthrough applied and saved from the unsaved bar and named in the tools tab, idle pins, settings and memo backup and restore, declarations, Wi-Fi (classic ESP32), hand-over, narrow screens, the language from the browser and from the selector (inputs kept, remembered) and every screen in English passed.');
+  console.log('Browser page: public pages, ESP install with the port reused and a retry without rewriting, Pico install by BOOTSEL and the new device taken, Pico and P4 (DFU) updates, a tab opened before connecting kept through it, wiring saved without target I/O (memo records), edit, connection check (enabled once the pins are chosen), the cable pulled and connected again to the same tab, passthrough applied and saved from the unsaved bar and named in the tools tab, idle pins, settings and memo backup and restore, declarations, Wi-Fi (classic ESP32), hand-over, narrow screens, the language from the browser and from the selector (inputs kept, remembered) and every screen in English passed.');
 } finally {
   browserSocket?.close(); socket?.destroy(); if (waiting) waiting.end(); server?.closeAllConnections(); server?.close();
   for (const child of children) { child.stdin?.end(); child.kill(); }

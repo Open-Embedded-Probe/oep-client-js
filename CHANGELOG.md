@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The page: choosing a debug wiring's pins enables its connection check at once (it waited for some other redraw). A transport that ends by itself (the cable pulled, the probe reset) is noticed at once: the page forgets the probe, says so with the reason on the screen in use, and connecting again comes back there, first ending the session the old transport left on the probe (it locked the page out until its lease ran out). `Link.closeListeners` tells of such an end. The connect screen names the three paths - USB serial, USB (the OEP device, WebUSB) and USB HID - and which boards use which.
+- (JA) 画面: デバッグの配線でピンを選ぶと、接続確認のボタンがすぐ使えるようになる（別の再描画を待っていた）。経路がひとりでに閉じる（ケーブルが抜けた、プローブがリセットされた）と、その場で気づく: プローブを忘れ、今いる画面に理由を出し、もう一度つなぐと同じ画面へ戻る。そのとき古い経路がプローブに残したセッションを先に終える（lease が切れるまでページ自身を締め出していた）。`Link.closeListeners` がそうした終わりを知らせる。接続の画面は3つの口 ― USBシリアル、USB（OEPの機器、WebUSB）、USB HID ― と、どのボードがどれかを示す。
+
 - (EN) The site build's firmware fetch takes the newest Release that already has its firmware-<version>.json, with a warning when the latest has none yet: a Release is published before its files are all uploaded, and a deploy that ran in between failed (oep-probe-arduino v0.0.57).
 - (JA) サイトのビルドのファーム取得は、firmware-<version>.json がすでにある一番新しい Release を使い、最新にまだ無ければ警告する。Release はファイルを上げ終える前に公開されるため、その間に走った deploy が失敗していた（oep-probe-arduino v0.0.57）。
 

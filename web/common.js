@@ -52,8 +52,9 @@ export function wiringSummary(port) {
 }
 
 export function needConnection(returnTo) {
-  return el('div', { class: 'page' }, heading(t('Connect a probe to go on.', 'プローブにつないで、続きを開きます。'), t('After connecting you come back to this screen.', 'つなぐと、この画面に戻ります。'), 'CONNECT'),
-    actions(button(t('Connect a probe →', 'プローブにつなぐ →'), () => { state.connectReturn = returnTo; go('/connect'); }, 'primary', { 'data-connect': 'go' }), link(t('Make a board a probe', 'ボードをプローブにする'), '/make')));
+  return el('div', { class: 'page' }, heading(dev.lost ? t('The connection ended.', '接続が切れました。') : t('Connect a probe to go on.', 'プローブにつないで、続きを開きます。'), t('After connecting you come back to this screen.', 'つなぐと、この画面に戻ります。'), 'CONNECT'),
+    dev.lost ? note(dev.lost, 'error') : null,
+    actions(button(t('Connect a probe →', 'プローブにつなぐ →'), () => { state.connectReturn = returnTo; go('/connect'); }, 'primary', { 'data-connect': 'go' }), dev.lost ? null : link(t('Make a board a probe', 'ボードをプローブにする'), '/make')));
 }
 
 /** The probe's tabs (page.ja.md §6.1). */
@@ -72,7 +73,6 @@ export function probeFrame(content) {
       el('div', { class: 'actions' }, action(t('Disconnect', '接続を終了'), async () => { await disconnect(); state.notice = t('Disconnected.', '接続を終了しました。'); go('/'); }, '', { 'data-action': 'disconnect' }))),
     dev.unsaved ? el('div', { class: 'unsaved-bar', id: 'unsaved' }, p(t('Unsaved changes: they are lost on restart.', '未保存の変更があります（再起動すると消えます）。'), 'mb0'),
       dev.saveable ? action(t('Save', '保存'), saveSettings, 'primary', { id: 'save-settings' }) : p(t('This probe cannot store settings.', 'このプローブは設定を保存できません。'), 'mb0 muted')) : null,
-    dev.lost ? note(t(`The connection was lost: ${dev.lost}. The state is read again after reconnecting. Changes are not sent again automatically.`, `接続が切れました: ${dev.lost}。再接続後に状態を読み直します。書き換えは自動で再送しません。`), 'error') : null,
     el('nav', { class: 'probe-tabs', 'aria-label': t('Probe', 'プローブ') }, ...TABS().map(([path, title]) => el('a', { href: `#${path}`, class: isActive(path) ? 'active' : '', 'aria-current': isActive(path) ? 'page' : 'false' }, title))),
     el('div', { class: 'probe-content' }, content));
 }
