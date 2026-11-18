@@ -12,8 +12,6 @@ import * as reg from './registry.js';
 export const VENDOR_CLASS = reg.USB.vendor_bulk_class;
 export const VENDOR_SUBCLASS = reg.USB.vendor_bulk_subclass;
 export const VENDOR_PROTOCOL = reg.USB.vendor_bulk_protocol;
-/** The OEP HID collection: usage page 0xFF4F, usage 0x45 (transports §3). */
-export const HID_USAGE_PAGE = reg.USB.hid_usage_page;
 
 /** The project's own USB VID:PID, 1209:4F45 (registry usb, transports §3). */
 export const PROJECT_VID = reg.USB.project_vid;

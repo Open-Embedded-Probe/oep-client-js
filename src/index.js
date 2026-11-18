@@ -1,16 +1,12 @@
 // @ts-check
-// oep-client-js: the host side of Open Embedded Probe (OEP) in JavaScript, for browsers and Node.
-//
-// This entry is the core, the part that depends on no environment: the frame and message shapes, the session and
-// the lock, describe, the settings and the interfaces whose names begin with oep. (oep-spec docs/oep-core.ja.md,
-// interfaces/*.ja.md).
-// Its scope is setting up and keeping probes: confirm and describe, the settings, the memo, firmware updates, and a
-// debug wire's connection check. Using a probe - debugging, captures, fixtures - is oep-client-python's and the
-// tools it hands over to. The ways to reach a probe are separate entries: "oep-client-js/browser" (WebSerial, WebUSB,
-// WebHID) and "oep-client-js/node" (TCP). See docs/design.md.
+// The OEP host OEP Probe Tool runs on (Open Embedded Probe, oep-spec docs/oep-core.ja.md): the part that depends on no
+// environment - frames and messages, the session and the lock, describe, the settings and the settings file, the memo,
+// firmware updates and a debug wire's connection check. Using a probe - debugging, captures, fixtures - is
+// oep-client-python's and the tools the page hands over to. The transports are src/browser/ (Web Serial, WebUSB,
+// WebHID; the page's) and src/node/ (TCP; the tests'). See docs/design.md.
 //
 // Each module is also a namespace here:
-//   import { connect, settings } from 'oep-client-js';
+//   import { connect, settings } from './index.js';
 //   const host = await connect(transport);
 //   const items = await new settings.Settings(host).show();
 

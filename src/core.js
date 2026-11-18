@@ -38,8 +38,6 @@ export async function listEntries(hst, name = '', exact = false) {
   return name ? named.filter((e) => names.matches(e.name, name, exact)) : named;
 }
 
-/** @param {import('./host.js').Host} hst @param {string} name */
-export async function findAll(hst, name) { return (await listEntries(hst, name, true)).map((e) => e.fn); }
 
 /** fn of the first interface with exactly this name, or null when the probe lists none (cached until the probe reboots).
  * With `rev`, the first of that (name, revision) pair; offered in another revision only, it is one this host does not

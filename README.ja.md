@@ -1,112 +1,73 @@
-# oep-client-js
+# OEP Probe Tool（oep-client-js）
 
 [English](README.md)
 
-npm: `oep-client-js`（リポジトリと同じ。PyPI の oep-client-python と対）。
+ボードを [Open Embedded Probe（OEP）](https://github.com/Open-Embedded-Probe/oep-spec) のプローブにし、設定して保守し、作業をする
+道具へ渡すための Web ページです。GitHub Pages で動きます: <https://open-embedded-probe.github.io/oep-client-js/>。
+このリポジトリはそのページと、ページが使う JavaScript の OEP の host のコードです。npm には出しません。
 
-[Open Embedded Probe（OEP）](https://github.com/Open-Embedded-Probe/oep-spec) の、JavaScript の host の実装です。ブラウザと Node から
-OEP の probe と話し、設定し、firmware を更新します。これを使った Web ページ **OEP Probe Tool** を GitHub Pages に置きます:
-<https://open-embedded-probe.github.io/oep-client-js/>。
+## ページでできること
+
+1. **プローブを作る・ファームを更新する**: ESP32 / P4 / P4X は USB シリアルから、Pico / Pico 2 は BOOTSEL で、P4 / P4X の更新は
+   USB の DFU で。イメージは最新の oep-probe-arduino の Release のもの。
+2. **つないで、何かを見る**: USB シリアル（Web Serial）、USB（OEP の機器、WebUSB）、USB HID（WebHID）。個体、ファーム、経路、
+   宣言された機能。
+3. **設定する**: 待機と使わせないピン、シリアルモニタへのログの素通し、Wi-Fi、USB の経路。保存は 1 か所。設定とメモ欄を 1 つの
+   OEP の設定のファイルにエクスポート・インポートする。
+4. **ターゲットへの配線を登録する**: プローブのピンの名前、相手の型番、デバッグ線の接続確認（そのピンで応答する ID）。
+5. **ほかの道具で使う**: IDE（CH32、Python のブローカー越しの RP2040）、シリアルモニタ、WireSkein、Python に、このプローブの
+   アドレスと使うコマンドを渡す。
+
+作業そのもの ― デバッグ、ログを読む、波形を取る、バス・信号、自動試験 ― は
+[oep-client-python](https://github.com/Open-Embedded-Probe/oep-client-python)、WireSkein、IDE が行い、このページはしません。
+機器を扱うにはデスクトップの Chrome か Edge と、HTTPS（か localhost）が要ります。画面は英語と日本語です（既定はブラウザの言語、
+ヘッダの選択で変えられる）。
+
+画面は [docs/page.ja.md](docs/page.ja.md) に、[接続引継ぎ](docs/page-connection.ja.md)、[受入条件](docs/page-acceptance.ja.md)
+とともに決めています。
 
 ## 状態
 
-**v1 の凍結の前に、ひととおり移した版です。仕様が固まるにつれて作り直す前提です。**
+**OEP v1 の凍結の前です。仕様はまだ壊れることがあり、すぐに追います。** プローブのファーム
+（[oep-probe-arduino](https://github.com/Open-Embedded-Probe/oep-probe-arduino)）と oep-client-python と一緒です。実装する仕様は、
+`test/vectors` の写し元の oep-spec の commit です（`v0.x` のタグはまだ無い。oep-spec versioning §6）。隣に oep-spec の checkout が
+あれば、試験がその写しと照らし合わせます。変更の履歴は [CHANGELOG.md](CHANGELOG.md) にあります。
 
-**実装する仕様: `test/vectors` の写し元の oep-spec の commit**（`v0.x` のタグはまだ無い。oep-spec versioning §6 ― 凍結の前は revision 1
-だけでは形が決まらないので、実装は実装する仕様を名乗る）。隣に oep-spec の checkout があれば、試験がその写しと照らし合わせます。
-変更の履歴は [CHANGELOG.md](CHANGELOG.md) にあります。
+## コード
 
-凍結までは日本語の文（`.ja.md`）が仕様の作業の文。
+| 場所 | 中身 |
+|---|---|
+| `src/` | 環境に依らない OEP の host: registry（oep-spec から生成）、フレーム（COBS + CRC、length）、メッセージ、リンク（送り直し、transports §5 の立て直し、HID の丸ごとのフレーム）、host（confirm、セッション、ロック、restart）、describe、設定と設定のファイル、メモ欄、`dump`、デバッグ線の接続確認（`wire.js`）、ファーム（Release の一覧、PICOBOOT、DFU） |
+| `src/browser/` | Web Serial、WebUSB（vendor bulk）、WebHID（count と first の report、transports §1） |
+| `src/node/` | TCP だけ: 試験が oep-client-python の仮想ベンチにつなぐため |
+| `web/` | ページ。GitHub Pages 向けに `site/` へビルドする |
+| `test/` | `node:test`。oep-client-python の仮想ベンチと oep-spec の試験ベクタに対して |
+| `scripts/` | 試験の起動、ブラウザの試験、サイトのビルド、ファームの取得、実機の HID の確認 |
 
-対象はプローブの設定と保守です。対応する場面:
-
-1. **プローブを作る・ファームを更新する**: ESP32 / P4 / P4X は USB シリアルから（ページの esptool-js）、Pico / Pico 2 は BOOTSEL と
-   WebUSB での PICOBOOT（`rp2ResetToBoot`、`rp2Write`）、P4 / P4X の更新は USB の DFU。イメージは Release の firmware-<version>.json
-   から選ぶ（`fetchFirmwareManifest`、`pickFirmware`、`verifyFirmware`）。
-2. **つながるかと、何を宣言しているかを確かめる**: 経路、confirm、list と describe、`dump`（インターフェースごとの宣言を文か JSON で。
-   core §1.2 が求めるもので probe が出さなかったものも）。
-3. **設定し、控えて戻す**: 設定（core §13: ラベル、待機と使わせないピン、ログの素通し、Wi-Fi、保存と再起動つきの `usb.transports`）、
-   設定ファイル、メモ領域（`oep.probe.memo`、接続先の記録 `oep.probe.memo/port/<接続名>`）。
-4. **ターゲットへの配線を登録して確かめる**: ラベルと接続先の記録。デバッグ線の接続確認（`wire.Wire.check`: ピンで attach し、応答した
-   ID ― rvswd / swio は DMSTATUS、swd は DPIDR。SWD で応答が無ければ RP2040 の multidrop の core 0 も試す ― を読んで detach）。
-5. **作業をする道具へ引き継ぐ**: デバッグ（IDE、oep-client-python）、ログ（素通しを通したシリアルモニタ、oep-client-python）、
-   取り込み（WireSkein）、バス・信号・相手役（oep-client-python）。この package はそれらの作業をしない。
-
-部品:
-
-- 核: registry（oep-spec から生成）、フレーム（COBS + CRC、length）、メッセージ、リンク（corr の照合、待ちの後に 1 回の送り直し、
-  持っているシリアルポートで壊れたフレームが来たらすぐ 3 回までの送り直し（host ガイド §8）、パイプライン、push と出来事。応答はどれも
-  core §4.4 の下限 ― 引数の時間 + 1000 ms + シリアルポートの転送時間、`Link.waitFloorMs` ― 以上待つ。length のフレームでの
-  transports §5 の立て直しは、host の最後の書き込みから 250 ms 待ってから confirm し、vendor bulk では静かになるのを lease の最長まで
-  待ち、HID では待たない（report の first でフレームを見つけ直す、transports §1）。フレームの途中の休みでは立て直さない。送り直しにも
-  応答が無ければ経路の失敗 `TransportFailed` で、次の要求の前に confirm で立て直す（COBS でも）。header より短いフレームは壊れた
-  フレーム。シリアルポートの最初の confirm は port_speed_idle_ms + host_wait_add_ms のあいだ繰り返す（別の host が上げた速さはそれまでに
-  戻る）、host（confirm ― `limits.transport`。2 回目からは使っている revision を求める。core §7.1 の範囲の外、1..600000 の外の
-  max_op_ms、core §7.4 の形の外の fn 0 の ops は probe を `NotUsable` に、fn の ops がその形の外ならその fn を `FnNotUsable` に ―、
-  `clock()`、セッション ― open のたびに新しい乱数の id。経路が閉じても終わらないので、`connect`（`keepSession`、既定で有効）は開いた
-  セッションの id を probe ごとに残す ― Node は `$OEP_SESSION_DIR`、`$XDG_RUNTIME_DIR/oep-client` か利用者の cache の
-  `<unit_id>.session`（oep-client-python と同じファイル）、ブラウザは localStorage と Web Lock ― 次の実行の最初の open がそれをすぐ
-  終える（`Host.endPrevious`、`keptsession.KeptSession`、host ガイド §5）―、ロック、restart ― `requestRestart()` と
-  `restartProbe({ reopen, waitMs })`、probe の restart_max_ms まで繰り返す ―、list / describe、plan）
-- 設定（settings.js）: `new Settings(host)`: `catalog()` はこの起動の名前、`show()` はすべての値を `{ category, name, value }` で、
-  `setNamed(category, { flat: value })` / `unsetNamed` / `unsetAll`、生の `set` / `unset`、`save()`、`state()`、`needsSave()`、
-  `network()`。`export()` / `exportAll()` / `planImport(doc)` / `applyImport(plan)` は設定ファイル（oep-spec docs/oep-settings-file.ja.md）。メモ欄のオブジェクトはその `memo`（§2.4。入れ直しで書いて消してそろえる）。
-  `findLine(source, name, { port })` は host ガイド §5.3 の線の探し方（接続名 S の線 N はラベル `S.N`）。秘密の値（Wi-Fi のパスフレーズ）は
-  読まない: get はデータを返さず、`show()` とファイルは `{ secret: true }`。set で 0 byte を送ると保つ
-- 経路: ブラウザは WebSerial、WebUSB（vendor bulk）、WebHID（`oep-client-js/browser`）。シリアルポートは 8N1、フロー制御なし、DTR と
-  RTS を立てて開く（transports §4）。USB の probe はプロジェクトの VID:PID `1209:4F45` だけで見つける（transports §3: WebUSB / WebHID の
-  選択の既定の filter）。WebSerial の選択には既定の filter が無く、UART の変換チップや内蔵の USB シリアルも選べる。Node
-  （`oep-client-js/node`）は TCP だけで、`openTcp({ host, port })`: 試験の仮想ベンチ、ローカルのブローカー、host と port で指定する
-  ネットワーク上の probe
-- そのほか: `Unsupported.supported`（confirm の範囲）。`x-` の unit_id は USB の機器を名指さない。答えの文は制御文字を除いて示す
-  （`message.shown`）。open の owner は文字の切れ目で切る（`ownerText`）。probe が断るラベルは送らない
-
-oep-client-python の仮想ベンチ（probe とその先の target、治具の配線を実際の治具に合わせて作ったもの:
-`python -m oep_client.virtual_bench_serve`）と台本のデバイスで試しています（oep-spec の試験ベクタを含み、sessions.json、
-ops.json、ops_encoding.json、hid_reports.json も）。ブラウザの経路、DFU、ページは、まだ実機で確かめていません。
-
-v1 の凍結までは仕様が壊れることがあり、この package は probe の firmware
-（[OpenEmbeddedProbe](https://github.com/Open-Embedded-Probe/oep-probe-arduino)）と
-[oep-client-python](https://github.com/Open-Embedded-Probe/oep-client-python) と一緒に、すぐに追います。
-
-## 構成
-
-| 場所 | npm の入口 | 中身 |
-|---|---|---|
-| `src/` | `oep-client-js` | 環境に依らない核（`dist/oep-client.js` にバンドル） |
-| `src/browser/` | `oep-client-js/browser` | WebSerial、WebUSB、WebHID |
-| `src/node/` | `oep-client-js/node` | TCP |
-| `web/` | - | Web ページ（`site/` にビルドして GitHub Pages へ。npm の配布物には入れない） |
-| `test/` | - | `node:test`。oep-client-python の仮想ベンチに TCP でつなぐ |
-
-JSDoc の型付きの JavaScript（`// @ts-check`、`tsc` で確かめる）、ES モジュール、実行時の依存なし。WebUSB、WebSerial、WebHID は
-Chromium 系のブラウザ（Chrome、Edge）と HTTPS が要ります。
+JSDoc の型付きの JavaScript（`// @ts-check`、`tsc` で確かめる）、ES モジュール、実行時の依存なし。サイトだけが ESP の ROM への
+書き込みに固定版の esptool-js を同梱します。
 
 ## 開発
 
 ```sh
 npm install
-npm test            # explicit virtual backend setup: docs/testing.ja.md
-npm run typecheck
-npm run serve       # http://localhost:4173/ でページ
-npm run test:browser # ChromiumとPython仮想プローブで画面操作を確認
+uv sync --project test/virtual-bench --locked            # 固定した仮想ベンチ（docs/testing.ja.md）
+OEP_PYTHON="$PWD/test/virtual-bench/.venv/bin/python" OEP_REQUIRE_VIRTUAL_BENCH=1 npm run check
+npm run test:browser   # Chromium と Python の仮想プローブでページを確かめる
+npm run serve          # http://localhost:4173/ でページ
 ```
 
-ブラウザのページは[画面仕様](docs/page.ja.md)、[接続引継ぎ](docs/page-connection.ja.md)、[受入条件](docs/page-acceptance.ja.md)に沿って作っています。
-スタート（このページですること、OEPでできることと作業する道具、資料）、プローブを作る（ESP32・P4・P4XはUSBシリアル、Pico・Pico 2はBOOTSEL）、つなぐ、プローブごとの画面と概要・配線（相手固定とコネクタ、デバッグ線の接続確認）・本体設定（待機と使わせないピン、ログの素通し、Wi-Fi、USBの経路。保存は一か所）・道具へ渡す（IDE、シリアルモニタ、WireSkein、Python）・保守（更新、控えと戻し、診断）のタブがあります。
-画面は英語と日本語です。既定はブラウザの言語で選び（どちらでもなければ英語）、ヘッダの選択でこのブラウザの言語を変えられます。S3/C3/C6は対応するmergedファームウェアイメージの持ち込みで導入します。CH32の初回書き込みは対象外です。実機での確認は、受入条件の §3.2 に残っています。
-ESP書き込み用の固定版 `esptool-js` はサイトに同梱し、npmライブラリの実行時依存には加えません。
-`npm run serve` は初回に配布ファームウェアイメージを取得し、`.cache/firmware` に保存します。再取得は `node scripts/fetch-firmware.js` で行えます。
+`npm run serve` は初回に配布イメージを `.cache/firmware` に取得します（`node scripts/fetch-firmware.js` で取り直す）。
 
 ## 文書
 
-- 仕様: [oep-spec](https://github.com/Open-Embedded-Probe/oep-spec)（凍結までは日本語の文書が正。英語は凍結のときに作る）。まず [README](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/README.ja.md) と [レビューの手引き](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/review-guide.ja.md) から。
-  [使い始める](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/getting-started.ja.md) が最小の probe と host を作り、
-  [docs/oep-core.ja.md](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/oep-core.ja.md) がプロトコルの本体、
-  [docs/conformance.ja.md](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/conformance.ja.md) が host の適合に要ること
-- [設計](docs/design.ja.md): 層、経路、ページでできること、試験、registry、版
-- [リリースの手順](docs/release.ja.md)
-- [変更履歴](CHANGELOG.md)
+- [設計](docs/design.ja.md): 層、経路、ページのコード、試験、registry
+- [試験](docs/testing.ja.md)
+- [ページの公開](docs/publish.ja.md)
+- OEP の仕様: [oep-spec](https://github.com/Open-Embedded-Probe/oep-spec)（凍結までは日本語の文書が正）―
+  [README](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/README.ja.md)、
+  [core](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/oep-core.ja.md)、
+  [適合](https://github.com/Open-Embedded-Probe/oep-spec/blob/main/docs/conformance.ja.md)
 
 ## ライセンス
 

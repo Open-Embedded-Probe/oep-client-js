@@ -16,7 +16,6 @@ import { openDevice } from './usbvendor.js';
 
 export const DFU_CLASS = 0xfe;
 export const DFU_SUBCLASS = 0x01;
-export const DFU_PROTOCOL_RUNTIME = 0x01;
 export const DFU_PROTOCOL_DFU = 0x02;
 
 export const DFU_REQUEST = { DETACH: 0, DNLOAD: 1, UPLOAD: 2, GETSTATUS: 3, CLRSTATUS: 4, GETSTATE: 5, ABORT: 6 };

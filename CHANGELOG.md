@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Not an npm package any more: `package.json` is private, and the npm build and publishing are gone (the dist bundle, the type declarations, the release workflow and scripts, the release checks); what reaches users is the page on GitHub Pages, and docs/publish.md says what to check before a push publishes it. Code nothing used (a few helpers, the old screens' styles) is removed. README and the design document describe the page and its code as they are.
+- (JA) npm のパッケージにはしない: `package.json` を private にし、npm 向けのビルドと公開（dist のバンドル、型定義、リリースの workflow とスクリプト、リリースの確認）を外した。利用者に届くのは GitHub Pages のページで、push で公開される前に確かめることは docs/publish.ja.md に書いた。使われていないコード（いくつかの関数、前の画面のスタイル）を消した。README と設計の文書は、今のページとコードを書く。
+
 - (EN) The page calls the settings file's backup and restore "Export the settings" and "Import the settings" (Japanese: 設定をエクスポート / 設定をインポート).
 - (JA) 画面は設定のファイルの控えと戻しを「設定をエクスポート」「設定をインポート」と呼ぶ。
 

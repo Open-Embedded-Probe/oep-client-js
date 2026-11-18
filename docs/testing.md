@@ -8,9 +8,9 @@ uv sync --project test/virtual-bench --locked
 OEP_PYTHON="$PWD/test/virtual-bench/.venv/bin/python" OEP_REQUIRE_VIRTUAL_BENCH=1 npm run check
 ```
 
-`OEP_PYTHON` is an explicitly selected Python executable; to compare another candidate client's virtual environment, name its executable too. An explicitly selected Python missing the virtual module is a preparation error, and so is a missing dependency under `OEP_REQUIRE_VIRTUAL_BENCH=1`. With neither setting, a plain `npm test` uses `python3` only and may skip optional virtual integration cases if the backend is absent; this does not complete release verification.
+`OEP_PYTHON` is an explicitly selected Python executable; to compare another candidate client's virtual environment, name its executable too. An explicitly selected Python missing the virtual module is a preparation error, and so is a missing dependency under `OEP_REQUIRE_VIRTUAL_BENCH=1`. With neither setting, a plain `npm test` uses `python3` only and may skip optional virtual integration cases if the backend is absent; this does not complete the checks before publishing.
 
-CI, Pages and Release use the same setup action and require the pinned backend. Update its commit and lock together, then verify integration, types and distribution artifacts. The pinned backend is the version verified this time; it does not impose a minimum physical probe firmware version.
+CI and Pages use the same setup action and require the pinned backend. Update its commit and lock together, then verify integration and types. The pinned backend is the version verified this time; it does not impose a minimum physical probe firmware version.
 
 Responsibility for assurance and the steps of a consuming project follow the [OEP common policy](https://github.com/Open-Embedded-Probe/oep-client-python/blob/main/docs/testing-policy.ja.md) and the [general guide](https://github.com/Open-Embedded-Probe/oep-client-python/blob/main/docs/testing-consumers.ja.md) (Japanese). Virtual success does not certify physical USB operation or firmware transfers.
 

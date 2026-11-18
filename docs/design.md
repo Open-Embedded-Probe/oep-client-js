@@ -2,117 +2,107 @@
 
 English | [日本語](design.ja.md)
 
-How oep-client-js is laid out, what goes where and what it does not do.
+How OEP Probe Tool and its code are laid out, what goes where and what they do not do.
 
 ## 1. What it is for
 
-- The JavaScript host side of OEP, for browsers and Node. It follows [oep-spec](https://github.com/Open-Embedded-Probe/oep-spec)
-  v1 (`docs/oep-core.ja.md` and `interfaces/*.ja.md`).
-- A web page built on the same library ("OEP Probe Tool") on GitHub Pages: set a probe up and update its firmware from
-  the browser alone.
-- Its scope is setting up and keeping probes: making one and updating its firmware, checking that it connects and what
-  it declares, its settings and memo backed up and put back, the wiring to a target registered and checked (a debug
-  wire's attach and detach), and the probe handed over to the tool for the work. The work itself - debugging, captures,
-  buses and signals, peers, automated tests - is oep-client-python's, WireSkein's and the IDEs'; this package does none
-  of it.
-- The counterpart of the Python [oep-client-python](https://github.com/Open-Embedded-Probe/oep-client-python). It is one
-  of the tools that follow the spec; when the spec breaks, it is fixed together with the others.
+- A web page on GitHub Pages that makes a board an OEP probe, sets it up and keeps it, and hands it to the tools that do
+  the work. The screens are in the [screen specification](page.ja.md) (Japanese).
+- The JavaScript OEP host it runs on, following [oep-spec](https://github.com/Open-Embedded-Probe/oep-spec) v1
+  (`docs/oep-core.ja.md`, `docs/oep-transports.ja.md`, `docs/oep-settings-file.ja.md` and the interfaces it uses).
+- Not a library for others: nothing is published to npm. Using a probe from code - debugging, captures, buses and
+  signals, peers, automated tests - is [oep-client-python](https://github.com/Open-Embedded-Probe/oep-client-python)'s,
+  with WireSkein and the IDEs. When the spec breaks, this is fixed together with them.
 
 ## 2. Layout
 
 ```text
-src/            the library (the core, no environment)   -> npm "oep-client-js" (bundled to dist/oep-client.js)
-  index.js        the entry: VERSION and the core's public API
-  the rest        frames (cobs.js), messages, the link, the host, core, settings, memo, dump, the debug wire's connection
-                  check (wire.js), the firmware (firmware.js, picoboot.js, dfu.js), registry.js (generated)
-src/browser/    the browser's transports                 -> npm "./browser"
-  index.js        WebSerial, WebUSB (vendor bulk, DFU), WebHID
-src/node/       Node's transports                        -> npm "./node"
-  index.js        TCP (node:net): the tests' virtual bench, a probe given by host and port
-web/            the web page's sources                    -> site/ (scripts/build-site.js) -> GitHub Pages
-test/           tests (node:test), against the Python virtual bench over TCP
-scripts/        build, site, tests, release tools
-docs/           this document, the release steps
+src/            the OEP host, no environment
+  index.js        VERSION and the modules as namespaces
+  the rest        frames (cobs.js), messages, the link, the host, core (list, describe, plan, restart), settings and the
+                  settings file, memo, dump, the debug wire's connection check (wire.js), firmware (firmware.js,
+                  picoboot.js, dfu.js), registry.js (generated)
+src/browser/    Web Serial, WebUSB (vendor bulk, DFU, PICOBOOT), WebHID
+src/node/       TCP (node:net): how the tests reach the Python virtual bench
+web/            the page                                   -> site/ (scripts/build-site.js) -> GitHub Pages
+test/           node:test, against the Python virtual bench and oep-spec's test vectors
+scripts/        the test runner, the browser test, the site build, the firmware fetch, the hardware HID check
+docs/           this document, the screens, testing, publishing
 ```
 
 - The core uses neither the DOM nor Node's APIs (only `crypto.getRandomValues` and `TextEncoder` on `globalThis`).
-  Transports plug in through a small "send bytes, receive bytes" shape.
-- `site/` is not in the npm package (the page is served from Pages); `src/node/` is not in `site/`.
-- Types are JSDoc, checked with `// @ts-check` and `tsc --noEmit`; the code is not TypeScript. `tsc` writes the
-  declarations (`types/`) from the JSDoc.
-- The OEP library has no runtime dependencies. Only the site bundles a pinned esptool-js for ESP ROM programming.
+  Transports plug in through a small "send bytes, receive bytes" shape (`Link`'s `Transport`).
+- `src/node/` is not in `site/`.
+- Types are JSDoc, checked with `// @ts-check` and `tsc --noEmit` (`tsconfig.web.json` for the page); the code is not
+  TypeScript.
+- No runtime dependencies. The site alone bundles a pinned esptool-js for ESP ROM programming.
 
 ## 3. Transports
 
-| Transport | Browser (`./browser`) | Node (`./node`) | Frames (transports §1) |
+| Transport | Page (`src/browser/`) | Tests (`src/node/`) | Frames (transports §1) |
 |---|---|---|---|
-| USB CDC, USB-Serial/JTAG, USB-UART bridge | WebSerial | - | COBS + CRC |
+| USB CDC, USB-Serial/JTAG, USB-UART bridge | Web Serial | - | COBS + CRC |
 | vendor bulk (class 0xFF) | WebUSB | - | length(u16) message |
-| vendor HID | WebHID | - | length messages in reports with count and first |
-| TCP (the tests' virtual bench, a local broker, a probe on Wi-Fi given by host and port) | - | node:net | length(u16) message |
+| vendor HID | WebHID | - | the length stream in reports with count(u16) and first(u16) |
+| TCP | - | node:net | length(u16) message |
 
-- TCP is Node's alone: a browser can neither open a TCP connection nor send mDNS, so the page offers no TCP. Node opens
-  it by host and port (`openTcp({ host, port })`; `unitId` checks describe's unit_id after opening). Finding probes on
-  the network (DNS-SD) and Node's serial ports and USB are oep-client-python's.
+- Web Serial, WebUSB and WebHID are Chromium only (Chrome, Edge), over HTTPS (or localhost). A browser can open no TCP,
+  so the page offers none.
+- Probes are recognised as transports §3 says: automatically only by the project's own USB VID:PID `1209:4F45`
+  (`PROJECT_VID_PIDS`, from the registry's `usb`); every transport opened is probed with a confirm first and closed with
+  `NotOepProbe` when no valid answer comes; a probe named by its unit_id must say that unit_id in describe
+  (`UnitIdMismatch`). The WebUSB / WebHID choosers' default filters are that VID:PID (WebHID with the OEP collection,
+  usage page 0xFF4F / usage 0x45). Web Serial's chooser gets none: a UART bridge or a built-in USB serial is never on
+  that VID:PID. Nothing looks at iProduct.
+- HID: the reader keeps whole frames only, finding them again by each report's first after a lost one, so the link's
+  resync on HID reads nothing past and waits for no quiet (transports §5). Vendor bulk waits for quiet up to the longest
+  lease. `node scripts/check-hid.mjs` drives the page's WebHID code through a real probe's Linux hidraw node.
 
-- WebUSB, WebSerial and WebHID are Chromium only (Chrome, Edge), and the page must be served over HTTPS (or localhost).
-- Probes are recognised as transports §3 says: automatically only by the project's own USB VID:PID, `1209:4F45`
-  (`PROJECT_VID_PIDS`, from the registry's `usb`); a probe named by its unit_id is the device whose USB serial it is, and
-  describe must then say that unit_id (`connect({ unitId })`, else `UnitIdMismatch`); every transport opened is probed
-  with a confirm only first, closed with `NotOepProbe` when no valid answer comes. The WebUSB / WebHID choosers' default
-  filters are that VID:PID (`PROJECT_USB_FILTERS`; WebHID with the OEP collection, usage page 0xFF4F / usage 0x45).
-  WebSerial's chooser gets no built-in filter (a UART bridge or a built-in USB serial is never on that VID:PID);
-  `PROJECT_SERIAL_FILTERS` narrows it to probes. Nothing looks at iProduct. Inside a probe the ports are chosen by the interface values
-  (registry `usb`).
+## 4. The page
 
-## 4. Browser workspace
+`web/` is split into `app.js` (the start, making a probe, connecting, routing), `common.js` (the probe's band, tabs and
+next step), `wiring.js` (the wiring list and its editor with the live checks and the connection check), `probe.js` (the
+overview, probe settings with the pass-through, using the probe in other tools, maintenance) and `device.js` (everything
+done to the connected probe). Screens reach the probe only through `device.js`; opening, saving and moving between
+screens never attach, assign pins or drive outputs - the connection check attaches only when asked, and detaches at once.
 
-The page's scope, screens and flows are in the [screen specification](page.ja.md), [connection handoff](page-connection.ja.md) and [acceptance criteria](page-acceptance.ja.md) (Japanese): a start page, making a probe, connecting, and one screen per probe with the tabs Overview, Wiring, Probe settings, Hand over to tools and Maintenance.
-
-`web/` is split into `app.js` (the start, making a probe, connecting, routing), `common.js` (the probe's band and tabs), `wiring.js` (the
-wiring list and its editor with the connection check), `probe.js` (the overview, probe settings with the pass-through, the hand-over to tools,
-maintenance) and `device.js` (everything done to the connected probe). Screens reach the probe only through `device.js`; saving, loading and moving
-between screens never attach, assign pins or drive outputs - the connection check attaches only when asked. `npm run test:browser` runs
-installation through handover against the Python virtual probe in Chromium.
-
-- `web/data.js`: the boards, the uses (what the page prepares for each, and the tool that does the work) and the documents.
-- `web/model.js`: connection names and firmware versions. `web/boards.js`: board guidance.
-- `web/oep-client.js`: the source's public API entry, replaced by the site build with an entry that refers to `site/src/`.
-- `tsconfig.web.json` checks the browser code too, and `npm run test:browser` exercises it in Chromium with the Python
-  virtual probe.
+- `web/data.js`: the boards, the uses (what the page prepares for each, and the tool that does the work), the documents.
+- `web/boards.js`: the boards' features. `web/model.js`: connection names, firmware versions.
+- `web/esp-flash.js`: ESP ROM programming through esptool-js, with the chip reset into its firmware afterwards.
+- `web/oep-client.js`: the code's entry for the page, replaced by the site build with one that refers to `site/src/`.
 
 ## 5. Things to mind
 
-- **Release files and CORS**: a browser cannot fetch GitHub Release files (no CORS headers). Firmware is put on Pages
-  too, or the user picks the file.
-- **The lock**: the page takes the lock before it changes anything, like any host (core §6), shows who holds it and ends
-  the session when it closes. A page reloaded or closed without end leaves its session to the lease (transports §3):
-  `connect` keeps the session id in localStorage by unit_id and the next page's first open ends it first (host guide §5).
-- **A failed transport** (core §5.2, host guide §8): a request whose resend also goes unanswered throws `TransportFailed`; its
-  outcome (and that of every request outstanding with it) is unknown. The link recovers with a confirm before the next
-  request goes out, and a changed boot_id then shows as a reboot (`host.epoch`). A page reads the state again before it
-  repeats anything that changes it.
+- **Release files and CORS**: a browser cannot fetch GitHub Release files (no CORS headers), so the Pages build copies
+  the latest Release's images beside the page (`scripts/fetch-firmware.js`).
+- **The lock**: the page takes the lock inside the action that changes something (core §6), with a 10 s lease kept
+  alive while connected, and ends the session when it disconnects. A page reloaded or closed without ending leaves the
+  session to its lease (transports §3), so the probe is free again within 10 s. A transport that ends by itself (the
+  cable pulled) is noticed at once; connecting again ends the session it left first.
+- **A failed transport** (core §5.2, host guide §8): a request whose resend also goes unanswered throws
+  `TransportFailed`; its outcome (and that of every request outstanding with it) is unknown. The link recovers with a
+  confirm before the next request, and a changed boot_id shows as a reboot (`host.epoch`). The page reads the state
+  again rather than repeat anything that changes it.
 - **A probe not used**: a confirm outside core §7.1's bounds, or a max_op_ms outside 1..600000, throws `NotUsable` and
-  the host sends nothing more to that probe (C-20, C-47). The page says why, with the values.
+  nothing more is sent to that probe (C-20, C-47).
 
 ## 6. Tests
 
-- `node:test`, run by `npm test`.
-- The probe is oep-client-python's virtual bench (`python -m oep_client.virtual_bench_serve` over TCP: a probe, the
-  targets behind it and the fixture wiring, modelled after the real jigs): the same virtual bench the Python tests use,
-  so the same behaviour is checked. The tests keep session ids (keptsession.js) in a temporary `$OEP_SESSION_DIR`. CI installs oep-client-python from its main branch (git).
-- The browser transports are checked on hardware (steps in [Releasing](release.md)).
+- `node:test`, run by `npm test`; the page in Chromium by `npm run test:browser`. See [testing](testing.md).
+- The probe is oep-client-python's virtual bench (`python -m oep_client.virtual_bench_serve` over TCP), pinned in
+  `test/virtual-bench/`: the same virtual bench the Python tests use.
+- Hardware: the steps before the page is published are in [publishing](publish.md).
 
 ## 7. Numbers (the registry)
 
-The one definition of the numbers is oep-spec's `registry/oep-v1.toml`. As for Python and C++, oep-spec's generator
-writes the JS constants (`generated/oep-v1/oep_v1_registry.js`), copied to `src/registry.js` (never written by hand).
-oep-spec's test vectors (`tests/vectors/*.json`) are copied the same way to `test/vectors/` and checked by
-`test/vectors.test.js` (which also compares the copy with a sibling oep-spec checkout when there is one).
+The one definition of the numbers is oep-spec's `registry/oep-v1.toml`. oep-spec's generator writes the JS constants
+(`generated/oep-v1/oep_v1_registry.js`), copied to `src/registry.js` (never written by hand). oep-spec's test vectors
+(`tests/vectors/*.json`) are copied the same way to `test/vectors/` and checked by `test/vectors.test.js`, which also
+compares the copy with a sibling oep-spec checkout when there is one.
 
 ## 8. Versions and the spec
 
-- Until the v1 freeze every tool follows a breaking spec change at once. This package counts its own versions; each
-  release's changelog names the probe firmware (OpenEmbeddedProbe) it talks to and the oep-client-python its tests used.
-- Whether to publish to npm before the freeze depends on whether someone needs it; the API changes without notice
-  until then.
+- Until the v1 freeze every tool follows a breaking spec change at once. The changelog names the oep-spec commit, the
+  probe firmware and the oep-client-python the tests used when they change.
+- `VERSION` (shown in the page's footer) marks a point when one is wanted ([publishing](publish.md)); there is no npm
+  version.

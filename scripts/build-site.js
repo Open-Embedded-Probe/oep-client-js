@@ -4,8 +4,8 @@ import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// The page uses library sources; only the ESP ROM programmer is bundled. GitHub Pages serves it; it is not in
-// the npm package. The Node transports (src/node/) stay out: a browser cannot load them.
+// The page uses the sources as they are; only the ESP ROM programmer is bundled. GitHub Pages serves it. The Node
+// transport (src/node/) stays out: a browser cannot load it.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const site = join(root, 'site');
 rmSync(site, { recursive: true, force: true });

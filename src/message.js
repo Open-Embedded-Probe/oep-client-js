@@ -232,21 +232,3 @@ export function validText(raw) {
   return !/[\u0000-\u001f\u007f]/.test(s);
 }
 
-/** a - b for values that wrap (seq u16, serials u32, resource numbers u16), as a signed number of `bits` (core §2.6).
- * @param {number} a @param {number} b @param {number} bits */
-export function serialDiff(a, b, bits = 32) {
-  const m = 2 ** bits;
-  const d = (((a - b) % m) + m) % m;
-  return d >= m / 2 ? d - m : d;
-}
-
-/** The elements lost between the last serial read (`last`) and the first of the next page (`first`), when the core §2.6
- * comparison holds (common §1.3 paging 3): the same stream (a capture: the same generation, one boot), a forward jump
- * of less than a quarter of the space. null when it cannot be told - another stream, nothing read before, a jump
- * backwards or past a quarter.
- * @param {number | null} last @param {number} first @param {boolean} sameStream @param {number} bits */
-export function serialsLost(last, first, sameStream = true, bits = 32) {
-  if (!sameStream || last === null) return null;
-  const d = serialDiff(first, last, bits);
-  return d > 0 && d < 2 ** (bits - 2) ? d - 1 : null;
-}

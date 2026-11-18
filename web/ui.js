@@ -27,9 +27,6 @@ export const note = (text, cls = '') => el('div', { class: `note ${cls}` }, text
 export const panel = (...children) => el('section', { class: 'panel' }, ...children);
 export const heading = (title, description, eyebrow = 'OEP WORKSPACE') => el('header', { class: 'page-heading' }, p(eyebrow, 'eyebrow'), el('h1', { tabindex: -1 }, title), description ? p(description) : null);
 export function keyValues(rows) { return el('dl', { class: 'key-value' }, ...rows.filter(Boolean).flatMap(([k, v]) => [el('dt', {}, k), el('dd', {}, v)])); }
-export function sectionTitle(title, description, eyebrow) {
-  return el('div', { class: 'section-head' }, el('div', {}, eyebrow ? p(eyebrow, 'eyebrow') : null, el('h2', {}, title)), description ? p(description) : null);
-}
 /** A labelled input. choices: [[value, text], ...] makes a select. */
 export function field(label, value, onInput, help = '', choices = null, type = 'text', attrs = {}) {
   const id = attrs.id ?? `field-${++fieldCount}`;

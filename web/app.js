@@ -70,7 +70,7 @@ function newInstall(boardId) {
   state.install = { board: boardId, target: null, custom: null, phase: 'idle', progress: { done: 0, total: 1, text: '' }, log: [], written: '', reason: '' };
 }
 function stepper(n) {
-  return el('ol', { class: 'stepper', 'aria-label': t('Probe creation progress', 'プローブ作成の進行') }, ...[t('Choose a board', 'ボードを選ぶ'), t('Connect and review', '接続・内容確認'), t('Write and boot', '書き込み・起動'), t('First setup', '初期設定')].map((tk, i) => el('li', { class: i === n ? 'current' : i < n ? 'done' : '', 'aria-current': i === n ? 'step' : 'false' }, el('span', {}, i < n ? '✓' : String(i + 1)), tk)));
+  return el('ol', { class: 'stepper', 'aria-label': t('Probe creation progress', 'プローブ作成の進行') }, ...[t('Choose a board', 'ボードを選ぶ'), t('Connect and review', '接続・内容確認'), t('Write and boot', '書き込み・起動'), t('Start using it', '使い始める')].map((tk, i) => el('li', { class: i === n ? 'current' : i < n ? 'done' : '', 'aria-current': i === n ? 'step' : 'false' }, el('span', {}, i < n ? '✓' : String(i + 1)), tk)));
 }
 function installFrame(n, content) {
   const b = BOARDS.find((x) => x.id === state.install?.board);

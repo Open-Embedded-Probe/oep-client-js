@@ -34,13 +34,11 @@ export const unit = () => dev.info?.unitId ?? '<unit id>';
 export const pinName = (ch) => dev.info?.channelNames.get(+ch) ?? `#${ch}`;
 export const channelList = () => [...(dev.info?.channelNames ?? new Map())].sort((a, b) => a[0] - b[0]);
 export const offered = (name) => dev.caps?.offers.filter((o) => o.entry.name === name && o.entry.revision === 1 && !o.description.unknownCritical.length && !o.description.opsInvalid) ?? [];
-export const supports = (offer, op) => !offer.description.ops || offer.description.ops.has(op);
 export function roleChannels(offer) {
   const roles = new Map([...offer.description.roles].map(([r, c]) => [r, [...c]]));
   for (const group of offer.description.groups.values()) for (const [r, ch] of group) roles.set(r, [...new Set([...(roles.get(r) ?? []), ch])]);
   return roles;
 }
-export const roleName = (offer, role) => oep.interfaces.KNOWN[offer.entry.name]?.roles[role] ?? `${role}`;
 /** The label line of a role: the registry's line names (swdio, swclk, swio, rx, tx, nrst) or the role's name. */
 export function roleLine(name, role) {
   const n = (oep.interfaces.KNOWN[name]?.roles[role] ?? `line${role}`).toLowerCase();
@@ -138,11 +136,6 @@ export async function ensureSession() {
     if (dev.host !== h || !h.session) return;
     try { await h.keepalive(); } catch (e) { if (dev.host !== h) return; lostConnection(h, e); await h.link.close().catch(() => {}); }
   }, 3000);
-}
-export async function releaseSession() {
-  clearInterval(dev.keepalive); dev.keepalive = null;
-  if (dev.host?.session) await dev.host.end();
-  changed();
 }
 // -- reading what the probe keeps --
 export async function refresh() {

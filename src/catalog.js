@@ -153,15 +153,6 @@ export function bitmapToChannels(base, bitmap) {
   return out;
 }
 
-/** @param {Iterable<number>} channels @returns {[number, Uint8Array]} */
-export function channelsToBitmap(channels) {
-  const chans = [...new Set(channels)].sort((a, b) => a - b);
-  if (!chans.length) return [0, new Uint8Array(0)];
-  const base = chans[0];
-  const bits = new Uint8Array(Math.floor((chans[chans.length - 1] - base) / 8) + 1);
-  for (const c of chans) bits[Math.floor((c - base) / 8)] |= 1 << ((c - base) % 8);
-  return [base, bits];
-}
 
 /**
  * The common describe tags decoded; interface-specific and unknown ones kept raw, in order. ops: the ops tag (core §7.4),
