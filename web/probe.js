@@ -55,7 +55,7 @@ export function settings() {
     passthroughPanel(),
     el('section', { class: 'panel', id: 'settings-network' }, el('h2', {}, t('Wi-Fi', 'Wi-Fi')), wifi ? [p(t('Settings to join a Wi-Fi probe to the bench network. This page cannot connect over TCP itself.', 'Wi-Fiに対応したプローブを、ベンチのネットワークにつなぐ設定です。このページから直接TCPで接続できるわけではありません。'), 'muted'),
       field('SSID', s.ssid ?? D.currentValue('core', 'wifi.0.ssid') ?? '', (v) => { s.ssid = v; }, '', null, 'text', { id: 'wifi-ssid' }),
-      field(t('Passphrase', 'パスフレーズ'), s.pass ?? '', (v) => { s.pass = v; }, t('Secrets are neither shown nor written to backups. Leave it empty to keep the current value.', '秘密の値は表示も控えのファイルへの書き出しもしません。空欄なら今の値のままです。'), null, 'password', { id: 'wifi-pass' }),
+      field(t('Passphrase', 'パスフレーズ'), s.pass ?? '', (v) => { s.pass = v; }, t('Secrets are neither shown nor written to backups. Leave it empty to keep the current value.', '秘密の値は表示もエクスポートもしません。空欄なら今の値のままです。'), null, 'password', { id: 'wifi-pass' }),
       actions(action(t('Apply the network settings', 'ネットワーク設定を適用'), async () => { const v = { 'wifi.0.ssid': s.ssid ?? '' }; if (s.pass) v['wifi.0.passphrase'] = s.pass; await D.applySettings('core', v); s.pass = ''; })),
       D.dev.network ? el('details', {}, el('summary', {}, t('Network state', 'ネットワークの状態')), terminal(JSON.stringify(D.dev.network, null, 2))) : null]
       : p(t('This probe has no Wi-Fi settings. That is not an installation failure.', 'このプローブにはWi-Fiの設定がありません。導入の失敗ではありません。'), 'muted')),
@@ -148,11 +148,11 @@ export function maintenance() {
     const f = e.target.files[0]; if (!f) return;
     try { handler(JSON.parse(await f.text()), f.name); } catch (error) { m.restoreError = t(`The file cannot be read: ${D.errorText(error)}`, `読めないファイルです: ${D.errorText(error)}`); render(); }
   } });
-  return [heading(t('Maintenance', '保守'), t('Update the firmware, back up and restore the settings and memo, and look into problems.', 'ファームの更新、設定とメモの控えと戻し、問題の切り分けをします。'), 'MAINTENANCE'),
+  return [heading(t('Maintenance', '保守'), t('Update the firmware, back up and restore the settings and memo, and look into problems.', 'ファームの更新、設定のエクスポートとインポート、問題の切り分けをします。'), 'MAINTENANCE'),
     el('div', { class: 'two-grid' },
       panel(el('h2', {}, t('Firmware update', 'ファームウェアの更新')), keyValues([[t('Device', '機器'), `${D.dev.info.model} / ${D.unit()}`], [t('Installed', '導入済み'), D.dev.info.firmware ?? '—'], [t('Released version', '配布している版'), D.release.manifest?.version ?? (D.release.error ? t('cannot be loaded', '読み込めません') : t('loading', '読み込み中'))]]), p(statusText, 'muted'),
         method ? [p(method === 'app' ? t('Written over native USB (DFU). You choose the device to write once.', 'native USB（DFU）で書き込みます。書き込み先の機器を一度選びます。') : t('Switched to the boot ROM over USB and written. You choose the device to write once.', 'USBから boot ROM に切り替えて書き込みます。書き込み先の機器を一度選びます。'), 'muted'),
-          note(t('Before updating, it is safest to take "Settings and memo backup" below. The connection closes during the update and reconnects to the same unit afterwards.', '更新の前に、下の「設定とメモの控え」を取っておくと安全です。更新中は接続を終了し、終わったら同じ個体に接続し直します。')),
+          note(t('Before updating, it is safest to take "Settings and memo backup" below. The connection closes during the update and reconnects to the same unit afterwards.', '更新の前に、下で設定をエクスポートしておくと安全です。更新中は接続を終了し、終わったら同じ個体に接続し直します。')),
           actions(action(t('Update this probe', 'このプローブを更新'), async () => {
             if (!confirm(t(`Writing OepProbe ${D.release.manifest?.version} to ${D.dev.info.model} / ${D.unit()}. The connection will close.`, `${D.dev.info.model} / ${D.unit()} へ OepProbe ${D.release.manifest?.version} を書き込みます。接続は終了します。`))) return false;
             const before = { unit: D.unit(), model: D.dev.info.model };
@@ -162,21 +162,21 @@ export function maintenance() {
           el('progress', { id: 'update-progress', max: m.progress?.total || 1, value: m.progress?.done ?? 0 }), el('p', { id: 'update-status' }, m.progress?.text ?? '')]
           : note(t('This probe cannot be updated from this page (a classic ESP32 is rewritten with the same serial steps as installing; a CH32 is written with WCH\'s tools).', 'このプローブはこのページからの更新に対応していません（classic ESP32は導入と同じシリアルの手順で書き直します。CH32はWCHの道具で書きます）。')),
         actions(action(t('Fetch the released images again', '配布イメージを再取得'), D.loadRelease))),
-      panel(el('h2', {}, t('Backup of settings and memo', '設定とメモの控え')), p(t('One file holds the settings (pin names, idle states, pass-through and so on) and the memo records (part numbers, memos, tools\' records) - the OEP settings file, which oep-client-python reads too. Secrets are not included. Take one before a firmware update.', '設定（ピン名・待機・素通しなど）とメモ欄の記録（型番・メモ・道具の記録）を、1つのファイルに控えます。OEPの設定のファイルで、oep-client-pythonでも読めます。秘密の値は含みません。ファームの更新の前に取っておきます。'), 'muted'),
-        actions(action(t('Take a backup', '控えを取る'), async () => {
+      panel(el('h2', {}, t('Export and import the settings', '設定のエクスポート・インポート')), p(t('One file holds the settings (pin names, idle states, pass-through and so on) and the memo records (part numbers, memos, tools\' records) - the OEP settings file, which oep-client-python reads too. Secrets are not included. Take one before a firmware update.', '設定（ピン名・待機・素通しなど）とメモ欄の記録（型番・メモ・道具の記録）を、1つのファイルにエクスポートします。OEPの設定のファイルで、oep-client-pythonでも読めます。秘密の値は含みません。ファームの更新の前にエクスポートしておきます。'), 'muted'),
+        actions(action(t('Export the settings', '設定をエクスポート'), async () => {
           const { doc, leftOut } = await D.exportSettings();
           download(`${D.unit()}.oep-settings.json`, JSON.stringify(doc, null, 2) + '\n', 'application/json');
           m.leftOut = leftOut.map((n) => { try { return new TextDecoder('utf-8', { fatal: true }).decode(n); } catch { return Array.from(n, (b) => b.toString(16).padStart(2, '0')).join(''); } });
         }, 'primary', { id: 'export-settings' })),
-        m.leftOut?.length ? note(t(`Not in the backup (torn, or a name that is not text): ${m.leftOut.join(', ')}`, `控えに入れなかった記録（壊れている、または名前が文字でない）: ${m.leftOut.join('、')}`), 'amber') : null,
-        el('h3', { class: 'mt' }, t('Restore from a backup', '控えから戻す')), p(t('Choosing a file shows the differences before anything is applied. A file with a memo makes the memo area the file\'s: records it lacks are deleted.', 'ファイルを選ぶと、適用する前に差分を表示します。メモ欄を含むファイルは、メモ欄をファイルのとおりにします（ファイルに無い記録は消えます）。'), 'muted'),
-        el('label', { class: 'field' }, t('Backup file (.oep-settings.json)', '控えのファイル（.oep-settings.json）'), readFile(async (doc, name) => {
+        m.leftOut?.length ? note(t(`Not in the backup (torn, or a name that is not text): ${m.leftOut.join(', ')}`, `エクスポートに入れなかった記録（壊れている、または名前が文字でない）: ${m.leftOut.join('、')}`), 'amber') : null,
+        el('h3', { class: 'mt' }, t('Import the settings', '設定をインポート')), p(t('Choosing a file shows the differences before anything is applied. A file with a memo makes the memo area the file\'s: records it lacks are deleted.', 'ファイルを選ぶと、適用する前に差分を表示します。メモ欄を含むファイルは、メモ欄をファイルのとおりにします（ファイルに無い記録は消えます）。'), 'muted'),
+        el('label', { class: 'field' }, t('Settings file (.oep-settings.json)', '設定のファイル（.oep-settings.json）'), readFile(async (doc, name) => {
           m.restoreError = '';
           m.plan = await D.planRestore(doc); m.planFile = name;
           render();
         })),
         m.restoreError ? note(m.restoreError, 'error') : null,
-        m.plan ? el('div', { class: 'panel' }, el('h3', {}, t(`Differences (${m.planFile})`, `差分（${m.planFile}）`)), m.plan.otherProbe ? note(t('This backup is from another probe. Applying it puts that unit\'s settings into this one.', '別のプローブの控えです。適用すると、この個体に別の個体の設定が入ります。'), 'amber') : null,
+        m.plan ? el('div', { class: 'panel' }, el('h3', {}, t(`Differences (${m.planFile})`, `差分（${m.planFile}）`)), m.plan.otherProbe ? note(t('This backup is from another probe. Applying it puts that unit\'s settings into this one.', '別のプローブからエクスポートしたファイルです。適用すると、この個体に別の個体の設定が入ります。'), 'amber') : null,
           keyValues([[t('Values to apply', '適用する値'), String(m.plan.sets.length)], [t('Values to clear', '解除する値'), String(m.plan.unsets.length)],
             [t('Memo records to write', '書くメモの記録'), m.plan.memoWrites.length ? m.plan.memoWrites.map(([n]) => new TextDecoder().decode(n)).join(', ') : '0'],
             [t('Memo records to delete', '消すメモの記録'), m.plan.memoDeletes.length ? m.plan.memoDeletes.map((n) => new TextDecoder().decode(n)).join(', ') : '0'],
@@ -191,7 +191,7 @@ export function maintenance() {
       actions(action(t('Read the declarations again', '宣言を読み直す'), D.rereadDeclarations), button(t('Save the declarations as JSON', '宣言をJSONで保存'), () => download(`oep-${D.unit()}.json`, D.declarationsJson(), 'application/json'))),
       el('pre', { class: 'terminal' }, D.declarationsText()),
       D.dev.memo ? [el('h3', { class: 'mt' }, t('Memo area records', 'メモ領域の記録')), table([t('Name', '名前'), t('Size', '大きさ')], D.dev.memos.map((x) => [new TextDecoder().decode(x.name), `${x.size} B`])),
-        p(t('A broken record never removes wiring labels. Write it back from a backup, or delete just that record.', '壊れた記録があっても、配線のラベルは消しません。控えから書き戻すか、その記録だけを消します。'), 'muted')] : null),
+        p(t('A broken record never removes wiring labels. Write it back from a backup, or delete just that record.', '壊れた記録があっても、配線のラベルは消しません。エクスポートしたファイルからインポートし直すか、その記録だけを消します。'), 'muted')] : null),
   ];
 }
 

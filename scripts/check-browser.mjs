@@ -289,7 +289,7 @@ try {
   const lastDownload = () => evaluate('globalThis.__downloads.at(-1).text()');
   const upload = (json) => evaluate(`{const i=document.querySelector('input[type=file]');const t=new DataTransfer();t.items.add(new File([${JSON.stringify(json)}],'backup.json',{type:'application/json'}));i.files=t.files;i.dispatchEvent(new Event('change',{bubbles:true}));}`);
   // one backup file holds the settings and the memo (settings file §2.4)
-  await go('/probe/maintenance'); await press('控えを取る');
+  await go('/probe/maintenance'); await press('設定をエクスポート');
   const backup = JSON.parse(await lastDownload());
   assert.equal(backup.oep_settings, 1);
   assert.ok(Object.keys(backup.memo).some((k) => k.endsWith('/port/dut')), 'the backup has the memo\'s port records');
