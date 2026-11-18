@@ -225,10 +225,13 @@ try {
   await press('シリアルポートを選ぶ'); assert.equal(await evaluate('location.hash'), '#/probe/settings');
   // W03: debug + UART wiring saved with the target absent: no scan, attach or pin assignment (A13).
   await evaluate('globalThis.__forbidTargetIO=true');
-  await go('/probe/wiring/new?purpose=uart');
+  // a new wiring starts empty; signals are added there and keep one order whatever order they come in (page.ja.md §6.4)
+  await go('/probe/wiring/new');
   assert.equal(await evaluate('document.querySelector("[data-kind]")'), null, 'no fixed / connector choice: the part number field guides it');
-  await choose('[data-line="0-rx"]', 3);
-  await tap('[data-add-group=custom]'); await choose('[data-line="1-signal1"]', 6);
+  assert.equal(await evaluate('document.querySelectorAll(".wire-group").length'), 0);
+  await tap('[data-add-group=custom]'); await tap('[data-add-group=uart]');
+  assert.deepEqual(await evaluate('[...document.querySelectorAll(".wire-group")].map((g) => g.dataset.group)'), ['uart', 'custom'], 'UART before other signals');
+  await choose('[data-line="0-rx"]', 3); await choose('[data-line="1-signal1"]', 6);
   // the name is checked as it is typed: the message under the field, Save off until it is right (page.ja.md §6.4)
   const nameCheck = () => evaluate('document.getElementById("conn-name-check").textContent');
   const saveOff = () => evaluate('document.getElementById("save-connection").disabled');
@@ -252,7 +255,7 @@ try {
   await go('/probe/wiring/x035'); await press('指定したピンで接続確認'); assert.match(await evaluate('document.getElementById("debug-check-0").textContent'), /応答あり: dmstatus/);
   await click('キャンセル'); await delay(100);
   // A new debug wiring: choosing the pins enables the connection check at once (no other redraw needed).
-  await go('/probe/wiring/new?purpose=debug'); await tap('[data-wire=rvswd]');
+  await go('/probe/wiring/new'); await tap('[data-add-group=debug]'); await tap('[data-wire=rvswd]');
   assert.equal(await evaluate('document.querySelector("[data-check=\'0\']").disabled'), true, 'no pins yet: the check waits');
   await choose('[data-line="0-swdio"]', 1);
   await choose('[data-line="0-swclk"]', await evaluate('document.querySelector(\'[data-line="0-swclk"]\').options.length - 1'));
@@ -317,11 +320,11 @@ try {
   const japanese = () => evaluate(`(()=>{const c=document.body.cloneNode(true);c.querySelectorAll('#language,script,noscript').forEach(e=>e.remove());
     const attrs=[...c.querySelectorAll('*')].flatMap(e=>['aria-label','title','placeholder'].map(a=>e.getAttribute(a)??''));
     return [c.textContent,...attrs].join(' ').match(/[\u3040-\u30ff\u4e00-\u9fff]+/g);})()`);
-  await go('/probe/wiring/new?purpose=uart'); await pick('#conn-name', 'keepme');
+  await go('/probe/wiring/new'); await pick('#conn-name', 'keepme');
   assert.notEqual(await japanese(), null, 'the Japanese check finds Japanese');
   await pick('#language', 'en'); await delay(120);
   assert.equal(await evaluate('document.getElementById("conn-name").value'), 'keepme', 'the input survives the language change');
-  assert.equal(await evaluate('location.hash'), '#/probe/wiring/new?purpose=uart'); assert.equal(await evaluate('document.documentElement.lang'), 'en');
+  assert.equal(await evaluate('location.hash'), '#/probe/wiring/new'); assert.equal(await evaluate('document.documentElement.lang'), 'en');
   assert.equal(await evaluate('!!document.querySelector("[data-action=disconnect]")'), true, 'still connected');
   await press('Disconnect');
   await send('Page.reload'); await delay(300); await until('document.querySelector("h1")');
@@ -335,7 +338,7 @@ try {
   };
   for (const r of ['/', '/make', '/make/prepare', '/make/review', '/connect', '/probe', '/nowhere']) await english(r);
   await go('/connect'); await press('Choose a serial port');
-  for (const r of ['/probe', '/probe/wiring', '/probe/wiring/new', ...['debug', 'uart', 'i2c', 'spi', 'custom'].map((x) => `/probe/wiring/new?purpose=${x}`),
+  for (const r of ['/probe', '/probe/wiring', '/probe/wiring/new',
     '/probe/wiring/x035', '/probe/wiring/dut', '/probe/settings', '/probe/tools', '/probe/maintenance']) await english(r);
   for (const [href, from] of links) {
     if (href.startsWith('/make/')) continue;              // the make steps need a board chosen; reached in the install flow above

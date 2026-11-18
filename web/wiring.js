@@ -50,24 +50,22 @@ function focusGroup(index) {
   g.scrollIntoView({ block: 'center' });
   /** @type {HTMLElement | null} */ (g.querySelector('button.pattern-card, select, input'))?.focus({ preventScroll: true });
 }
+/** The editor's groups in one fixed order whatever order they were added in (page.ja.md §6.4). */
+const GROUP_ORDER = ['debug', 'uart', 'i2c', 'spi', 'custom'];
+function sortGroups(groups) { return [...groups].sort((a, b) => GROUP_ORDER.indexOf(a.type) - GROUP_ORDER.indexOf(b.type)); }
 function newGroup(type, wire = '') { return { type, wire, pins: type === 'custom' ? { signal1: '' } : {}, target: {} }; }
 function draftFrom(port) {
   const groups = groupsOf(port).map((g) => ({ ...g, pins: Object.fromEntries(Object.entries(g.pins).map(([k, v]) => [k, String(v)])), target: {} }));
   for (const [, label] of port.lines) { const pl = /** @type {any} */ (label).split('@'); if (pl[1]) { const line = pl[0].split('.')[1]?.toLowerCase(); for (const g of groups) if (line in g.pins) g.target[line] = pl[1]; } }
   const rec = D.recordOf(port.name);
-  return { editId: port.name, name: port.name, part: rec.part ?? '', note: rec.note ?? '', groups, purpose: groups[0]?.type ?? '', original: { name: port.name, lines: port.lines.map(([c, l]) => [c, l]) }, check: {} };
+  return { editId: port.name, name: port.name, part: rec.part ?? '', note: rec.note ?? '', groups: sortGroups(groups), original: { name: port.name, lines: port.lines.map(([c, l]) => [c, l]) }, check: {} };
 }
 export function editor(id, query) {
-  const purpose = query.get('purpose');
-  if (id === 'new' && !purpose && !state.draft) return frame([heading(t('What is the wiring for?', 'どの用途の配線を登録しますか。'), t('Start from the kind of signal. You can add other signals to the same target later. No target needs to be connected.', '信号の種類から始めます。あとで別の信号も同じ接続先に追加できます。ターゲットは未接続でかまいません。')),
-    el('div', { class: 'two-grid' }, ...[['debug', t('Debug (SWD / RVSWD / 1-wire DIO)', 'デバッグ（SWD / RVSWD / 1線DIO）'), t('The target\'s debug pins. Swapping targets on a fixed connector also starts here.', '相手のデバッグ端子。決まったコネクタで相手を差し替える使い方もここから。')], ['uart', 'UART', t('Lines to read the target\'s log and send commands.', '相手のログを読む・コマンドを送る線。')], ['i2c', 'I2C', t('Lines to sensors and peripherals, or for answering as a stand-in.', 'センサや周辺IC、または代役で応答する線。')], ['spi', 'SPI', t('Lines to SPI devices, or for answering as a stand-in.', 'SPIの機器、または代役で応答する線。')], ['custom', t('Other signals', 'そのほかの信号'), t('GPIO control lines, signals to observe and so on. You name them.', 'GPIOの制御線、観測したい信号など。名前を自分で付けます。')]].map(([tk, title, d]) =>
-      el('a', { class: 'pattern-card', href: `#/probe/wiring/new?purpose=${tk}`, 'data-new-purpose': tk }, el('strong', {}, title), el('span', {}, d)))),
-    actions(link(t('Back to the wiring list', '配線の一覧に戻る'), '/probe/wiring'))]);
   if (!state.draft || state.draft.editId !== id) {
     const port = id === 'new' ? null : D.portOf(id);
     if (id !== 'new' && !port) return frame([heading(t('This wiring was not found.', 'この配線は見つかりません。'), t('It may have been renamed or deleted.', '名前の変更か削除が行われた可能性があります。')), link(t('To the wiring list', '配線の一覧へ'), '/probe/wiring', true)]);
     state.returnTo = '/probe/wiring';
-    state.draft = port ? draftFrom(port) : { editId: 'new', name: '', part: '', note: '', purpose, groups: [newGroup(purpose === 'debug' ? 'debug' : purpose, '')], original: null, check: {} };
+    state.draft = port ? draftFrom(port) : { editId: 'new', name: '', part: '', note: '', groups: [], original: null, check: {} };
     state.dirty = false;
   }
   const d = state.draft;
@@ -81,7 +79,7 @@ export function editor(id, query) {
     !D.dev.memo ? note(t('This probe has no memo area, so the part number and memo are saved in this browser only (other PCs do not get them). The wiring is saved in the probe.', 'このプローブにはメモ領域がないため、型番・メモはこのブラウザだけに保存します（他のPCには渡りません）。配線はプローブに保存します。'), 'amber') : null);
   const wiring = el('fieldset', { class: 'form-group' }, el('legend', {}, t('Signals and probe pins', '信号とプローブ側のピン')), p(t('Several kinds, such as debug and UART, can be registered together. The choices come from this probe\'s declarations.', 'デバッグとUARTなど、複数の種類を一緒に登録できます。候補はこのプローブの宣言から出しています。'), 'muted'),
     ...d.groups.map((g, i) => groupEditor(g, i, d, touch)),
-    el('div', { class: 'mt' }, el('h3', {}, t('Add a signal to this wiring', 'この配線に信号を追加')), p(t('It is added at the end of the list above.', '上の一覧の最後に加わります。'), 'compact muted'), el('div', { class: 'choice-row' }, ...['debug', 'uart', 'i2c', 'spi', 'custom'].map((tk) => button(t(`+ ${GROUP_TITLE[tk]}`, `＋ ${GROUP_TITLE[tk]}`), () => { d.groups.push(newGroup(tk)); touch(); render(); focusGroup(d.groups.length - 1); }, '', { disabled: tk !== 'custom' && d.groups.some((g) => g.type === tk), 'data-add-group': tk })))));
+    el('div', { class: 'mt' }, el('h3', {}, d.groups.length ? t('Add a signal to this wiring', 'この配線に信号を追加') : t('Add the signals this wiring carries', 'この配線の信号を追加')), p(t('Signals are kept in a fixed order: debug, UART, I2C, SPI, other signals.', '信号はいつも デバッグ・UART・I2C・SPI・そのほかの信号 の順に並びます。'), 'compact muted'), el('div', { class: 'choice-row' }, ...['debug', 'uart', 'i2c', 'spi', 'custom'].map((tk) => button(t(`+ ${GROUP_TITLE[tk]}`, `＋ ${GROUP_TITLE[tk]}`), () => { const g = newGroup(tk); d.groups = sortGroups([...d.groups, g]); touch(); render(); focusGroup(d.groups.indexOf(g)); }, '', { disabled: tk !== 'custom' && d.groups.some((g) => g.type === tk), 'data-add-group': tk })))));
   return frame([heading(id === 'new' ? t('What goes to which pin?', '何を、どのピンにつなぎますか。') : t(`Edit the wiring of ${d.original?.name}`, `${d.original?.name}の配線を編集`), t('Set the target and its wiring in one place. Saving starts no connection or output.', '相手の情報と配線を、ひとつの場所で設定します。保存しても接続・出力は始まりません。'), 'CONNECTION'),
     el('form', { id: 'connection-form', onsubmit: (e) => { e.preventDefault(); } }, targetFields, wiring,
       el('div', { id: 'form-error', class: 'form-error', role: 'status' }),

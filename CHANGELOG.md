@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) New wiring opens the editor directly, with no signals yet: they are added there, and the screen choosing a kind first is gone. Signal groups keep one order - debug, UART, I2C, SPI, other signals - whatever order they are added in.
+- (JA) 新しい配線は、信号の無い編集画面をそのまま開き、そこで信号を追加する。種類を先に選ぶ画面は無くした。信号のまとまりは、追加した順によらず、いつも デバッグ・UART・I2C・SPI・そのほかの信号 の順に並ぶ。
+
 - (EN) Wiring editor: the entries are checked as they are typed - the connection name's problem (not a letter first, a character it cannot take, too long, another wiring's name) under its field, the others (a pin missing or chosen twice or held by another wiring, a signal or target pin name with a character it cannot take, naming the signal, a label over 32 bytes) above Save, which waits until there are none; spaces around a signal or target pin name are dropped. The choice between a fixed target and a connector is gone: the part number field says to fill it for a target that stays and leave it empty for a connector boards are swapped on. The wiring list shows each signal group on its own line.
 - (JA) 配線の編集: 入力を打つたびに確かめる。接続名の誤り（英字で始まらない、使えない文字、長すぎる、ほかの配線と同じ名前）はその欄の下に、ほかの誤り（ピンが無い・2回選んだ・ほかの配線が使っている、信号名や相手側のピン名に使えない文字（どの信号かを書く）、32 byteを超えるラベル）は保存の上に出し、無くなるまで保存しない。信号名と相手側のピン名の前後の空白は外す。「相手が決まっている／コネクタ」の選択は無くし、型番の欄で、ずっとつなぐ相手なら書き、ボードを差し替えるコネクタなら空けると案内する。配線の一覧は信号のまとまりごとに1行で出す。
 
