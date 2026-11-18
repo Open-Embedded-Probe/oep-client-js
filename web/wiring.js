@@ -189,7 +189,7 @@ async function saveDraft(id) {
   const debug = d.groups.find((g) => g.type === 'debug' && g.wire !== 'swio')?.wire ?? '';
   const out = await D.saveConnection({ original: d.original, name, desired, part: d.part.trim(), note: d.note, debug });
   state.dirty = false; state.draft = null;
-  state.notice = t(`"${name}" ${out.persistent ? 'was saved' : 'was applied for now (this probe cannot store settings)'}. ${out.inProbe ? '' : 'The part number and memo were saved in this browser. '}Saving never starts a connection or an output.`, `「${name}」を${out.persistent ? '保存しました' : '今回だけ適用しました（このプローブは永続保存できません）'}。${out.inProbe ? '' : '型番・メモはこのブラウザに保存しました。'}保存によって接続・出力が始まることはありません。`);
+  state.notice = t(`"${name}" ${out.persistent ? 'was saved' : 'was applied for now (this probe cannot store settings)'}. ${out.inProbe ? '' : 'The part number and memo were saved in this browser. '}Next: probe settings, or use it in other tools (the link at the bottom).`, `「${name}」を${out.persistent ? '保存しました' : '今回だけ適用しました（このプローブは永続保存できません）'}。${out.inProbe ? '' : '型番・メモはこのブラウザに保存しました。'}次は、下の「2 本体を設定する」か、ほかの道具で使います。`);
   go(state.returnTo);
 }
 export { checkbox };

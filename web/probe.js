@@ -34,21 +34,33 @@ export function settings() {
     if (!Object.keys(set).length && !unset.length) throw new Error(t('No pins were changed.', '変更したピンがありません。'));
     await D.applySettings('core', set, unset); s.pins = {};
   };
-  return [heading(t('Probe settings', '本体設定'), t('Each "Apply" takes effect at once. To keep the changes after a restart, press "Save" at the top: it stores all of the probe\'s current values.', '「適用」はその場で効きます。再起動後も残すには、上の「保存」を押します（本体の現在値全体を保存します）。'), 'PROBE SETTINGS'),
+  const sum = D.settingsSummary();
+  /** @type {[string, string, string, string][]} */
+  const sections = [
+    ['pins', t('Pins: idle states and pins kept off', 'ピン: 待機状態・使わせないピン'), t('How free pins rest, and pins no function may use (LEDs, buttons, boot pins).', '空いたピンの状態と、どの機能にも使わせないピン（LED・ボタン・起動用の端子など）。'), t(`${sum.pins} set`, `${sum.pins} 本設定済み`)],
+    ['passthrough', t('Log pass-through', 'ログの素通し'), t('The target\'s log to the probe\'s serial port, for an ordinary serial monitor.', '相手のログをプローブのシリアルポートへ流し、普通のシリアルモニタで読む。'), sum.passthroughs.length ? sum.passthroughs.map(([r]) => r).join(', ') : t('none', 'なし')],
+    ...(sum.wifi !== null ? [/** @type {[string, string, string, string]} */ (['network', t('Wi-Fi', 'Wi-Fi'), t('Join the probe to a network.', 'プローブをネットワークにつなぐ。'), sum.wifi || t('none', 'なし')])] : []),
+    ...(sum.usb !== null ? [/** @type {[string, string, string, string]} */ (['usb', t('USB paths', 'USBの経路'), t('Which OEP paths the probe\'s own USB offers (after a restart).', 'プローブ自身のUSBが出すOEPの経路（再起動で有効）。'), sum.usb || t('default', '既定')])] : []),
+    ['all', t('All setting values', 'すべての設定値'), t('Every value, and any item by its name.', 'すべての値と、名前で指定する任意の項目。'), t(`${D.dev.settingsRows.length} values`, `${D.dev.settingsRows.length} 個`)],
+  ];
+  return [heading(t('Probe settings', '本体設定'), t('How the probe behaves on its own. Set only what you need: each section\'s "Apply" takes effect at once, and "Save" in the bar at the top keeps everything after a restart.', 'プローブそのものの動きを決めます。要るものだけ設定してください。各項目の「適用」でその場で効き、上の帯の「保存」で再起動後も残ります。'), 'PROBE SETTINGS'),
+    el('nav', { class: 'settings-index', 'aria-label': t('In this screen', 'この画面の項目') }, ...sections.map(([id, title, desc, now]) =>
+      el('a', { class: 'setting-link', href: `#settings-${id}`, 'data-section': id, onclick: (/** @type {MouseEvent} */ e) => { e.preventDefault(); e.stopPropagation(); document.getElementById(`settings-${id}`)?.scrollIntoView({ block: 'start' }); } },
+        el('div', {}, el('strong', {}, title), el('span', { class: 'muted' }, desc)), el('span', { class: 'step-now' }, now)))),
     !D.dev.changeable ? note(t('This probe\'s settings cannot be changed (read only).', 'このプローブは設定を変更できません（読み取りのみ）。'), 'amber') : null,
     actions(action(t('Read again', '読み直す'), D.refresh)),
-    panel(el('h2', {}, t('Idle states and pins kept off', '待機状態・使わせないピン')), p(t('The state of pins while no function uses them, and pins no function may use. Free pins change at once; pins in use change when released.', '機能が使っていない間のピンの状態と、どの機能にも使わせないピンです。空いているピンにはすぐ、使用中のピンには解放したときに効きます。'), 'muted'),
+    el('section', { class: 'panel', id: 'settings-pins' }, el('h2', {}, t('Pins: idle states and pins kept off', 'ピン: 待機状態・使わせないピン')), p(t('The state of pins while no function uses them, and pins no function may use. Free pins change at once; pins in use change when released.', '機能が使っていない間のピンの状態と、どの機能にも使わせないピンです。空いているピンにはすぐ、使用中のピンには解放したときに効きます。'), 'muted'),
       hasIdle || hasDisable ? [el('details', {}, el('summary', {}, t(`Pins (${pinRows.length})`, `ピンの一覧（${pinRows.length} 本）`)), table([t('Pin', 'ピン'), t('Label', 'ラベル'), t('Idle', '待機'), t('Use', '使用')], pinRows)),
         actions(action(t('Apply the pin settings', 'ピンの設定を適用'), applyPins, 'primary', { id: 'apply-pins' }))] : note(t('This probe has no idle pin settings.', 'このプローブは、ピンの待機状態の設定を持っていません。'))),
     passthroughPanel(),
-    panel(el('h2', {}, t('Network', 'ネットワーク')), wifi ? [p(t('Settings to join a Wi-Fi probe to the bench network. This page cannot connect over TCP itself.', 'Wi-Fiに対応したプローブを、ベンチのネットワークにつなぐ設定です。このページから直接TCPで接続できるわけではありません。'), 'muted'),
+    el('section', { class: 'panel', id: 'settings-network' }, el('h2', {}, t('Wi-Fi', 'Wi-Fi')), wifi ? [p(t('Settings to join a Wi-Fi probe to the bench network. This page cannot connect over TCP itself.', 'Wi-Fiに対応したプローブを、ベンチのネットワークにつなぐ設定です。このページから直接TCPで接続できるわけではありません。'), 'muted'),
       field('SSID', s.ssid ?? D.currentValue('core', 'wifi.0.ssid') ?? '', (v) => { s.ssid = v; }, '', null, 'text', { id: 'wifi-ssid' }),
       field(t('Passphrase', 'パスフレーズ'), s.pass ?? '', (v) => { s.pass = v; }, t('Secrets are neither shown nor written to backups. Leave it empty to keep the current value.', '秘密の値は表示も控えのファイルへの書き出しもしません。空欄なら今の値のままです。'), null, 'password', { id: 'wifi-pass' }),
       actions(action(t('Apply the network settings', 'ネットワーク設定を適用'), async () => { const v = { 'wifi.0.ssid': s.ssid ?? '' }; if (s.pass) v['wifi.0.passphrase'] = s.pass; await D.applySettings('core', v); s.pass = ''; })),
       D.dev.network ? el('details', {}, el('summary', {}, t('Network state', 'ネットワークの状態')), terminal(JSON.stringify(D.dev.network, null, 2))) : null]
       : p(t('This probe has no Wi-Fi settings. That is not an installation failure.', 'このプローブにはWi-Fiの設定がありません。導入の失敗ではありません。'), 'muted')),
     usbPanel(s),
-    el('details', { class: 'panel mt' }, el('summary', {}, t('All setting values (details)', 'すべての設定値（詳細）')),
+    el('details', { class: 'panel mt', id: 'settings-all' }, el('summary', {}, t('All setting values (details)', 'すべての設定値（詳細）')),
       D.dev.settingsRows.length ? table([t('Category', '分類'), t('Item', '項目'), t('Value', '値')], D.dev.settingsRows.map((r) => [r.category, r.name, D.itemOf(r.category, r.name)?.restart ? [show(r.value), ' ', badge(t('after restart', '再起動で有効'), 'amber')] : show(r.value)])) : p(t('No explicit setting values.', '明示的な設定値はありません。'), 'muted'),
       D.dev.changeable ? el('div', { class: 'field-grid mt' }, field(t('Category', '分類'), s.cat ?? 'core', (v) => { s.cat = v; }, '', [...(D.dev.catalog?.category.values() ?? [])].map((c) => [c, c])),
         field(t('Item (for example channel.GPIO5.idle)', '項目（例: channel.GPIO5.idle）'), s.flat ?? '', (v) => { s.flat = v; }), field(t('Value', '値'), s.value ?? '', (v) => { s.value = v; })) : null,
@@ -85,8 +97,8 @@ function passthroughPanel() {
     if (s.source === 'uart') s.rx = lines.has('rx') ? String(lines.get('rx')) : '';
     else { const g = groupsOf(port).find((x) => x.type === 'debug'); s.wire = g?.wire || debugWireOf(port) || 'rvswd'; s.dio = String(lines.get('swio') ?? lines.get('swdio') ?? ''); s.clk = String(lines.get('swclk') ?? ''); }
   };
-  if (!uartCats.length && !consoleCats.length) return panel(el('h2', {}, t('Log pass-through', 'ログの素通し')), p(t('This probe has no pass-through setting.', 'このプローブは素通しの設定を持っていません。'), 'muted'));
-  return el('section', { class: 'panel', id: 'passthrough' }, el('h2', {}, t('Log pass-through', 'ログの素通し')),
+  if (!uartCats.length && !consoleCats.length) return el('section', { class: 'panel', id: 'settings-passthrough' }, el('h2', {}, t('Log pass-through', 'ログの素通し')), p(t('This probe has no pass-through setting.', 'このプローブは素通しの設定を持っていません。'), 'muted'));
+  return el('section', { class: 'panel', id: 'settings-passthrough' }, el('h2', {}, t('Log pass-through', 'ログの素通し')),
     p(t('While no OEP session is open, the probe sends the target\'s UART or debug-wire (WCH) log to one of its serial ports, so an ordinary serial monitor shows it. One way, target → PC.', 'OEPのセッションが無い間、相手のUARTかデバッグ線（WCH）のログをプローブのシリアルポートへ流し、普通のシリアルモニタで読めるようにします。相手 → PCの一方向です。'), 'muted'),
     existing.length ? el('div', { class: 'sub' }, el('h3', {}, t('Now set', '今の素通し')), keyValues(existing.map(([r, , txt]) => [r, txt])),
       actions(...existing.map(([r, cat]) => action(t(`Remove the pass-through on ${r}`, `${r}の素通しを外す`), () => D.applySettings(cat, {}, ['rx', 'baud', 'format', 'wire', 'swdio', 'swclk', 'mechanism', 'max-speed'].map((k) => `passthrough.${r}.${k}`).filter((f) => D.currentValue(cat, f) !== undefined)))))) : null,
@@ -100,7 +112,7 @@ function passthroughPanel() {
     el('div', { class: 'sub' }, el('h3', {}, t('The probe port it goes out on', 'ログを出すプローブのポート')), field(t('Output serial port', '出力先のシリアルポート'), s.route, (v) => { s.route = v; }, t('One pass-through per port. This does not change how you connect.', '1つのポートに置ける素通しは1つです。接続方式を選び直す操作ではありません。'), routes.map((r) => [r, r]), 'text', { id: 'pt-route' }),
       note(t('It pauses while an OEP tool is using the probe and resumes when the session ends. This page\'s connection is closed at the end too.', 'OEPの道具が使っている間は止まり、セッションが終わると再開します。このページの接続も、最後に終了します。')),
       actions(action(t('Apply the pass-through', '素通し設定を適用'), apply, 'primary', { id: 'apply-passthrough', disabled: !s.category })),
-      s.applied ? p(t('Applied. Save it (at the top) to keep it after a restart; then open the port in a serial monitor once this page has disconnected (Hand over to tools).', '適用しました。再起動後も残すには上の「保存」を押します。シリアルモニタでは、このページの接続を終えてから（道具へ渡す）ポートを開きます。'), 'muted') : null),
+      s.applied ? p(t('Applied. Save it (at the top) to keep it after a restart; then open the port in a serial monitor once this page has disconnected (Use in other tools).', '適用しました。再起動後も残すには上の「保存」を押します。シリアルモニタでは、このページの接続を終えてから（ほかの道具で使う）ポートを開きます。'), 'muted') : null),
     external(t('Pass-through settings and limits', '素通し設定と制約'), guide('settings')));
 }
 
@@ -115,7 +127,7 @@ function usbPanel(s) {
     state.notice = t('The probe restarted. Its USB device may have changed, so choose the probe again.', 'プローブを再起動しました。USBの機器が変わることがあるため、もう一度プローブを選んでください。');
     state.connectReturn = '/probe/settings'; go('/connect');
   };
-  return panel(el('h2', {}, t('Paths offered over USB', 'USBで出す接続経路')),
+  return el('section', { class: 'panel', id: 'settings-usb' }, el('h2', {}, t('USB paths', 'USBの経路')),
     p(t('The combination of OEP paths (bulk, HID, CDC) on the probe\'s own USB. Takes effect after a restart. The browser uses one of bulk (WebUSB), HID (WebHID) or CDC (Web Serial).', 'プローブ自身のUSBが出すOEPの経路（bulk・HID・CDC）の組み合わせです。再起動した後に効きます。ブラウザで使うのはbulk（WebUSB）・HID（WebHID）・CDC（Web Serial）のどれかです。'), 'muted'),
     keyValues([[t('Current setting', '今の設定'), now === undefined ? t('default', '既定') : show(now)]]),
     D.dev.changeable ? [field(t('Combination of paths', '経路の組み合わせ'), s.usb ?? (now === undefined ? '' : String(now)), (v) => { s.usb = v; }, t('Only the combinations the probe declares can be chosen.', '選べるのはプローブが宣言した組み合わせだけです。'), choices, 'text', { id: 'usb-transports' }),
@@ -182,8 +194,11 @@ export function maintenance() {
 // -- P5: hand over to tools (page.ja.md §6.6), in the order of the uses --
 export function tools() {
   const id = D.unit();
-  const swdPorts = D.dev.ports.filter((port) => groupsOf(port).some((g) => g.type === 'debug' && g.wire === 'swd'));
-  const ch32Ports = D.dev.ports.filter((port) => groupsOf(port).some((g) => g.type === 'debug' && g.wire !== 'swd'));
+  // a debug wiring whose method is not known (swdio / swclk serve SWD and RVSWD alike, and no record says which) is
+  // offered on both sides rather than hidden
+  const debugWire = (/** @type {any} */ port) => groupsOf(port).find((g) => g.type === 'debug')?.wire;
+  const swdPorts = D.dev.ports.filter((port) => ['swd', ''].includes(debugWire(port) ?? 'none'));
+  const ch32Ports = D.dev.ports.filter((port) => ['rvswd', 'swio', ''].includes(debugWire(port) ?? 'none'));
   const s = state.handoff ??= { port: '' };
   const swd = swdPorts.find((x) => x.name === s.port) ?? swdPorts[0];
   const board = s.board ?? 'rpipico';
@@ -191,13 +206,14 @@ export function tools() {
   const debugJson = JSON.stringify([{ configId: `rp2040:rp2040:${board}`, servertype: 'external', gdbTarget: 'localhost:3333' }], null, 2);
   const passthroughs = D.currentPassthroughs();
   const section = (anchor, title, ...kids) => el('section', { class: 'panel mt', id: `tool-${anchor}` }, el('h2', {}, title), ...kids);
-  return [heading(t('Hand over to tools', '道具へ渡す'), t('The work itself is done in these tools. Here are what each needs from this probe; when a tool opens the probe, end this page\'s connection at the bottom.', '作業そのものは次の道具で行います。それぞれがこのプローブについて要る情報を出します。道具がプローブを開くときは、下でこのページの接続を終えます。'), 'TOOLS'),
+  return [heading(t('Use in other tools', 'ほかの道具で使う'), t('This page only prepares the probe. Debugging, reading logs, capturing waveforms and scripts are done in the tools below; each section gives what that tool needs: this probe\'s address, a command, a file. When a tool opens the probe itself, end this page\'s use at the bottom first.', 'このページはプローブの準備までです。デバッグ、ログを読む、波形を取る、スクリプトは次の道具で行います。それぞれの道具に要るもの ― このプローブのアドレス、コマンド、ファイル ― を出します。道具がプローブを開くときは、先に一番下でこのページの利用を終えます。'), 'OTHER TOOLS'),
     section('debug', t('1. Debug and write a target', '1. ターゲットをデバッグ・書き込み'),
       el('h3', {}, t('CH32 (ArduinoCore-CH32RV)', 'CH32（ArduinoCore-CH32RV）')), p(t('The board definitions know OEP ports. Use this address as the IDE\'s port.', 'ボードの定義がOEPのポートを持ちます。IDEのポートにこのアドレスを使います。'), 'muted'),
       ...(ch32Ports.length ? ch32Ports.map((x) => copyLine(`oep://${id}/${x.name}`)) : [copyLine(t(`oep://${id}/<port>`, `oep://${id}/<口>`))]), external('ArduinoCore-CH32RV', 'https://github.com/ch32-riscv-ug/ArduinoCore-CH32RV'),
       el('h3', { class: 'mt' }, t('SWD (RP2040, Arduino IDE)', 'SWD（RP2040、Arduino IDE）')), p(t('With the broker running, the IDE\'s Upload and Debug use OEP\'s SWD. Put debug_custom.json in the sketch folder (match configId to the value the IDE writes in .theia/launch.json).', 'ブローカーを起動しておくと、IDEの「書き込み」と「デバッグ」がOEPのSWDを使います。スケッチのフォルダに debug_custom.json を置きます（configId はIDEが .theia/launch.json に書く値に合わせます）。'), 'muted'),
       swdPorts.length > 1 ? field(t('Port', '口'), s.port, (v) => { s.port = v; render(); }, '', swdPorts.map((x) => [x.name, x.name])) : null,
       field(t('Board name shown to the IDE', 'IDEに見せるボード名'), board, (v) => { s.board = v; render(); }, t('For example rpipico', '例: rpipico')),
+      swd ? null : p(t('Register the SWD wiring (1 Wiring) and its name takes the place of <port> here.', 'SWDの配線を登録すると（1 配線）、その接続名が <口> の所に入ります。'), 'muted'),
       copyLine(broker), el('pre', { class: 'terminal' }, debugJson), external(t('Using SWD (oep-client-python docs/swd)', 'SWDの使い方（oep-client-python docs/swd）'), t('https://github.com/Open-Embedded-Probe/oep-client-python/blob/main/docs/swd.md', 'https://github.com/Open-Embedded-Probe/oep-client-python/blob/main/docs/swd.ja.md')),
       p(t('Other targets are debugged from Python. There is no hand-over for ESP32 or JTAG.', 'ほかのターゲットはPythonからデバッグします。ESP32とJTAGへの引継ぎはありません。'), 'muted mt')),
     section('logs', t('2. Read logs', '2. ログを読む'),
@@ -218,21 +234,36 @@ export function tools() {
       action(t('End here and hand it over', 'このページでの利用を終了して渡す'), async () => { await D.handOver(); state.transferred = true; state.notice = t('This page\'s connection is ended. Other tools can connect now.', 'このページでの接続を終えました。ほかの道具から接続できます。'); go('/'); }, 'primary', { id: 'hand-over' }))];
 }
 
-// -- P1: overview (page.ja.md §6.2) --
+// -- P1: overview (page.ja.md §6.2): what this probe is, and the path through the screen with where each step stands --
 export function overview() {
   const status = firmwareState(D.dev.info.firmware, D.release.manifest?.version);
   const fw = { update: t('A newer version is available.', '新しい版があります。'), current: t('The released version.', '配布している版です。'), newer: t('Newer than the release.', '配布している版より新しい版です。') }[status] ?? '';
-  const next = [];
-  if (!D.dev.ports.length) next.push([t('Register the wiring to your target', 'ターゲットへの配線を登録する'), t('Name the pins and keep the target\'s part number. No target needs to be connected.', 'ピンに名前を付け、相手の型番を残します。相手は未接続でかまいません。'), '/probe/wiring/new']);
-  if (status === 'update') next.push([t('Update the firmware', 'ファームを更新する'), fw, '/probe/maintenance']);
-  next.push([t('Hand the probe over to a tool', '道具へプローブを渡す'), t('Debug in the IDE, read logs in a serial monitor, capture with WireSkein, script with Python.', 'IDEでデバッグ、シリアルモニタでログ、WireSkeinで波形、Pythonでスクリプト。'), '/probe/tools']);
+  const sum = D.settingsSummary();
+  const n = D.dev.ports.length;
+  const settingsState = [
+    sum.passthroughs.length ? t(`log pass-through on ${sum.passthroughs.map(([r]) => r).join(', ')}`, `ログの素通し ${sum.passthroughs.map(([r]) => r).join('・')}`) : t('no log pass-through', 'ログの素通し なし'),
+    t(`${sum.pins} pins with an idle state or kept off`, `待機状態・使わせない指定のピン ${sum.pins} 本`),
+    sum.wifi !== null ? (sum.wifi ? t(`Wi-Fi ${sum.wifi}`, `Wi-Fi ${sum.wifi}`) : t('no Wi-Fi', 'Wi-Fi なし')) : null,
+  ].filter(Boolean).join(t(' · ', '・'));
+  /** @type {[string, string, string, string, string][]} */
+  const steps = [
+    ['/probe/wiring', t('1 Wiring', '1 配線'), t('Name the probe\'s pins that go to your target, and keep its part number. No target needs to be connected; a debug wiring can be checked against the target.', 'ターゲットへつなぐプローブのピンに名前を付け、相手の型番を残します。相手は未接続でかまいません。デバッグの配線は相手と接続確認できます。'),
+      n ? t(`${n} registered: ${D.dev.ports.map((x) => x.name).join(', ')}`, `${n} 件登録済み: ${D.dev.ports.map((x) => x.name).join('、')}`) : t('None yet', 'まだありません'), n ? t('See and edit', '見る・編集する') : t('Register', '登録する')],
+    ['/probe/settings', t('2 Probe settings', '2 本体設定'), t('How the probe behaves on its own: idle pins and pins kept off, the log pass-through to a serial monitor, Wi-Fi, the USB paths. Only what you need.', 'プローブそのものの動き: 空いたピンの状態と使わせないピン、シリアルモニタへのログの素通し、Wi-Fi、USBの経路。要るものだけ。'),
+      settingsState + (D.dev.unsaved ? t(' · unsaved changes', '・未保存の変更あり') : ''), t('Set up', '設定する')],
+    ['/probe/tools', t('3 Use in other tools', '3 ほかの道具で使う'), t('The work itself - debugging, reading logs, capturing waveforms, scripts and tests - is done in the IDE, a serial monitor, WireSkein or Python. This step gives each of them this probe\'s address and the command to use.', '作業そのもの ― デバッグ、ログを読む、波形を取る、スクリプトや試験 ― は IDE、シリアルモニタ、WireSkein、Python で行います。それぞれに、このプローブのアドレスと使うコマンドを渡します。'),
+      '', t('Open', '開く')],
+  ];
   const names = [...new Set(D.dev.caps.offers.map((o) => o.entry.name))];
-  return [heading(t('Overview', '概要'), t('What this probe is and what to do next.', 'このプローブと、次にすること。'), 'OVERVIEW'),
+  return [heading(t('Overview', '概要'), t('This page prepares the probe in three steps, then hands it to the tools that do the work. Go through them in order, or open only the one you need.', 'このページは3つの段階でプローブを準備し、作業をする道具へ渡します。順に進めても、要る段階だけ開いてもかまいません。'), 'OVERVIEW'),
     state.notice ? note(state.notice) : null,
-    el('div', { class: 'two-grid' },
+    el('ol', { class: 'step-list' }, ...steps.map(([route, title, desc, now, go2]) => el('li', { class: 'step-card' },
+      el('div', {}, el('h2', {}, title), p(desc, 'muted'), now ? p(now, 'step-now') : null),
+      link(go2, route, route === '/probe/wiring' && !n, { 'data-step': route })))),
+    el('div', { class: 'two-grid mt' },
       panel(el('h2', {}, t('This probe', 'このプローブ')), keyValues([[t('Board', 'ボード'), boardSpec() ? tr(boardSpec().name) : D.dev.info.model], [t('Unit ID', '個体ID'), D.unit()],
-        [t('Firmware', 'ファーム'), [D.dev.info.firmware ?? '—', fw ? ` · ${fw}` : '']], [t('Path', '経路'), D.dev.host.link.transport.kind ?? '—'], [t('Wiring registered', '登録した配線'), String(D.dev.ports.length)]])),
-      panel(el('h2', {}, t('Next', '次にすること')), el('div', { class: 'stack' }, ...next.map(([title, desc, route]) => el('a', { class: 'setup-choice', href: `#${route}` }, el('div', {}, el('h3', {}, title), p(desc)), el('span', { class: 'arrow' }, '→')))))),
-    el('details', { class: 'panel mt' }, el('summary', {}, t(`Functions this probe declares (${names.length})`, `このプローブが宣言する機能（${names.length}）`)), el('ul', { class: 'name-list' }, ...names.map((n) => el('li', {}, el('code', {}, n)))),
-      p(t('The full declarations are under Maintenance.', '宣言の全文は「保守」にあります。'), 'muted'))];
+        [t('Firmware', 'ファーム'), [D.dev.info.firmware ?? '—', fw ? ` · ${fw}` : '']], [t('Path', '経路'), D.dev.host.link.transport.kind ?? '—']]),
+        status === 'update' ? actions(link(t('Update the firmware', 'ファームを更新する'), '/probe/maintenance')) : null),
+      el('details', { class: 'panel' }, el('summary', {}, t(`Functions this probe declares (${names.length})`, `このプローブが宣言する機能（${names.length}）`)), el('ul', { class: 'name-list' }, ...names.map((x) => el('li', {}, el('code', {}, x)))),
+        p(t('The full declarations are under Maintenance.', '宣言の全文は「保守」にあります。'), 'muted')))];
 }

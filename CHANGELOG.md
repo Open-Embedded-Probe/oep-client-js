@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The probe screen leads the way: the overview lays out the three steps (1 Wiring, 2 Probe settings, 3 Use in other tools) with what each is for and where it stands, the tabs are numbered in that order, and each step's tab ends with the next one. Probe settings opens with a list of its sections, each with where it stands, that jumps to it. "Hand over to tools" is now "Use in other tools" and opens by saying the page only prepares the probe. A debug wiring whose method is not recorded is offered for the RP2040 broker too (it showed `<port>`).
+- (JA) プローブの画面が道筋を示す: 概要は3つの段階（1 配線、2 本体設定、3 ほかの道具で使う）を、何をする所か・今どうなっているかとともに並べ、タブもその順に番号を付け、各段階の画面の下に次の段階を置く。本体設定は最初に項目の一覧を今の状態とともに出し、押すとその項目へ移る。「道具へ渡す」は「ほかの道具で使う」にし、このページは準備までと最初に書く。方式の記録が無いデバッグの配線も RP2040 のブローカーに出す（`<口>` のままだった）。
+
 - (EN) New wiring opens the editor directly, with no signals yet: they are added there, and the screen choosing a kind first is gone. Signal groups keep one order - debug, UART, I2C, SPI, other signals - whatever order they are added in.
 - (JA) 新しい配線は、信号の無い編集画面をそのまま開き、そこで信号を追加する。種類を先に選ぶ画面は無くした。信号のまとまりは、追加した順によらず、いつも デバッグ・UART・I2C・SPI・そのほかの信号 の順に並ぶ。
 

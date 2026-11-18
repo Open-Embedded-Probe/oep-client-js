@@ -270,6 +270,14 @@ export function categoriesWith(item) {
 }
 export const routes = () => [...(dev.catalog?.route.values() ?? [])].filter((r) => !r.startsWith('tcp'));
 export function currentValue(category, flat) { return dev.settingsRows.find((r) => r.category === category && r.name === flat)?.value; }
+/** Where the probe's settings stand, for the overview and the settings screen's list: pins with an idle state or kept
+ * off, the pass-throughs, the Wi-Fi network, the USB paths (null: the probe has no such item). */
+export function settingsSummary() {
+  const pins = dev.settingsRows.filter((r) => r.category === 'core' && /^channel\..+\.(idle|disable)$/.test(r.name)).length;
+  const wifi = itemOf('core', 'wifi.0.ssid') ? (currentValue('core', 'wifi.0.ssid') ?? '') : null;
+  const usb = itemOf('core', 'usb.transports') ? (currentValue('core', 'usb.transports') ?? '') : null;
+  return { pins, passthroughs: currentPassthroughs(), wifi, usb };
+}
 /** The pass-throughs set now: [route, category, a line saying what goes there] (page.ja.md §6.5, §6.6). */
 export function currentPassthroughs() {
   const cats = [...categoriesWith('passthrough.{}.rx'), ...categoriesWith('passthrough.{}.wire')];

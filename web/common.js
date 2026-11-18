@@ -58,8 +58,11 @@ export function needConnection(returnTo) {
 }
 
 /** The probe's tabs (page.ja.md §6.1). */
-export const TABS = () => [['/probe', t('Overview', '概要')], ['/probe/wiring', t('Wiring', '配線')], ['/probe/settings', t('Probe settings', '本体設定')],
-  ['/probe/tools', t('Hand over to tools', '道具へ渡す')], ['/probe/maintenance', t('Maintenance', '保守')]];
+export const TABS = () => [['/probe', t('Overview', '概要')], ['/probe/wiring', t('1 Wiring', '1 配線')], ['/probe/settings', t('2 Probe settings', '2 本体設定')],
+  ['/probe/tools', t('3 Use in other tools', '3 ほかの道具で使う')], ['/probe/maintenance', t('Maintenance', '保守')]];
+/** The step after each tab (page.ja.md §6.1): overview → wiring → probe settings → other tools. */
+const NEXT = () => ({ '/probe': ['/probe/wiring', t('1 Register the wiring', '1 配線を登録する')], '/probe/wiring': ['/probe/settings', t('2 Set up the probe', '2 本体を設定する')],
+  '/probe/settings': ['/probe/tools', t('3 Use it in other tools', '3 ほかの道具で使う')] });
 
 /** The probe's band (unit, firmware, path, change right, unsaved changes with Save, Disconnect) and tabs, around a tab's content. */
 export function probeFrame(content) {
@@ -74,6 +77,7 @@ export function probeFrame(content) {
     dev.unsaved ? el('div', { class: 'unsaved-bar', id: 'unsaved' }, p(t('Unsaved changes: they are lost on restart.', '未保存の変更があります（再起動すると消えます）。'), 'mb0'),
       dev.saveable ? action(t('Save', '保存'), saveSettings, 'primary', { id: 'save-settings' }) : p(t('This probe cannot store settings.', 'このプローブは設定を保存できません。'), 'mb0 muted')) : null,
     el('nav', { class: 'probe-tabs', 'aria-label': t('Probe', 'プローブ') }, ...TABS().map(([path, title]) => el('a', { href: `#${path}`, class: isActive(path) ? 'active' : '', 'aria-current': isActive(path) ? 'page' : 'false' }, title))),
-    el('div', { class: 'probe-content' }, content));
+    el('div', { class: 'probe-content' }, content),
+    NEXT()[active] ? el('nav', { class: 'next-step', 'aria-label': t('Next', '次へ') }, p(t('Next', '次へ'), 'eyebrow mb0'), link(`${NEXT()[active][1]} →`, NEXT()[active][0], true, { 'data-next': NEXT()[active][0] })) : null);
 }
 export { browser, GUIDE_BASE, BOARD_SPECS, note, panel };

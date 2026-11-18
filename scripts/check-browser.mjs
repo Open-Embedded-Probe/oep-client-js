@@ -189,7 +189,7 @@ try {
   assert.deepEqual(await evaluate('globalThis.__flashWrite'), { address: 0, size: flashImage.length, eraseAll: false });
   assert.equal(await evaluate('globalThis.__reusedSerialPort'), true, 'the programming port is reused');
   assert.deepEqual(await evaluate('globalThis.__flashRts.slice(-2)'), [true, false], 'the chip is reset into its firmware (RTS pulsed)');
-  assert.match(await text(), /OEPを導入できました/); assert.match(await text(), /道具へプローブを渡す/); await snapshot('02-installed');
+  assert.match(await text(), /OEPを導入できました/); assert.equal(await evaluate('document.querySelectorAll("[data-step]").length'), 3); await snapshot('02-installed');
   await press('接続を終了');
   // A failed reconnection keeps the write and offers a retry without writing again (A09).
   await evaluate('globalThis.__rejectSerial=true');
@@ -243,6 +243,12 @@ try {
   await snapshot('03-editor');
   await press('配線を保存'); assert.equal(await evaluate('location.hash'), '#/probe/wiring');
   await evaluate('globalThis.__forbidTargetIO=false');
+  // the overview is the path through the screen; each tab ends with the next step (page.ja.md §6.1, §6.2)
+  await go('/probe'); assert.deepEqual(await evaluate('[...document.querySelectorAll("[data-step]")].map((a) => a.getAttribute("href"))'), ['#/probe/wiring', '#/probe/settings', '#/probe/tools']);
+  assert.match(await text(), /dut/, 'the overview names the wiring registered');
+  await go('/probe/wiring'); assert.equal(await evaluate('document.querySelector("[data-next]").getAttribute("href")'), '#/probe/settings');
+  await go('/probe/settings'); assert.equal(await evaluate('document.querySelector("[data-next]").getAttribute("href")'), '#/probe/tools');
+  for (const id of await evaluate('[...document.querySelectorAll("[data-section]")].map((a) => a.dataset.section)')) assert.ok(await evaluate(`!!document.getElementById("settings-${id}")`), `settings list → ${id}`);
   await go('/probe/wiring'); assert.match(await text(), /相手の型番なし（差し替えて使うコネクタ、または未記入）/); assert.match(await text(), /rx → GPIO/);
   // Editing a saved port keeps its debug lines and changes the record (A14).
   // a space around a target pin name is dropped, not refused; one inside is named in the check above Save
